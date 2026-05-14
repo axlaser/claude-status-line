@@ -24,7 +24,7 @@ function Info([string]$msg)  { Write-Host "  ${DIM}   $msg${RESET}" }
 # ── Header ────────────────────────────────────────────────────────────────────
 Write-Host ""
 Write-Host "  ${DIM}claude-status-line $([char]0x00B7) Uninstaller${RESET}"
-Write-Host "  ${GRAY}$([char]0x2501 * 43)${RESET}"
+Write-Host "  ${GRAY}$([string][char]0x2501 * 43)${RESET}"
 Write-Host ""
 
 # ── Remove the script ─────────────────────────────────────────────────────────
@@ -63,6 +63,6 @@ if (Test-Path $settingsPath) {
 
 # ── Done ──────────────────────────────────────────────────────────────────────
 Write-Host ""
-Write-Host "  ${GRAY}$([char]0x2501 * 43)${RESET}"
+Write-Host "  ${GRAY}$([string][char]0x2501 * 43)${RESET}"
 Write-Host "  ${GREEN}${BOLD}Done!${RESET} Restart Claude Code to use the default status bar."
 Write-Host ""

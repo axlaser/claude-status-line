@@ -69,9 +69,9 @@ Write-Host ""
 Step "Installing status line script"
 if (-not (Test-Path $claudeDir)) { New-Item -ItemType Directory -Path $claudeDir -Force | Out-Null }
 
-$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$localScript = Join-Path $scriptDir "statusline.ps1"
-if (Test-Path $localScript) {
+$myPath = $MyInvocation.MyCommand.Path
+$localScript = if ($myPath) { Join-Path (Split-Path -Parent $myPath) "statusline.ps1" } else { $null }
+if ($localScript -and (Test-Path $localScript)) {
     Copy-Item $localScript -Destination $scriptPath -Force
     Ok "Copied from local repo"
 } else {
