@@ -5,6 +5,7 @@
 **A rich, color-coded custom status line for [Claude Code](https://claude.ai/code) showing context usage, git state, costs, rate limits, and more**
 
 [![macOS](https://img.shields.io/badge/macOS-000000?style=for-the-badge&logo=apple&logoColor=white)](#macos)
+[![Linux](https://img.shields.io/badge/Linux-FCC624?style=for-the-badge&logo=linux&logoColor=black)](#linux)
 [![Windows](https://img.shields.io/badge/Windows-0078D4?style=for-the-badge&logo=windows&logoColor=white)](#windows)
 [![Bash](https://img.shields.io/badge/Bash-4EAA25?style=for-the-badge&logo=gnubash&logoColor=white)](#macos)
 [![PowerShell](https://img.shields.io/badge/PowerShell-5391FE?style=for-the-badge&logo=powershell&logoColor=white)](#windows)
@@ -43,7 +44,7 @@ showing context usage, git state, costs, rate limits, and more — all inside a 
 
 | Row | What it shows |
 |-----|---------------|
-| **repo** | Working directory (shortened relative to `$HOME`) and git branch with `+insertions` / `-deletions` / `~untracked` — cached by file mtime for speed |
+| **repo** | Working directory (shortened relative to `$HOME`) and git branch with `+insertions` / `-deletions` / `~untracked` |
 | **agent** | Agent name with compact context % and in/out tokens (when running with `--agent` flag) |
 | **model** | Active model (e.g. `Opus 4.7`), reasoning effort level, and ready/working indicator with live output token counter |
 | **context** | Color-coded progress bar with percentage and token count (green < 60%, yellow < 85%, red 85%+) |
@@ -66,9 +67,6 @@ The limits row doesn't just show usage — it shows **pace**. An `⇡` arrow mea
 ### Live working indicator
 The model row shows a real-time status — `● ready` when idle, or `○ working` with a live output token counter while Claude is generating. You always know if the model is still thinking or waiting for you.
 
-### Smart git caching
-Git status is cached per-session using file modification times on `.git/HEAD`, `.git/index`, and the working directory. The status line stays fast even in massive repos — no `git status` on every refresh.
-
 ### Compact agent view
 When running with `--agent`, the agent row shows context usage as a percentage and cumulative in/out tokens in a compact inline format — all the essentials without taking up extra rows.
 
@@ -86,6 +84,14 @@ curl -fsSL https://raw.githubusercontent.com/axlaser/claude-status-line/master/m
 
 The installer checks for `jq` and offers to install it via Homebrew if missing.
 
+### Linux
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/axlaser/claude-status-line/master/linux/install.sh | bash
+```
+
+The installer detects your package manager (apt, dnf, pacman, zypper, apk) and offers to install `jq` if missing.
+
 ### Windows
 
 ```powershell
@@ -100,6 +106,7 @@ No additional dependencies required — uses built-in PowerShell.
 git clone https://github.com/axlaser/claude-status-line.git
 cd claude-status-line
 bash macos/install.sh      # macOS
+bash linux/install.sh      # Linux
 .\windows\install.ps1      # Windows
 ```
 
@@ -118,6 +125,35 @@ bash macos/install.sh      # macOS
    ```bash
    mkdir -p ~/.claude
    curl -fsSL https://raw.githubusercontent.com/axlaser/claude-status-line/master/macos/statusline.sh -o ~/.claude/statusline.sh
+   chmod +x ~/.claude/statusline.sh
+   ```
+
+3. **Add to your Claude Code settings** — edit `~/.claude/settings.json`:
+   ```json
+   {
+     "statusLine": {
+       "type": "command",
+       "command": "~/.claude/statusline.sh",
+       "refreshInterval": 2
+     }
+   }
+   ```
+
+4. **Restart Claude Code** — the status line appears at the bottom of your terminal.
+
+### Linux
+
+1. **Install jq** (if you don't have it):
+   ```bash
+   sudo apt install jq        # Debian/Ubuntu
+   sudo dnf install jq        # Fedora/RHEL
+   sudo pacman -S jq          # Arch
+   ```
+
+2. **Download the script** to your Claude config directory:
+   ```bash
+   mkdir -p ~/.claude
+   curl -fsSL https://raw.githubusercontent.com/axlaser/claude-status-line/master/linux/statusline.sh -o ~/.claude/statusline.sh
    chmod +x ~/.claude/statusline.sh
    ```
 
@@ -167,6 +203,12 @@ Re-run the install command. Your other settings are preserved.
 curl -fsSL https://raw.githubusercontent.com/axlaser/claude-status-line/master/macos/install.sh | bash
 ```
 
+### Linux
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/axlaser/claude-status-line/master/linux/install.sh | bash
+```
+
 ### Windows
 
 ```powershell
@@ -179,6 +221,7 @@ irm https://raw.githubusercontent.com/axlaser/claude-status-line/master/windows/
 cd claude-status-line
 git pull
 bash macos/install.sh      # macOS
+bash linux/install.sh      # Linux
 .\windows\install.ps1      # Windows
 ```
 
@@ -196,6 +239,12 @@ Removes the script and the `statusLine` config from `settings.json`. Your other 
 curl -fsSL https://raw.githubusercontent.com/axlaser/claude-status-line/master/macos/uninstall.sh | bash
 ```
 
+### Linux
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/axlaser/claude-status-line/master/linux/uninstall.sh | bash
+```
+
 ### Windows
 
 ```powershell
@@ -206,6 +255,7 @@ irm https://raw.githubusercontent.com/axlaser/claude-status-line/master/windows/
 
 ```bash
 bash macos/uninstall.sh      # macOS
+bash linux/uninstall.sh      # Linux
 .\windows\uninstall.ps1      # Windows
 ```
 
@@ -251,7 +301,7 @@ Both scripts write debug logs to help troubleshoot issues:
 
 | Platform | Log location |
 |----------|-------------|
-| macOS | `~/.claude/statusline-debug.log` |
+| macOS / Linux | `~/.claude/statusline-debug.log` |
 | Windows | `%USERPROFILE%\.claude\statusline-debug.log` |
 
 ---
@@ -262,20 +312,23 @@ Both scripts write debug logs to help troubleshoot issues:
 <summary><strong>Status line not appearing</strong></summary>
 
 - Verify the script path in `settings.json` is correct
-- macOS: confirm the script is executable (`chmod +x ~/.claude/statusline.sh`)
+- macOS/Linux: confirm the script is executable (`chmod +x ~/.claude/statusline.sh`)
 - Restart Claude Code after changing settings
 - Check the debug log for errors
 
 </details>
 
 <details>
-<summary><strong>jq: command not found (macOS)</strong></summary>
+<summary><strong>jq: command not found</strong></summary>
 
-Install jq via Homebrew:
+Install jq for your platform:
 ```bash
-brew install jq
+brew install jq              # macOS (Homebrew)
+sudo apt install jq          # Debian/Ubuntu
+sudo dnf install jq          # Fedora/RHEL
+sudo pacman -S jq            # Arch
 ```
-If you don't have Homebrew, install it from [brew.sh](https://brew.sh) or install jq from [jqlang.github.io/jq](https://jqlang.github.io/jq/download/).
+Or download from [jqlang.github.io/jq](https://jqlang.github.io/jq/download/).
 
 </details>
 
@@ -294,20 +347,11 @@ Rate limit data is only available for Claude.ai Pro and Max subscribers. API use
 </details>
 
 <details>
-<summary><strong>Git status showing stale data</strong></summary>
-
-Git state is cached per-session using file modification times. If the cache seems stuck:
-- The cache auto-invalidates when `.git/HEAD`, `.git/index`, or the working directory mtime changes
-- Manually clear: delete `statusline-git-<session_id>.txt` from your temp directory (`$TMPDIR` on macOS, `%TEMP%` on Windows)
-
-</details>
-
-<details>
 <summary><strong>Script errors in the debug log</strong></summary>
 
 Check `~/.claude/statusline-debug.log` for `READ/PARSE FAILED` or `UNHANDLED` entries. Common causes:
 - Claude Code passed unexpected JSON (check `stdin head:` in the log)
-- Permission issues writing cache files to the temp directory
+- Permission issues writing to the temp directory
 
 </details>
 
@@ -317,7 +361,7 @@ Check `~/.claude/statusline-debug.log` for `READ/PARSE FAILED` or `UNHANDLED` en
 
 Claude Code pipes a JSON object to the script's stdin on each update. The JSON contains session data — model info, context window usage, cost, rate limits, transcript path, and more. The script parses this data, optionally reads the conversation transcript for additional metrics (message count, token breakdown, idle/working state), and outputs ANSI-colored text that Claude Code renders as the status bar.
 
-Both scripts implement aggressive caching (git state by file mtime, transcript data by transcript mtime) to keep refresh times fast even in large repositories.
+Git status is fetched fresh on every refresh for real-time accuracy. Transcript data is cached by file mtime to keep refresh times fast even in large repositories.
 
 ---
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -e
 
-REPO="https://raw.githubusercontent.com/axlaser/claude-status-line/master/macos"
+REPO="https://raw.githubusercontent.com/axlaser/claude-status-line/master/linux"
 CLAUDE_DIR="$HOME/.claude"
 SCRIPT_PATH="$CLAUDE_DIR/statusline.sh"
 SETTINGS_PATH="$CLAUDE_DIR/settings.json"
@@ -59,9 +59,37 @@ cat <<'BANNER'
  :: ::::   ::   ::   ::   :: ::::
 : :: : :  :    ::    :   : :: ::
 BANNER
-printf "\n  ${DIM}macOS Installer${RESET}\n"
+printf "\n  ${DIM}Linux Installer${RESET}\n"
 printf "  ${GRAY}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}\n"
 echo ""
+
+# ── Detect package manager ───────────────────────────────────────────────────
+detect_pkg_manager() {
+    if command -v apt-get &>/dev/null; then
+        echo "apt"
+    elif command -v dnf &>/dev/null; then
+        echo "dnf"
+    elif command -v pacman &>/dev/null; then
+        echo "pacman"
+    elif command -v zypper &>/dev/null; then
+        echo "zypper"
+    elif command -v apk &>/dev/null; then
+        echo "apk"
+    else
+        echo ""
+    fi
+}
+
+install_jq() {
+    local mgr=$1
+    case "$mgr" in
+        apt)    sudo apt-get update && sudo apt-get install -y jq ;;
+        dnf)    sudo dnf install -y jq ;;
+        pacman) sudo pacman -S --noconfirm jq ;;
+        zypper) sudo zypper install -y jq ;;
+        apk)    if command -v sudo &>/dev/null; then sudo apk add jq; else apk add jq; fi ;;
+    esac
+}
 
 # ── Check for jq ─────────────────────────────────────────────────────────────
 step "Checking dependencies"
@@ -70,18 +98,19 @@ if command -v jq &>/dev/null; then
 else
     warn "jq is required but not installed"
     echo ""
-    if command -v brew &>/dev/null; then
-        read -rp "  ${YELLOW}${BOLD} ?${RESET} Install jq via Homebrew? (${GREEN}y${RESET}/${RED}n${RESET}) " answer </dev/tty
+    PKG_MGR=$(detect_pkg_manager)
+    if [[ -n "$PKG_MGR" ]]; then
+        read -rp "  ${YELLOW}${BOLD} ?${RESET} Install jq via ${PKG_MGR}? (${GREEN}y${RESET}/${RED}n${RESET}) " answer </dev/tty
         if [[ "$answer" =~ ^[Yy]$ ]]; then
-            brew install jq
+            install_jq "$PKG_MGR"
             ok "jq installed"
         else
             err "Please install jq manually: https://jqlang.github.io/jq/download/"
             exit 1
         fi
     else
-        err "Install jq: https://jqlang.github.io/jq/download/"
-        info "Or install Homebrew first: https://brew.sh"
+        err "No supported package manager found"
+        info "Install jq manually: https://jqlang.github.io/jq/download/"
         exit 1
     fi
 fi

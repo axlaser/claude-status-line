@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Claude Code statusLine script for macOS (bash/zsh)
+# Claude Code statusLine script for Linux (bash/zsh)
 # Receives JSON on stdin from Claude Code, emits UTF-8 lines.
 
 # ── Dependency check ──────────────────────────────────────────────────────────
 if ! command -v jq &>/dev/null; then
-    printf '\033[31m[statusline: jq not found — run: brew install jq]\033[0m'
+    printf '\033[31m[statusline: jq not found — install via your package manager]\033[0m'
     exit 0
 fi
 
@@ -273,7 +273,7 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
     cache_path=""
     [[ -n "$session_id" ]] && cache_path="${TMPDIR:-/tmp}/statusline-cache-${session_id}.txt"
 
-    transcript_mt=$(stat -f %m "$transcript_path" 2>/dev/null || echo 0)
+    transcript_mt=$(stat -c %Y "$transcript_path" 2>/dev/null || echo 0)
     use_cache=false
     prev_working_start=-1
     prev_in=0
@@ -317,7 +317,7 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
             msg_count=$(( total_user - tool_results - meta_users - slash_users ))
             (( msg_count < 0 )) && msg_count=0
 
-            # Idle vs working: scan from end (tail -r is macOS's tac)
+            # Idle vs working: scan from end
             claude_is_idle=true
             while IFS= read -r ln; do
                 [[ "$ln" == *"toolUseResult"* ]] && continue
@@ -335,7 +335,7 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
                     claude_is_idle=false
                     break
                 fi
-            done < <(tail -r "$transcript_path" 2>/dev/null)
+            done < <(tac "$transcript_path" 2>/dev/null)
 
             # Cumulative tokens via awk (much faster than bash loop for large files)
             read -r session_in_tokens session_cache_write_tokens session_cache_read_tokens session_out_tokens has_any < <(

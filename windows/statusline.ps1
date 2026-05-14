@@ -157,52 +157,21 @@ $gitPart = ''
 try {
     $gitCwd = Get-Val $json @('workspace','current_dir')
     if (-not $gitCwd) { $gitCwd = (Get-Location).Path }
-    # Cache git data keyed on the mtimes of .git/HEAD (branch changes) and
-    # .git/index (staging changes). When files are edited but not staged,
-    # .git/index doesn't update — so we also include the cwd's mtime as a
-    # cheap signal of "something changed in this directory". Result: most
-    # status line refreshes skip the 3 git subprocess spawns entirely.
     $gitDir = Join-Path $gitCwd '.git'
-    $useGitCache = $false
-    $gitCachePath = if ($sessionId) { Join-Path $env:TEMP ("statusline-git-" + $sessionId + ".txt") } else { $null }
     if (Test-Path -LiteralPath $gitDir) {
-        $headMt  = if (Test-Path -LiteralPath (Join-Path $gitDir 'HEAD'))  { (Get-Item -LiteralPath (Join-Path $gitDir 'HEAD')).LastWriteTimeUtc.Ticks }  else { 0 }
-        $indexMt = if (Test-Path -LiteralPath (Join-Path $gitDir 'index')) { (Get-Item -LiteralPath (Join-Path $gitDir 'index')).LastWriteTimeUtc.Ticks } else { 0 }
-        $cwdMt   = (Get-Item -LiteralPath $gitCwd).LastWriteTimeUtc.Ticks
-        $gitMtKey = "$headMt|$indexMt|$cwdMt"
-        if ($gitCachePath -and (Test-Path -LiteralPath $gitCachePath)) {
-            $line = Get-Content -LiteralPath $gitCachePath -Raw -ErrorAction SilentlyContinue
-            if ($line) {
-                $p = $line.Trim().Split([char]9)  # tab-separated
-                if ($p.Length -eq 5 -and $p[0] -eq $gitMtKey) {
-                    $branch     = $p[1]
-                    $insertions = [int]$p[2]
-                    $deletions  = [int]$p[3]
-                    $untracked  = [int]$p[4]
-                    $useGitCache = $true
-                }
+        $branch = & git --no-optional-locks -C $gitCwd rev-parse --abbrev-ref HEAD 2>$null
+        if ($branch -and $LASTEXITCODE -eq 0) {
+            $diffStat = & git --no-optional-locks -C $gitCwd diff --shortstat HEAD 2>$null
+            $insertions = 0
+            $deletions  = 0
+            if ($diffStat -and $diffStat.Trim() -ne '') {
+                if ($diffStat -match '(\d+) insertion') { $insertions = [int]$Matches[1] }
+                if ($diffStat -match '(\d+) deletion')  { $deletions  = [int]$Matches[1] }
             }
-        }
-        if (-not $useGitCache) {
-            $branch = & git --no-optional-locks -C $gitCwd rev-parse --abbrev-ref HEAD 2>$null
-            if ($branch -and $LASTEXITCODE -eq 0) {
-                $diffStat = & git --no-optional-locks -C $gitCwd diff --shortstat HEAD 2>$null
-                $insertions = 0
-                $deletions  = 0
-                if ($diffStat -and $diffStat.Trim() -ne '') {
-                    if ($diffStat -match '(\d+) insertion') { $insertions = [int]$Matches[1] }
-                    if ($diffStat -match '(\d+) deletion')  { $deletions  = [int]$Matches[1] }
-                }
-                $porcelain = & git --no-optional-locks -C $gitCwd status --porcelain 2>$null
-                $untracked = @($porcelain | Where-Object { $_ -match '^\?\?' }).Count
-                if ($gitCachePath) {
-                    try {
-                        [System.IO.File]::WriteAllText($gitCachePath, ("{0}`t{1}`t{2}`t{3}`t{4}" -f $gitMtKey, $branch, $insertions, $deletions, $untracked), (New-Object System.Text.UTF8Encoding $false))
-                    } catch {}
-                }
-            } else {
-                $branch = $null
-            }
+            $porcelain = & git --no-optional-locks -C $gitCwd status --porcelain 2>$null
+            $untracked = @($porcelain | Where-Object { $_ -match '^\?\?' }).Count
+        } else {
+            $branch = $null
         }
     } else {
         $branch = $null
@@ -226,6 +195,7 @@ try {
 # 5. Cost + Duration
 # ═══════════════════════════════════════════════════════════════════════════════
 $costPart = ''
+$durationPart = ''
 # Cost — field may not exist in current schema; read defensively
 $totalCost = Get-Val $json @('cost','total_cost_usd')
 if ($null -eq $totalCost) { $totalCost = Get-Val $json @('total_cost_usd') }

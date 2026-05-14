@@ -83,7 +83,7 @@ Write-Host ""
 
 # ── Configure settings.json ──────────────────────────────────────────────────
 Step "Configuring Claude Code settings"
-$cmd = "powershell -NoProfile -File $scriptPath"
+$cmd = "powershell -NoProfile -File `"$scriptPath`""
 $newEntry = [PSCustomObject]@{ type = "command"; command = $cmd; refreshInterval = 2 }
 
 if (Test-Path $settingsPath) {
@@ -101,10 +101,12 @@ if (Test-Path $settingsPath) {
     }
 
     $existing | Add-Member -NotePropertyName 'statusLine' -NotePropertyValue $newEntry -Force
-    $existing | ConvertTo-Json -Depth 10 | Set-Content $settingsPath -Encoding utf8
+    $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+    [System.IO.File]::WriteAllText($settingsPath, ($existing | ConvertTo-Json -Depth 10), $utf8NoBom)
     Ok "Updated settings.json"
 } else {
-    [PSCustomObject]@{ statusLine = $newEntry } | ConvertTo-Json -Depth 10 | Set-Content $settingsPath -Encoding utf8
+    $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+    [System.IO.File]::WriteAllText($settingsPath, ([PSCustomObject]@{ statusLine = $newEntry } | ConvertTo-Json -Depth 10), $utf8NoBom)
     Ok "Created settings.json"
 }
 Info $settingsPath
