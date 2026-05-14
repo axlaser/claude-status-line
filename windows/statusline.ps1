@@ -541,9 +541,13 @@ if ($durationPart) { $costParts += $durationPart }
 $costRow = $costParts -join $rowSep
 # Merge path + git into one row
 $pathRow = $cwdPart
-if ($gitPart) { $pathRow = "${cwdPart}${rowSep}${DIM}on${RESET} ${gitPart}" }
+$pathLabel = 'project'
+if ($gitPart) {
+    $pathRow = "${cwdPart}${rowSep}${DIM}on${RESET} ${gitPart}"
+    $pathLabel = 'repo'
+}
 $rowSpec = @(
-    @{ s=0; label='repo';   content=$pathRow        }
+    @{ s=0; label=$pathLabel; content=$pathRow      }
     @{ s=0; label='agent';  content=$agentPart      }
     @{ s=1; label='model';  content=$modelRow       }
     @{ s=1; label='context'; content=$ctxBarPart    }

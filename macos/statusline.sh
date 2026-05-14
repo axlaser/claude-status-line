@@ -555,14 +555,16 @@ done
 
 # Merge path + git into one row
 path_row="$cwd_part"
+path_label="project"
 if [[ -n "$git_part" ]]; then
     path_row+="${row_sep}${DIM}on${RESET} ${git_part}"
+    path_label="repo"
 fi
 
 # Row specs: section, label, content
 declare -a row_sections=() row_labels=() row_contents=() rows=() row_secs=()
 
-row_sections+=(0); row_labels+=("repo");    row_contents+=("$path_row")
+row_sections+=(0); row_labels+=("$path_label"); row_contents+=("$path_row")
 row_sections+=(0); row_labels+=("agent");   row_contents+=("$agent_part")
 row_sections+=(1); row_labels+=("model");   row_contents+=("$model_row")
 row_sections+=(1); row_labels+=("context"); row_contents+=("$ctx_bar_part")
