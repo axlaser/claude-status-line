@@ -107,33 +107,36 @@ if ($null -ne $usedPct) {
 }
 $modelPart = "${MAGENTA}${modelShort}${RESET}"
 # ═══════════════════════════════════════════════════════════════════════════════
-# 2b. Context bar (line 2) — colored progress bar for context-window usage
+# 2b. Context bar (line 2) — colored progress bar for context-window usage.
+# Always rendered so the row is visible from the very first status-line refresh,
+# even if Claude Code hasn't populated `context_window` yet. Missing usedPct → 0%,
+# missing ctxSize → bar without the trailing tokens label.
 # ═══════════════════════════════════════════════════════════════════════════════
-$ctxBarPart = ''
-if ($null -ne $pctInt) {
-    $barWidth   = 30
-    $pctClamped = [Math]::Max(0, [Math]::Min(100, [double]$usedPct))
-    $filled     = [int][Math]::Round($barWidth * $pctClamped / 100)
-    if ($filled -lt 0) { $filled = 0 }
-    if ($filled -gt $barWidth) { $filled = $barWidth }
-    $emptyCount = $barWidth - $filled
-    $filledChars = if ($filled -gt 0)     { [string]([char]0x2588) * $filled }     else { '' }
-    $emptyChars  = if ($emptyCount -gt 0) { [string]([char]0x2591) * $emptyCount } else { '' }
-    $bar = "${pctColor}${filledChars}${RESET}${GRAY}${emptyChars}${RESET}"
-    $tokenSuffix = ''
-    if ($ctxSize) {
-        $usedTokens = [int]([double]$ctxSize * $pctClamped / 100)
-        $usedLbl = if ($usedTokens -ge 1000000) {
-            '{0:F1}M' -f ($usedTokens / 1000000.0)
-        } elseif ($usedTokens -ge 1000) {
-            '{0:F0}K' -f ($usedTokens / 1000.0)
-        } else {
-            "$usedTokens"
-        }
-        $tokenSuffix = " ${GRAY}$([char]0x00B7)${RESET} ${WHITE}${usedLbl}${RESET}${GRAY}/${ctxLabel}${RESET}"
+$barWidth   = 30
+$rawPct     = if ($null -ne $usedPct) { [double]$usedPct } else { 0 }
+$pctClamped = [Math]::Max(0, [Math]::Min(100, $rawPct))
+$barPctInt  = if ($null -ne $pctInt)  { $pctInt }   else { 0 }
+$barColor   = if ($null -ne $pctInt)  { $pctColor } else { $GREEN }
+$filled     = [int][Math]::Round($barWidth * $pctClamped / 100)
+if ($filled -lt 0) { $filled = 0 }
+if ($filled -gt $barWidth) { $filled = $barWidth }
+$emptyCount = $barWidth - $filled
+$filledChars = if ($filled -gt 0)     { [string]([char]0x2588) * $filled }     else { '' }
+$emptyChars  = if ($emptyCount -gt 0) { [string]([char]0x2591) * $emptyCount } else { '' }
+$bar = "${barColor}${filledChars}${RESET}${GRAY}${emptyChars}${RESET}"
+$tokenSuffix = ''
+if ($ctxSize) {
+    $usedTokens = [int]([double]$ctxSize * $pctClamped / 100)
+    $usedLbl = if ($usedTokens -ge 1000000) {
+        '{0:F1}M' -f ($usedTokens / 1000000.0)
+    } elseif ($usedTokens -ge 1000) {
+        '{0:F0}K' -f ($usedTokens / 1000.0)
+    } else {
+        "$usedTokens"
     }
-    $ctxBarPart = "${bar} ${pctColor}${pctInt}%${RESET}${tokenSuffix}"
+    $tokenSuffix = " ${GRAY}$([char]0x00B7)${RESET} ${WHITE}${usedLbl}${RESET}${GRAY}/${ctxLabel}${RESET}"
 }
+$ctxBarPart = "${bar} ${barColor}${barPctInt}%${RESET}${tokenSuffix}"
 # ═══════════════════════════════════════════════════════════════════════════════
 # 3. Reasoning effort level
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -287,21 +290,25 @@ if ($transcriptPath -and (Test-Path -LiteralPath $transcriptPath -ErrorAction Si
         if (-not $useCache) {
             $rawTranscript = Get-Content -LiteralPath $transcriptPath -Raw -ErrorAction SilentlyContinue
             if ($rawTranscript) {
-                # Real user messages = all `"type":"user"` rows MINUS synthetic ones:
-                #   - tool results (carry `toolUseResult`)
-                #   - slash-command caveats (carry `"isMeta":true`)
-                #   - slash-command invocations (content has `<command-name>`)
-                $totalUser    = ([regex]::Matches($rawTranscript, '"type"\s*:\s*"user"')).Count
-                $toolResults  = ([regex]::Matches($rawTranscript, '"toolUseResult"')).Count
-                $metaUsers    = ([regex]::Matches($rawTranscript, '"isMeta"\s*:\s*true')).Count
-                $slashUsers   = ([regex]::Matches($rawTranscript, '<command-name>')).Count
-                $msgCount     = [Math]::Max(0, $totalUser - $toolResults - $metaUsers - $slashUsers)
                 $lines = $rawTranscript -split "(`r`n|`n)" | Where-Object { $_.Trim() -ne '' }
+                # Real user messages = user-type lines that are NOT synthetic.
+                # We filter per-line with logical AND rather than summing independent
+                # counters; the old approach over-subtracted because markers like
+                # `<command-name>` and `"toolUseResult"` can appear on the same line
+                # (e.g., a tool result quoting a source file that contains them).
+                $msgCount = ($lines | Where-Object {
+                    $_ -match '"type"\s*:\s*"user"' -and
+                    $_ -notmatch '"toolUseResult"' -and
+                    $_ -notmatch '"isMeta"\s*:\s*true' -and
+                    $_ -notmatch '<command-name>' -and
+                    $_ -notmatch '<local-command-stdout>'
+                }).Count
                 # Idle vs working: latest REAL message decides.
                 # Skip synthetic entries that don't represent the user waiting:
                 #   - tool results (`toolUseResult` field, type:"user")
                 #   - slash-command caveats (`"isMeta":true`, type:"user")
                 #   - slash-command invocations (content has `<command-name>`, type:"user")
+                #   - slash-command output (content has `<local-command-stdout>` or `<local-command-stderr>`, type:"user")
                 # Without these skips, running e.g. `/effort` leaves the latest line as a
                 # synthetic user entry with no following assistant `end_turn`, and the
                 # detector stays stuck on "working".
@@ -310,6 +317,7 @@ if ($transcriptPath -and (Test-Path -LiteralPath $transcriptPath -ErrorAction Si
                     if ($ln -match '"toolUseResult"') { continue }       # tool-result entry
                     if ($ln -match '"isMeta"\s*:\s*true') { continue }   # meta/caveat entry
                     if ($ln -match '<command-name>') { continue }        # slash-command invocation
+                    if ($ln -match '<local-command-') { continue }       # slash-command stdout/stderr
                     if ($ln -match '"type"\s*:\s*"assistant"') {
                         $claudeIsIdle = ($ln -match '"stop_reason"\s*:\s*"end_turn"')
                         break
@@ -380,14 +388,13 @@ function Format-Bucket($label, $value, $delta, $idleColor, $activeColor, $arrow)
         return "${DIM}${label}${RESET}${arrowPart} ${idleColor}${lbl}${RESET} ${DIM}(+${dLbl})${RESET}"
     }
 }
-$tokensPart = ''
-if ($hasSessionTokens) {
-    $sep     = "  ${GRAY}$([char]0x00B7)${RESET}  "
-    $tokensPart = (Format-Bucket "in" $sessionInTokens $deltaIn $CYAN $CYAN) `
-        + $sep + (Format-Bucket "cache" $sessionCacheWriteTokens $deltaCacheWrite $GRAY $YELLOW "$([char]0x2191)") `
-        + $sep + (Format-Bucket "cache" $sessionCacheReadTokens $deltaCacheRead $GRAY $CYAN "$([char]0x2193)") `
-        + $sep + (Format-Bucket "out" $sessionOutTokens $deltaOut $MAGENTA $MAGENTA)
-}
+# Always render — Format-Bucket falls back to the dim "(+0)" idle styling for zero values,
+# so a fresh session shows `in 0 · cache↑ 0 · cache↓ 0 · out 0` before any turns happen.
+$sep        = "  ${GRAY}$([char]0x00B7)${RESET}  "
+$tokensPart = (Format-Bucket "in" $sessionInTokens $deltaIn $CYAN $CYAN) `
+    + $sep + (Format-Bucket "cache" $sessionCacheWriteTokens $deltaCacheWrite $GRAY $YELLOW "$([char]0x2191)") `
+    + $sep + (Format-Bucket "cache" $sessionCacheReadTokens $deltaCacheRead $GRAY $CYAN "$([char]0x2193)") `
+    + $sep + (Format-Bucket "out" $sessionOutTokens $deltaOut $MAGENTA $MAGENTA)
 # Status (idle/working) — shown on model row
 if ($claudeIsIdle) {
     $statusDot   = "${GREEN}$([char]0x25CF)${RESET}"   # ●

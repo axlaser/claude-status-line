@@ -53,9 +53,10 @@ jval() {
 }
 
 # ── Helper: human-readable token count (e.g. 1234567 → "1.2M") ───────────────
+# Returns "0" for 0/empty so the tokens row can render zero buckets on startup.
 format_tokens() {
     local n=$1
-    [[ -z "$n" || "$n" == "0" ]] && return
+    [[ -z "$n" ]] && { printf '0'; return; }
     if (( n >= 1000000 )); then
         awk "BEGIN { printf \"%.1fM\", $n / 1000000.0 }"
     elif (( n >= 1000 )); then
@@ -138,35 +139,39 @@ fi
 model_part="${MAGENTA}${model_short}${RESET}"
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 2b. Context bar — colored progress bar for context-window usage
+# 2b. Context bar — colored progress bar for context-window usage.
+# Always rendered so the row is visible from the very first status-line refresh,
+# even if Claude Code hasn't populated `context_window` yet. Missing used_pct → 0%,
+# missing ctx_size → bar without the trailing tokens label.
 # ═══════════════════════════════════════════════════════════════════════════════
-ctx_bar_part=""
-if [[ -n "$pct_int" ]]; then
-    bar_width=30
-    filled=$(awk "BEGIN { v = $used_pct; if (v<0) v=0; if (v>100) v=100; printf \"%d\", int($bar_width * v / 100 + 0.5) }")
-    (( filled > bar_width )) && filled=$bar_width
-    (( filled < 0 )) && filled=0
-    empty_count=$((bar_width - filled))
+bar_width=30
+bar_used_pct="${used_pct:-0}"
+bar_pct_int="${pct_int:-0}"
+bar_color="${pct_color}"
+[[ -z "$pct_int" ]] && bar_color="$GREEN"
+filled=$(awk "BEGIN { v = $bar_used_pct; if (v<0) v=0; if (v>100) v=100; printf \"%d\", int($bar_width * v / 100 + 0.5) }")
+(( filled > bar_width )) && filled=$bar_width
+(( filled < 0 )) && filled=0
+empty_count=$((bar_width - filled))
 
-    filled_chars=$(repeat_char "█" "$filled")
-    empty_chars=$(repeat_char "░" "$empty_count")
-    bar="${pct_color}${filled_chars}${RESET}${GRAY}${empty_chars}${RESET}"
+filled_chars=$(repeat_char "█" "$filled")
+empty_chars=$(repeat_char "░" "$empty_count")
+bar="${bar_color}${filled_chars}${RESET}${GRAY}${empty_chars}${RESET}"
 
-    token_suffix=""
-    if [[ -n "$ctx_size" ]]; then
-        used_tokens=$(awk "BEGIN { v=$used_pct; if(v<0)v=0; if(v>100)v=100; printf \"%d\", int($ctx_size * v / 100) }")
-        if (( used_tokens >= 1000000 )); then
-            used_lbl=$(awk "BEGIN { printf \"%.1fM\", $used_tokens / 1000000.0 }")
-        elif (( used_tokens >= 1000 )); then
-            used_lbl=$(awk "BEGIN { printf \"%.0fK\", $used_tokens / 1000.0 }")
-        else
-            used_lbl="$used_tokens"
-        fi
-        token_suffix=" ${GRAY}·${RESET} ${WHITE}${used_lbl}${RESET}${GRAY}/${ctx_label}${RESET}"
+token_suffix=""
+if [[ -n "$ctx_size" ]]; then
+    used_tokens=$(awk "BEGIN { v=$bar_used_pct; if(v<0)v=0; if(v>100)v=100; printf \"%d\", int($ctx_size * v / 100) }")
+    if (( used_tokens >= 1000000 )); then
+        used_lbl=$(awk "BEGIN { printf \"%.1fM\", $used_tokens / 1000000.0 }")
+    elif (( used_tokens >= 1000 )); then
+        used_lbl=$(awk "BEGIN { printf \"%.0fK\", $used_tokens / 1000.0 }")
+    else
+        used_lbl="$used_tokens"
     fi
-
-    ctx_bar_part="${bar} ${pct_color}${pct_int}%${RESET}${token_suffix}"
+    token_suffix=" ${GRAY}·${RESET} ${WHITE}${used_lbl}${RESET}${GRAY}/${ctx_label}${RESET}"
 fi
+
+ctx_bar_part="${bar} ${bar_color}${bar_pct_int}%${RESET}${token_suffix}"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 3. Reasoning effort level
@@ -309,20 +314,30 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
 
     if [[ "$use_cache" != true ]]; then
         if [[ -s "$transcript_path" ]]; then
-            # Message count: real user messages minus synthetic ones
-            total_user=$(grep -cE '"type"[[:space:]]*:[[:space:]]*"user"' "$transcript_path" 2>/dev/null || true)
-            tool_results=$(grep -c '"toolUseResult"' "$transcript_path" 2>/dev/null || true)
-            meta_users=$(grep -cE '"isMeta"[[:space:]]*:[[:space:]]*true' "$transcript_path" 2>/dev/null || true)
-            slash_users=$(grep -c '<command-name>' "$transcript_path" 2>/dev/null || true)
-            msg_count=$(( total_user - tool_results - meta_users - slash_users ))
-            (( msg_count < 0 )) && msg_count=0
+            # Real user messages = user-type lines that are NOT synthetic. We filter
+            # per-line with chained `grep -v` rather than summing independent counters;
+            # the old approach over-subtracted because markers like `<command-name>`
+            # and `"toolUseResult"` can appear on the same line (e.g., a tool result
+            # quoting a source file that contains them).
+            msg_count=$(grep -E '"type"[[:space:]]*:[[:space:]]*"user"' "$transcript_path" 2>/dev/null \
+                | grep -v '"toolUseResult"' \
+                | grep -Ev '"isMeta"[[:space:]]*:[[:space:]]*true' \
+                | grep -v '<command-name>' \
+                | grep -v '<local-command-stdout>' \
+                | wc -l | tr -d ' ')
+            [[ -z "$msg_count" ]] && msg_count=0
 
-            # Idle vs working: scan from end
+            # Idle vs working: scan from end.
+            # Skip synthetic user entries so the latest REAL message decides:
+            #   - tool results, meta/caveat entries, slash-command invocations,
+            #   - slash-command stdout/stderr (<local-command-*>) — without this the
+            #     detector stays stuck on "working" after running e.g. /effort.
             claude_is_idle=true
             while IFS= read -r ln; do
                 [[ "$ln" == *"toolUseResult"* ]] && continue
                 [[ "$ln" == *'"isMeta"'* ]] && continue
                 [[ "$ln" == *'<command-name>'* ]] && continue
+                [[ "$ln" == *'<local-command-'* ]] && continue
                 if [[ "$ln" == *'"type"'*'"assistant"'* ]]; then
                     if [[ "$ln" == *'"stop_reason"'*'"end_turn"'* ]]; then
                         claude_is_idle=true
@@ -401,15 +416,13 @@ format_bucket() {
     fi
 }
 
-# Tokens row
-tokens_part=""
-if [[ "$has_session_tokens" == true ]]; then
-    row_sep="  ${GRAY}·${RESET}  "
-    tokens_part=$(format_bucket "in" "$session_in_tokens" "$delta_in" "$CYAN" "$CYAN")
-    tokens_part+="${row_sep}$(format_bucket "cache" "$session_cache_write_tokens" "$delta_cache_write" "$GRAY" "$YELLOW" "↑")"
-    tokens_part+="${row_sep}$(format_bucket "cache" "$session_cache_read_tokens" "$delta_cache_read" "$GRAY" "$CYAN" "↓")"
-    tokens_part+="${row_sep}$(format_bucket "out" "$session_out_tokens" "$delta_out" "$MAGENTA" "$MAGENTA")"
-fi
+# Tokens row — always render. format_bucket falls back to the dim "(+0)" idle
+# styling for zero values, so a fresh session shows `in 0 · cache↑ 0 · cache↓ 0 · out 0`.
+row_sep="  ${GRAY}·${RESET}  "
+tokens_part=$(format_bucket "in" "$session_in_tokens" "$delta_in" "$CYAN" "$CYAN")
+tokens_part+="${row_sep}$(format_bucket "cache" "$session_cache_write_tokens" "$delta_cache_write" "$GRAY" "$YELLOW" "↑")"
+tokens_part+="${row_sep}$(format_bucket "cache" "$session_cache_read_tokens" "$delta_cache_read" "$GRAY" "$CYAN" "↓")"
+tokens_part+="${row_sep}$(format_bucket "out" "$session_out_tokens" "$delta_out" "$MAGENTA" "$MAGENTA")"
 
 # Status (idle/working) — shown on model row
 if [[ "$claude_is_idle" == true ]]; then
