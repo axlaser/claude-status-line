@@ -20,26 +20,6 @@ showing context usage, git state, costs, rate limits, and more — all inside a 
 
 </div>
 
-### Preview
-
-```
-┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-┃ repo    │  ~/projects/my-app  ·  on main +12 -3 ~1                                  ┃
-┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫
-┃ model   │  Opus 4.7  ·  high effort  ·  ● ready                                     ┃
-┃ ────────┼───────────────────────────────────────────────────────────────────────────┃
-┃ context │  ██████████░░░░░░░░░░░░░░░░░░░░ 35% · 350K/1M                             ┃
-┃ ────────┼───────────────────────────────────────────────────────────────────────────┃
-┃ tokens  │  in 1.2K (+0)  ·  cache↑ 0 (+0)  ·  cache↓ 8.5K (+800)  ·  out 3.4K (+0)  ┃
-┃ ────────┼───────────────────────────────────────────────────────────────────────────┃
-┃ cost    │  $0.1234  ·  5 messages  ·  2m05s                                         ┃
-┃ ────────┼───────────────────────────────────────────────────────────────────────────┃
-┃ limits  │  5h 12% ⇣5% (3h)  ·  7d 4%                                                ┃
-┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
-```
-
----
-
 ## Features
 
 | Row | What it shows |
@@ -134,7 +114,7 @@ bash linux/install.sh      # Linux
      "statusLine": {
        "type": "command",
        "command": "~/.claude/statusline.sh",
-       "refreshInterval": 2
+       "refreshInterval": 1
      }
    }
    ```
@@ -163,7 +143,7 @@ bash linux/install.sh      # Linux
      "statusLine": {
        "type": "command",
        "command": "~/.claude/statusline.sh",
-       "refreshInterval": 2
+       "refreshInterval": 1
      }
    }
    ```
@@ -183,7 +163,7 @@ bash linux/install.sh      # Linux
      "statusLine": {
        "type": "command",
        "command": "powershell -NoProfile -File C:/Users/YOUR_USERNAME/.claude/statusline.ps1",
-       "refreshInterval": 2
+       "refreshInterval": 1
      }
    }
    ```
@@ -274,12 +254,12 @@ By default the status line updates after each assistant message. To also refresh
   "statusLine": {
     "type": "command",
     "command": "~/.claude/statusline.sh",
-    "refreshInterval": 2
+    "refreshInterval": 1
   }
 }
 ```
 
-This refreshes every 2 seconds (minimum 1).
+This refreshes every 1 second (minimum 1).
 
 ### Padding
 

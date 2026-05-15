@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Installs statusline.sh into ~/.claude and registers it in settings.json.
 set -e
 
 REPO="https://raw.githubusercontent.com/axlaser/claude-status-line/master/macos"
@@ -6,7 +7,7 @@ CLAUDE_DIR="$HOME/.claude"
 SCRIPT_PATH="$CLAUDE_DIR/statusline.sh"
 SETTINGS_PATH="$CLAUDE_DIR/settings.json"
 
-# ── Colors ────────────────────────────────────────────────────────────────────
+# --- Helpers ---
 RESET=$'\033[0m'
 BOLD=$'\033[1m'
 DIM=$'\033[2m'
@@ -23,7 +24,7 @@ warn() { printf "  ${YELLOW}${BOLD} !${RESET} %s\n" "$1"; }
 err()  { printf "  ${RED}${BOLD} x${RESET} %s\n" "$1"; }
 info() { printf "  ${DIM}   %s${RESET}\n" "$1"; }
 
-# ── Header ────────────────────────────────────────────────────────────────────
+# --- Header ---
 echo ""
 cat <<'BANNER'
  @@@@@@@  @@@        @@@@@@   @@@  @@@  @@@@@@@   @@@@@@@@
@@ -63,7 +64,7 @@ printf "\n  ${DIM}macOS Installer${RESET}\n"
 printf "  ${GRAY}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}\n"
 echo ""
 
-# ── Check for jq ─────────────────────────────────────────────────────────────
+# --- Dependency check ---
 step "Checking dependencies"
 if command -v jq &>/dev/null; then
     ok "jq found ($(jq --version 2>/dev/null))"
@@ -87,7 +88,7 @@ else
 fi
 echo ""
 
-# ── Install the script ──────────────────────────────────────────────────────
+# --- Install the script ---
 step "Installing status line script"
 mkdir -p "$CLAUDE_DIR"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -96,6 +97,7 @@ if [ -f "$SCRIPT_DIR/statusline.sh" ]; then
     ok "Copied from local repo"
 else
     tmp=$(mktemp "$CLAUDE_DIR/statusline.XXXXXX")
+    # Atomic rename so a failed curl never leaves a broken script.
     curl -fsSL "$REPO/statusline.sh" -o "$tmp" && mv "$tmp" "$SCRIPT_PATH" || { rm -f "$tmp"; exit 1; }
     ok "Downloaded from GitHub"
 fi
@@ -103,9 +105,9 @@ chmod +x "$SCRIPT_PATH"
 info "$SCRIPT_PATH"
 echo ""
 
-# ── Configure settings.json ──────────────────────────────────────────────────
+# --- Configure settings.json ---
 step "Configuring Claude Code settings"
-STATUSLINE_ENTRY='{"statusLine":{"type":"command","command":"~/.claude/statusline.sh","refreshInterval":2}}'
+STATUSLINE_ENTRY='{"statusLine":{"type":"command","command":"~/.claude/statusline.sh","refreshInterval":1}}'
 
 if [ -f "$SETTINGS_PATH" ]; then
     if jq -e '.statusLine' "$SETTINGS_PATH" &>/dev/null; then
@@ -133,7 +135,7 @@ else
 fi
 info "$SETTINGS_PATH"
 
-# ── Done ──────────────────────────────────────────────────────────────────────
+# --- Done ---
 echo ""
 printf "  ${GRAY}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}\n"
 printf "  ${GREEN}${BOLD}Done!${RESET} Restart Claude Code to activate.\n"

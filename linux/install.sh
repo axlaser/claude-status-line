@@ -6,7 +6,7 @@ CLAUDE_DIR="$HOME/.claude"
 SCRIPT_PATH="$CLAUDE_DIR/statusline.sh"
 SETTINGS_PATH="$CLAUDE_DIR/settings.json"
 
-# ── Colors ────────────────────────────────────────────────────────────────────
+# --- Colors & output helpers ---
 RESET=$'\033[0m'
 BOLD=$'\033[1m'
 DIM=$'\033[2m'
@@ -23,7 +23,7 @@ warn() { printf "  ${YELLOW}${BOLD} !${RESET} %s\n" "$1"; }
 err()  { printf "  ${RED}${BOLD} x${RESET} %s\n" "$1"; }
 info() { printf "  ${DIM}   %s${RESET}\n" "$1"; }
 
-# ── Header ────────────────────────────────────────────────────────────────────
+# --- Header ---
 echo ""
 cat <<'BANNER'
  @@@@@@@  @@@        @@@@@@   @@@  @@@  @@@@@@@   @@@@@@@@
@@ -63,7 +63,7 @@ printf "\n  ${DIM}Linux Installer${RESET}\n"
 printf "  ${GRAY}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}\n"
 echo ""
 
-# ── Detect package manager ───────────────────────────────────────────────────
+# --- Package manager detection & jq install ---
 detect_pkg_manager() {
     if command -v apt-get &>/dev/null; then
         echo "apt"
@@ -80,7 +80,7 @@ detect_pkg_manager() {
     fi
 }
 
-install_jq() {
+install_jq() {  # apk: Alpine containers often run as root without sudo
     local mgr=$1
     case "$mgr" in
         apt)    sudo apt-get update && sudo apt-get install -y jq ;;
@@ -91,7 +91,7 @@ install_jq() {
     esac
 }
 
-# ── Check for jq ─────────────────────────────────────────────────────────────
+# --- Check for jq ---
 step "Checking dependencies"
 if command -v jq &>/dev/null; then
     ok "jq found ($(jq --version 2>/dev/null))"
@@ -116,7 +116,8 @@ else
 fi
 echo ""
 
-# ── Install the script ──────────────────────────────────────────────────────
+# --- Install the script ---
+# Prefer sibling statusline.sh when run from a clone; else fetch via temp+mv so a failed curl can't leave a half-written script.
 step "Installing status line script"
 mkdir -p "$CLAUDE_DIR"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -132,9 +133,10 @@ chmod +x "$SCRIPT_PATH"
 info "$SCRIPT_PATH"
 echo ""
 
-# ── Configure settings.json ──────────────────────────────────────────────────
+# --- Configure settings.json ---
+# /dev/tty so read works when install.sh is piped via curl.
 step "Configuring Claude Code settings"
-STATUSLINE_ENTRY='{"statusLine":{"type":"command","command":"~/.claude/statusline.sh","refreshInterval":2}}'
+STATUSLINE_ENTRY='{"statusLine":{"type":"command","command":"~/.claude/statusline.sh","refreshInterval":1}}'
 
 if [ -f "$SETTINGS_PATH" ]; then
     if jq -e '.statusLine' "$SETTINGS_PATH" &>/dev/null; then
@@ -162,7 +164,7 @@ else
 fi
 info "$SETTINGS_PATH"
 
-# ── Done ──────────────────────────────────────────────────────────────────────
+# --- Done ---
 echo ""
 printf "  ${GRAY}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}\n"
 printf "  ${GREEN}${BOLD}Done!${RESET} Restart Claude Code to activate.\n"

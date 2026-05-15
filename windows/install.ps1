@@ -6,7 +6,7 @@ $claudeDir = "$env:USERPROFILE\.claude"
 $scriptPath = "$claudeDir\statusline.ps1"
 $settingsPath = "$claudeDir\settings.json"
 
-# ── Colors ────────────────────────────────────────────────────────────────────
+# --- Colors / log helpers ---
 $ESC    = [char]27
 $RESET  = "$ESC[0m"
 $BOLD   = "$ESC[1m"
@@ -23,7 +23,8 @@ function Warn([string]$msg)  { Write-Host "  ${YELLOW}${BOLD} !${RESET} $msg" }
 function Err([string]$msg)   { Write-Host "  ${RED}${BOLD} x${RESET} $msg" }
 function Info([string]$msg)  { Write-Host "  ${DIM}   $msg${RESET}" }
 
-# ── Header ────────────────────────────────────────────────────────────────────
+# --- Header / banner ---
+# NOTE: file must keep its UTF-8 BOM — without it, `iex` chokes on the here-string below (commit b7dae1f).
 Write-Host ""
 $banner = @"
  @@@@@@@  @@@        @@@@@@   @@@  @@@  @@@@@@@   @@@@@@@@
@@ -65,7 +66,8 @@ Write-Host "  ${DIM}Windows Installer${RESET}"
 Write-Host "  ${GRAY}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
 Write-Host ""
 
-# ── Install the script ────────────────────────────────────────────────────────
+# --- Install the script ---
+# $MyInvocation.MyCommand.Path is $null when run via `irm | iex` — that's how we detect the piped case.
 Step "Installing status line script"
 if (-not (Test-Path $claudeDir)) { New-Item -ItemType Directory -Path $claudeDir -Force | Out-Null }
 
@@ -81,7 +83,8 @@ if ($localScript -and (Test-Path $localScript)) {
 Info $scriptPath
 Write-Host ""
 
-# ── Configure settings.json ──────────────────────────────────────────────────
+# --- Configure settings.json ---
+# UTF-8 without BOM — Claude Code rejects a leading BOM on settings.json.
 Step "Configuring Claude Code settings"
 $cmd = "powershell -NoProfile -File `"$scriptPath`""
 $newEntry = [PSCustomObject]@{ type = "command"; command = $cmd; refreshInterval = 2 }
@@ -111,7 +114,7 @@ if (Test-Path $settingsPath) {
 }
 Info $settingsPath
 
-# ── Done ──────────────────────────────────────────────────────────────────────
+# --- Done ---
 Write-Host ""
 Write-Host "  ${GRAY}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
 Write-Host "  ${GREEN}${BOLD}Done!${RESET} Restart Claude Code to activate."

@@ -1,14 +1,12 @@
 #!/usr/bin/env bash
-# Claude Code statusLine script for Linux (bash/zsh)
-# Receives JSON on stdin from Claude Code, emits UTF-8 lines.
+# Claude Code statusLine for Linux: reads JSON on stdin, emits a box.
 
-# ── Dependency check ──────────────────────────────────────────────────────────
 if ! command -v jq &>/dev/null; then
     printf '\033[31m[statusline: jq not found — install via your package manager]\033[0m'
     exit 0
 fi
 
-# ── ANSI helpers ──────────────────────────────────────────────────────────────
+# --- ANSI helpers ---
 ESC=$'\033'
 RESET="${ESC}[0m"
 DIM="${ESC}[2m"
@@ -22,14 +20,14 @@ BLUE="${ESC}[34m"
 WHITE="${ESC}[37m"
 GRAY="${ESC}[90m"
 
-# ── Debug logging ─────────────────────────────────────────────────────────────
+# --- Debug logging ---
 LOG_PATH="$HOME/.claude/statusline-debug.log"
-log_msg() {
+log_msg() {  # silent on read-only HOME
     printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" >> "$LOG_PATH" 2>/dev/null
 }
 log_msg "=== invoked, BASH_VERSION=$BASH_VERSION PID=$$ ==="
 
-# ── Read stdin ────────────────────────────────────────────────────────────────
+# --- Read stdin ---
 raw=$(cat)
 log_msg "stdin bytes=${#raw}"
 log_msg "stdin head: ${raw:0:400}"
@@ -41,8 +39,7 @@ if ! printf '%s' "$raw" | jq -e '.' &>/dev/null; then
 fi
 log_msg "json parse: OK"
 
-# ── Helper: safe jq access ───────────────────────────────────────────────────
-jval() {
+jval() {  # jq path with default; treats null/absent as missing
     local result
     result=$(printf '%s' "$raw" | jq -r "$1 // empty" 2>/dev/null)
     if [[ -z "$result" || "$result" == "null" ]]; then
@@ -52,9 +49,7 @@ jval() {
     fi
 }
 
-# ── Helper: human-readable token count (e.g. 1234567 → "1.2M") ───────────────
-# Returns "0" for 0/empty so the tokens row can render zero buckets on startup.
-format_tokens() {
+format_tokens() {  # 1234567 -> "1.2M"; "0" for empty
     local n=$1
     [[ -z "$n" ]] && { printf '0'; return; }
     if (( n >= 1000000 )); then
@@ -66,23 +61,19 @@ format_tokens() {
     fi
 }
 
-# ── Helper: strip ANSI for visible-width calculation ─────────────────────────
-get_vis() {
+get_vis() {  # visible width; perl strips ANSI since ${#var} counts escape bytes
     local stripped
     stripped=$(printf '%s' "$1" | perl -pe 's/\e\[[0-9;]*[a-zA-Z]//g')
     printf '%d' "${#stripped}"
 }
 
-# ── Helper: repeat a character N times ────────────────────────────────────────
 repeat_char() {
     local ch="$1" count="$2" out=""
     for ((i = 0; i < count; i++)); do out+="$ch"; done
     printf '%s' "$out"
 }
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# 1. CWD — shortened relative to $HOME
-# ═══════════════════════════════════════════════════════════════════════════════
+# --- 1. CWD --- shorten under $HOME to ~/..., else .../parent/leaf
 session_id=$(jval '.session_id')
 cwd=$(jval '.workspace.current_dir')
 [[ -z "$cwd" ]] && cwd=$(jval '.cwd')
@@ -100,9 +91,7 @@ else
 fi
 cwd_part="${CYAN}${cwd}${RESET}"
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# 2. Model + Context window %
-# ═══════════════════════════════════════════════════════════════════════════════
+# --- 2. Model + context % --- thresholds 60/85 match the bar colors
 model_display=$(jval '.model.display_name')
 
 model_short="$model_display"
@@ -138,12 +127,7 @@ fi
 
 model_part="${MAGENTA}${model_short}${RESET}"
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# 2b. Context bar — colored progress bar for context-window usage.
-# Always rendered so the row is visible from the very first status-line refresh,
-# even if Claude Code hasn't populated `context_window` yet. Missing used_pct → 0%,
-# missing ctx_size → bar without the trailing tokens label.
-# ═══════════════════════════════════════════════════════════════════════════════
+# --- 2b. Context bar --- always rendered; missing used_pct -> 0%, missing ctx_size -> no token label
 bar_width=30
 bar_used_pct="${used_pct:-0}"
 bar_pct_int="${pct_int:-0}"
@@ -160,11 +144,17 @@ bar="${bar_color}${filled_chars}${RESET}${GRAY}${empty_chars}${RESET}"
 
 token_suffix=""
 if [[ -n "$ctx_size" ]]; then
-    used_tokens=$(awk "BEGIN { v=$bar_used_pct; if(v<0)v=0; if(v>100)v=100; printf \"%d\", int($ctx_size * v / 100) }")
+    # Prefer total_input_tokens; ctx_size * used_percentage rounds to 10K steps on 1M windows.
+    total_input_tokens=$(jval '.context_window.total_input_tokens')
+    if [[ -n "$total_input_tokens" ]]; then
+        used_tokens="$total_input_tokens"
+    else
+        used_tokens=$(awk "BEGIN { v=$bar_used_pct; if(v<0)v=0; if(v>100)v=100; printf \"%d\", int($ctx_size * v / 100) }")
+    fi
     if (( used_tokens >= 1000000 )); then
         used_lbl=$(awk "BEGIN { printf \"%.1fM\", $used_tokens / 1000000.0 }")
     elif (( used_tokens >= 1000 )); then
-        used_lbl=$(awk "BEGIN { printf \"%.0fK\", $used_tokens / 1000.0 }")
+        used_lbl=$(awk "BEGIN { printf \"%.1fK\", $used_tokens / 1000.0 }")
     else
         used_lbl="$used_tokens"
     fi
@@ -173,9 +163,7 @@ fi
 
 ctx_bar_part="${bar} ${bar_color}${bar_pct_int}%${RESET}${token_suffix}"
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# 3. Reasoning effort level
-# ═══════════════════════════════════════════════════════════════════════════════
+# --- 3. Reasoning effort ---
 effort_level=$(jval '.effort.level')
 effort_part=""
 if [[ -n "$effort_level" ]]; then
@@ -190,9 +178,7 @@ if [[ -n "$effort_level" ]]; then
     effort_part="${effort_color}${effort_level} effort${RESET}"
 fi
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# 4. Git status — branch + diff stats + untracked count
-# ═══════════════════════════════════════════════════════════════════════════════
+# --- 4. Git status --- branch + diff stats + untracked count
 git_part=""
 git_cwd=$(jval '.workspace.current_dir')
 [[ -z "$git_cwd" ]] && git_cwd="$PWD"
@@ -203,6 +189,7 @@ insertions=0
 deletions=0
 untracked=0
 
+# --no-optional-locks: don't contend with a user-run git; stale is fine here.
 if [[ -d "$git_dir" ]]; then
     branch=$(git --no-optional-locks -C "$git_cwd" rev-parse --abbrev-ref HEAD 2>/dev/null) || branch=""
     if [[ -n "$branch" ]]; then
@@ -226,9 +213,7 @@ if [[ -n "$branch" ]]; then
     (( untracked > 0 ))  && git_part+=" ${GRAY}~${untracked}${RESET}"
 fi
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# 5. Cost + Duration
-# ═══════════════════════════════════════════════════════════════════════════════
+# --- 5. Cost + duration ---
 cost_part=""
 total_cost=$(jval '.cost.total_cost_usd')
 [[ -z "$total_cost" ]] && total_cost=$(jval '.total_cost_usd')
@@ -256,9 +241,9 @@ if [[ -n "$duration_ms" ]]; then
     duration_part="${WHITE}${d_str}${RESET}"
 fi
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# 5b/5c. Transcript-derived data: message count, idle/working, cumulative tokens
-# ═══════════════════════════════════════════════════════════════════════════════
+# --- 5b/5c. Transcript-derived: messages, idle/working, cumulative tokens ---
+# Cached by mtime in $TMPDIR. Even on cache miss we read previous values to
+# keep working_start_out_tokens stable and compute deltas.
 msg_count=""
 claude_is_idle=true
 session_in_tokens=0
@@ -286,8 +271,7 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
     prev_cache_read=0
     prev_out=0
 
-    # Read previous cache (even on miss) to preserve workingStartOutTokens and compute deltas
-    if [[ -n "$cache_path" && -f "$cache_path" ]]; then
+    if [[ -n "$cache_path" && -f "$cache_path" ]]; then  # read prev even on miss (for deltas + working_start)
         IFS='|' read -r c_mt c_msg c_idle c_in c_out c_has c_wstart c_cwrite c_cread c_din c_dout c_dcw c_dcr < "$cache_path"
         [[ -n "$c_wstart" ]] && prev_working_start="$c_wstart"
         [[ -n "$c_in" ]] && prev_in="$c_in"
@@ -314,11 +298,8 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
 
     if [[ "$use_cache" != true ]]; then
         if [[ -s "$transcript_path" ]]; then
-            # Real user messages = user-type lines that are NOT synthetic. We filter
-            # per-line with chained `grep -v` rather than summing independent counters;
-            # the old approach over-subtracted because markers like `<command-name>`
-            # and `"toolUseResult"` can appear on the same line (e.g., a tool result
-            # quoting a source file that contains them).
+            # Real user msgs = user-type lines that aren't synthetic. Chained grep -v
+            # per-line; counting markers separately over-subtracts when they co-occur.
             msg_count=$(grep -E '"type"[[:space:]]*:[[:space:]]*"user"' "$transcript_path" 2>/dev/null \
                 | grep -v '"toolUseResult"' \
                 | grep -Ev '"isMeta"[[:space:]]*:[[:space:]]*true' \
@@ -327,11 +308,8 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
                 | wc -l | tr -d ' ')
             [[ -z "$msg_count" ]] && msg_count=0
 
-            # Idle vs working: scan from end.
-            # Skip synthetic user entries so the latest REAL message decides:
-            #   - tool results, meta/caveat entries, slash-command invocations,
-            #   - slash-command stdout/stderr (<local-command-*>) — without this the
-            #     detector stays stuck on "working" after running e.g. /effort.
+            # Idle vs working: scan from end, skip synthetic entries (without
+            # <local-command-*> the detector stays "working" after slash commands).
             claude_is_idle=true
             while IFS= read -r ln; do
                 [[ "$ln" == *"toolUseResult"* ]] && continue
@@ -352,7 +330,7 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
                 fi
             done < <(tac "$transcript_path" 2>/dev/null)
 
-            # Cumulative tokens via awk (much faster than bash loop for large files)
+            # Cumulative tokens via awk (faster than bash for large files).
             read -r session_in_tokens session_cache_write_tokens session_cache_read_tokens session_out_tokens has_any < <(
                 awk '
                     /"type"[[:space:]]*:[[:space:]]*"assistant"/ {
@@ -368,7 +346,6 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
             )
             has_session_tokens="$has_any"
 
-            # Compute deltas from previous cached values
             delta_in=$(( session_in_tokens - prev_in ))
             delta_out=$(( session_out_tokens - prev_out ))
             delta_cache_write=$(( session_cache_write_tokens - prev_cache_write ))
@@ -378,7 +355,6 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
             (( delta_cache_write < 0 )) && delta_cache_write=0
             (( delta_cache_read < 0 )) && delta_cache_read=0
 
-            # Working start tokens
             if [[ "$claude_is_idle" == true ]]; then
                 working_start_out_tokens=-1
             elif (( prev_working_start >= 0 )); then
@@ -387,8 +363,7 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
                 working_start_out_tokens=$session_out_tokens
             fi
 
-            # Write cache (13 fields)
-            if [[ -n "$cache_path" ]]; then
+            if [[ -n "$cache_path" ]]; then  # cache: 13 fields
                 printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s' \
                     "$transcript_mt" "$msg_count" "$claude_is_idle" \
                     "$session_in_tokens" "$session_out_tokens" "$has_session_tokens" \
@@ -400,9 +375,7 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
     fi
 fi
 
-# Helper: format a token bucket with optional delta
-# Args: label, value, delta, idle_color, active_color [, arrow]
-format_bucket() {
+format_bucket() {  # label, value, delta, idle_color, active_color [, arrow]
     local label="$1" value="$2" delta="$3" idle_color="$4" active_color="$5" arrow="$6"
     local lbl d_lbl arrow_part=""
     lbl=$(format_tokens "$value")
@@ -416,15 +389,14 @@ format_bucket() {
     fi
 }
 
-# Tokens row — always render. format_bucket falls back to the dim "(+0)" idle
-# styling for zero values, so a fresh session shows `in 0 · cache↑ 0 · cache↓ 0 · out 0`.
+# Tokens row -- always render; zero values get the dim "(+0)" idle styling.
 row_sep="  ${GRAY}·${RESET}  "
 tokens_part=$(format_bucket "in" "$session_in_tokens" "$delta_in" "$CYAN" "$CYAN")
 tokens_part+="${row_sep}$(format_bucket "cache" "$session_cache_write_tokens" "$delta_cache_write" "$GRAY" "$YELLOW" "↑")"
 tokens_part+="${row_sep}$(format_bucket "cache" "$session_cache_read_tokens" "$delta_cache_read" "$GRAY" "$CYAN" "↓")"
 tokens_part+="${row_sep}$(format_bucket "out" "$session_out_tokens" "$delta_out" "$MAGENTA" "$MAGENTA")"
 
-# Status (idle/working) — shown on model row
+# Status (idle/working) for the model row.
 if [[ "$claude_is_idle" == true ]]; then
     status_dot="${GREEN}●${RESET}"
     status_label="${WHITE}ready${RESET}"
@@ -440,7 +412,7 @@ else
     fi
 fi
 
-# Message count — shown on cost row
+# Message count for the cost row.
 msg_part=""
 if [[ -n "$msg_count" && "$msg_count" -gt 0 ]] 2>/dev/null; then
     msg_label="messages"
@@ -448,10 +420,8 @@ if [[ -n "$msg_count" && "$msg_count" -gt 0 ]] 2>/dev/null; then
     msg_part="${WHITE}${msg_count}${RESET} ${DIM}${msg_label}${RESET}"
 fi
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# 6. Rate limits (5h + 7d)
-# ═══════════════════════════════════════════════════════════════════════════════
-format_duration() {
+# --- 6. Rate limits (5h + 7d) ---
+format_duration() {  # secs -> 45m / 2h / 2h30m / 3d / 3d4h
     local secs=$1
     (( secs <= 0 )) && return
     if (( secs < 3600 )); then
@@ -467,6 +437,8 @@ format_duration() {
     fi
 }
 
+# Render one window. Burn arrow: usage % vs on-pace % (elapsed/window).
+# Up = burning faster than reset; tiny diffs (<1%) are hidden.
 format_window() {
     local label=$1 pct_val=$2 resets_at=$3 window_secs=$4
     [[ -z "$pct_val" ]] && return
@@ -521,9 +493,7 @@ if [[ -n "$five_pct" || -n "$seven_pct" ]]; then
     fi
 fi
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# 7. Agent / subagent status
-# ═══════════════════════════════════════════════════════════════════════════════
+# --- 7. Agent / subagent status ---
 agent_part=""
 agent_name=$(jval '.agent.name')
 if [[ -n "$agent_name" ]]; then
@@ -543,10 +513,75 @@ if [[ -n "$agent_name" ]]; then
     agent_part+="  ${agent_compact}"
 fi
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# Assemble — full box with labeled rows grouped into sections
-# ═══════════════════════════════════════════════════════════════════════════════
+# --- 7b. Subagent context --- one row per ACTIVE Task subagent.
+# Active = last assistant entry stop_reason != "end_turn". Transcripts:
+# <project>/<sessionId>/subagents/agent-*.jsonl (+ sibling .meta.json with agentType).
+declare -a subagent_contents=()
+if [[ -n "$session_id" && -n "$transcript_path" ]]; then
+    project_dir=$(dirname "$transcript_path")
+    session_base=$(basename "$transcript_path" .jsonl)
+    subagents_dir="$project_dir/$session_base/subagents"
+    if [[ -d "$subagents_dir" ]]; then
+        for sa_file in "$subagents_dir"/agent-*.jsonl; do
+            [[ -f "$sa_file" ]] || continue
 
+            sa_last=$(jq -c 'select(.type == "assistant")' "$sa_file" 2>/dev/null | tail -1)
+            [[ -z "$sa_last" ]] && continue
+            sa_fields=$(printf '%s' "$sa_last" | jq -r '"\(.message.stop_reason // "")|\(.message.usage.input_tokens // 0)|\(.message.usage.cache_creation_input_tokens // 0)|\(.message.usage.cache_read_input_tokens // 0)|\(.message.model // "")"' 2>/dev/null)
+            [[ -z "$sa_fields" ]] && continue
+            IFS='|' read -r sa_sr sa_in sa_cw sa_cr sa_model <<< "$sa_fields"
+
+            [[ "$sa_sr" == "end_turn" ]] && continue
+
+            sa_used=$((sa_in + sa_cw + sa_cr))
+
+            sa_ctx_size=200000
+            case "$sa_model" in
+                *"[1m]"*|*"-1m"*) sa_ctx_size=1000000 ;;
+            esac
+
+            sa_base=$(basename "$sa_file" .jsonl)
+            sa_meta="$subagents_dir/${sa_base}.meta.json"
+            agent_display="${sa_base#agent-}"
+            if [[ -f "$sa_meta" ]]; then
+                meta_type=$(jq -r '.agentType // ""' "$sa_meta" 2>/dev/null)
+                [[ -n "$meta_type" ]] && agent_display="$meta_type"
+            fi
+
+            sa_pct_raw=$(awk "BEGIN { p = $sa_used * 100.0 / $sa_ctx_size; if (p<0) p=0; if (p>100) p=100; print p }")
+            sa_pct_int=$(printf '%.0f' "$sa_pct_raw")
+            if   (( sa_pct_int >= 85 )); then sa_color="$RED"
+            elif (( sa_pct_int >= 60 )); then sa_color="$YELLOW"
+            else                              sa_color="$GREEN"
+            fi
+            sa_filled=$(awk "BEGIN { printf \"%d\", int($bar_width * $sa_pct_raw / 100 + 0.5) }")
+            (( sa_filled > bar_width )) && sa_filled=$bar_width
+            (( sa_filled < 0 )) && sa_filled=0
+            sa_empty=$((bar_width - sa_filled))
+            sa_filled_chars=$(repeat_char "█" "$sa_filled")
+            sa_empty_chars=$(repeat_char "░" "$sa_empty")
+            sa_bar="${sa_color}${sa_filled_chars}${RESET}${GRAY}${sa_empty_chars}${RESET}"
+
+            if   (( sa_used >= 1000000 )); then sa_used_lbl=$(awk "BEGIN { printf \"%.1fM\", $sa_used / 1000000.0 }")
+            elif (( sa_used >= 1000 )); then    sa_used_lbl=$(awk "BEGIN { printf \"%.1fK\", $sa_used / 1000.0 }")
+            else                                sa_used_lbl="$sa_used"
+            fi
+            if (( sa_ctx_size >= 1000000 )); then
+                sa_ctx_lbl=$(awk "BEGIN { printf \"%.0fM\", $sa_ctx_size / 1000000.0 }")
+            else
+                sa_ctx_lbl=$(awk "BEGIN { printf \"%.0fK\", $sa_ctx_size / 1000.0 }")
+            fi
+
+            sa_sep="  ${GRAY}·${RESET}  "
+            sa_working="${YELLOW}○ working${RESET}"
+            sa_content="${sa_bar} ${sa_color}${sa_pct_int}%${RESET}${sa_sep}${WHITE}${sa_used_lbl}${RESET}${GRAY}/${sa_ctx_lbl}${RESET}${sa_sep}${BLUE}${agent_display}${RESET}${sa_sep}${sa_working}"
+            subagent_contents+=("$sa_content")
+        done
+    fi
+fi
+
+# --- Assemble box ---
+# (section, label, content) tuples. Empty content is skipped; sections are split by ┣┫.
 LABEL_W=7
 
 # Compose merged rows
@@ -566,7 +601,6 @@ for ((j=0; j<${#parts[@]}; j++)); do
     cost_row+="${parts[$j]}"
 done
 
-# Merge path + git into one row
 path_row="$cwd_part"
 path_label="project"
 if [[ -n "$git_part" ]]; then
@@ -574,18 +608,19 @@ if [[ -n "$git_part" ]]; then
     path_label="repo"
 fi
 
-# Row specs: section, label, content
 declare -a row_sections=() row_labels=() row_contents=() rows=() row_secs=()
 
 row_sections+=(0); row_labels+=("$path_label"); row_contents+=("$path_row")
 row_sections+=(0); row_labels+=("agent");   row_contents+=("$agent_part")
 row_sections+=(1); row_labels+=("model");   row_contents+=("$model_row")
 row_sections+=(1); row_labels+=("context"); row_contents+=("$ctx_bar_part")
+for sa_content in "${subagent_contents[@]}"; do
+    row_sections+=(1); row_labels+=("agent"); row_contents+=("$sa_content")
+done
 row_sections+=(1); row_labels+=("tokens");  row_contents+=("$tokens_part")
 row_sections+=(1); row_labels+=("cost");    row_contents+=("$cost_row")
 row_sections+=(1); row_labels+=("limits");  row_contents+=("$rate_part")
 
-# Build rows with labels — skip empty content
 for i in "${!row_sections[@]}"; do
     content="${row_contents[$i]}"
     [[ -z "$content" ]] && continue
@@ -598,20 +633,18 @@ for i in "${!row_sections[@]}"; do
     row_secs+=("${row_sections[$i]}")
 done
 
-# Find max visible width
+# 30 = bar width, the minimum row width.
 max_inner=30
 for r in "${rows[@]}"; do
     vl=$(get_vis "$r")
     (( vl > max_inner )) && max_inner=$vl
 done
 
-# Build horizontal rules
 heavy_horiz=$(repeat_char "━" "$max_inner")
 top_rule="${GRAY}┏${heavy_horiz}┓${RESET}"
 sec_div_rule="${GRAY}┣${heavy_horiz}┫${RESET}"
 bot_rule="${GRAY}┗${heavy_horiz}┛${RESET}"
 
-# Inter-row divider with cross junction
 left_dash_count=$((LABEL_W + 1))
 right_dash_count=$((max_inner - LABEL_W - 4))
 (( right_dash_count < 1 )) && right_dash_count=1
@@ -619,7 +652,6 @@ left_dashes=$(repeat_char "─" "$left_dash_count")
 right_dashes=$(repeat_char "─" "$right_dash_count")
 row_div_rule="${GRAY}┃${RESET} ${GRAY}${left_dashes}${RESET}${GRAY}┼${RESET}${GRAY}${right_dashes}${RESET} ${GRAY}┃${RESET}"
 
-# Emit output
 output="$top_rule"
 prev_sec=-1
 first=true

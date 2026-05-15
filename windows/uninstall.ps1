@@ -1,11 +1,11 @@
 ﻿#Requires -Version 5.1
-# Claude Code Status Line — Uninstaller for Windows
+# Uninstaller: removes ~/.claude/statusline.ps1 and the statusLine key from settings.json.
 
 $claudeDir = "$env:USERPROFILE\.claude"
 $scriptPath = "$claudeDir\statusline.ps1"
 $settingsPath = "$claudeDir\settings.json"
 
-# ── Colors ────────────────────────────────────────────────────────────────────
+# ── Colors / log helpers ──────────────────────────────────────────────────────
 $ESC    = [char]27
 $RESET  = "$ESC[0m"
 $BOLD   = "$ESC[1m"
@@ -21,13 +21,13 @@ function Ok([string]$msg)    { Write-Host "  ${GREEN}${BOLD} +${RESET} $msg" }
 function Warn([string]$msg)  { Write-Host "  ${YELLOW}${BOLD} !${RESET} $msg" }
 function Info([string]$msg)  { Write-Host "  ${DIM}   $msg${RESET}" }
 
-# ── Header ────────────────────────────────────────────────────────────────────
+# --- Header ---
 Write-Host ""
 Write-Host "  ${DIM}claude-status-line $([char]0x00B7) Uninstaller${RESET}"
 Write-Host "  ${GRAY}$([string][char]0x2501 * 43)${RESET}"
 Write-Host ""
 
-# ── Remove the script ─────────────────────────────────────────────────────────
+# --- Remove the script ---
 Step "Removing status line script"
 if (Test-Path $scriptPath) {
     Remove-Item $scriptPath -Force
@@ -37,7 +37,8 @@ if (Test-Path $scriptPath) {
 }
 Write-Host ""
 
-# ── Remove from settings.json ────────────────────────────────────────────────
+# --- Remove from settings.json ---
+# UTF-8 without BOM — Claude Code rejects a leading BOM on settings.json.
 Step "Updating Claude Code settings"
 if (Test-Path $settingsPath) {
     try {
@@ -61,7 +62,7 @@ if (Test-Path $settingsPath) {
     Warn "settings.json not found"
 }
 
-# ── Done ──────────────────────────────────────────────────────────────────────
+# --- Done ---
 Write-Host ""
 Write-Host "  ${GRAY}$([string][char]0x2501 * 43)${RESET}"
 Write-Host "  ${GREEN}${BOLD}Done!${RESET} Restart Claude Code to use the default status bar."

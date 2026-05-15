@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
+# Removes statusline.sh and strips the statusLine entry from settings.json.
 set -e
 
 CLAUDE_DIR="$HOME/.claude"
 SCRIPT_PATH="$CLAUDE_DIR/statusline.sh"
 SETTINGS_PATH="$CLAUDE_DIR/settings.json"
 
-# ── Colors ────────────────────────────────────────────────────────────────────
+# --- Helpers ---
 RESET=$'\033[0m'
 BOLD=$'\033[1m'
 DIM=$'\033[2m'
@@ -20,13 +21,13 @@ ok()   { printf "  ${GREEN}${BOLD} +${RESET} %s\n" "$1"; }
 warn() { printf "  ${YELLOW}${BOLD} !${RESET} %s\n" "$1"; }
 info() { printf "  ${DIM}   %s${RESET}\n" "$1"; }
 
-# ── Header ────────────────────────────────────────────────────────────────────
+# --- Header ---
 echo ""
 printf "  ${DIM}claude-status-line · Uninstaller${RESET}\n"
 printf "  ${GRAY}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}\n"
 echo ""
 
-# ── Remove the script ─────────────────────────────────────────────────────────
+# --- Remove the script ---
 step "Removing status line script"
 if [ -f "$SCRIPT_PATH" ]; then
     rm "$SCRIPT_PATH"
@@ -36,7 +37,7 @@ else
 fi
 echo ""
 
-# ── Remove from settings.json ────────────────────────────────────────────────
+# --- Remove from settings.json ---
 step "Updating Claude Code settings"
 if [ -f "$SETTINGS_PATH" ]; then
     if command -v jq &>/dev/null; then
@@ -60,7 +61,7 @@ else
     warn "settings.json not found"
 fi
 
-# ── Done ──────────────────────────────────────────────────────────────────────
+# --- Done ---
 echo ""
 printf "  ${GRAY}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}\n"
 printf "  ${GREEN}${BOLD}Done!${RESET} Restart Claude Code to use the default status bar.\n"
