@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 # Claude Code Status Line — Installer for Windows
 
 $repo = "https://raw.githubusercontent.com/axlaser/claude-status-line/master/windows"

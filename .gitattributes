@@ -1,0 +1,13 @@
+# Windows PowerShell scripts: CRLF line endings. The files are committed with a
+# UTF-8 BOM as part of their content — Windows PowerShell 5.1 otherwise decodes
+# BOM-less files as Windows-1252 and corrupts non-ASCII characters inside string
+# literals (which breaks parsing). Do not strip the BOM when editing.
+*.ps1 text eol=crlf
+
+# Unix shell scripts must keep LF, or shebangs break on Linux/macOS.
+*.sh  text eol=lf
+
+*.md   text
+*.json text
+
+*.png binary

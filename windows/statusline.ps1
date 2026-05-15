@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 # Claude Code statusLine script for Windows PowerShell
 # Receives JSON on stdin from Claude Code, emits a single UTF-8 line.
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)

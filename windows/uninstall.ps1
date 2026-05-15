@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 # Claude Code Status Line — Uninstaller for Windows
 
 $claudeDir = "$env:USERPROFILE\.claude"
