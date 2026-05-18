@@ -264,12 +264,12 @@ if ($transcriptPath -and (Test-Path -LiteralPath $transcriptPath -ErrorAction Si
                     $sessionInTokens         = [long]$parts[5]
                     $sessionOutTokens        = [long]$parts[6]
                     $workingStartOutTokens   = $prevWorkingStart
-                    $sessionCacheWriteTokens = [long]$parts[7]
-                    $sessionCacheReadTokens  = [long]$parts[8]
-                    $deltaIn                 = [long]$parts[9]
-                    $deltaOut                = [long]$parts[10]
-                    $deltaCacheWrite         = [long]$parts[11]
-                    $deltaCacheRead          = [long]$parts[12]
+                    $sessionCacheWriteTokens = [long]$parts[8]
+                    $sessionCacheReadTokens  = [long]$parts[9]
+                    $deltaIn                 = [long]$parts[10]
+                    $deltaOut                = [long]$parts[11]
+                    $deltaCacheWrite         = [long]$parts[12]
+                    $deltaCacheRead          = [long]$parts[13]
                     $useCache = $true
                 }
             }
