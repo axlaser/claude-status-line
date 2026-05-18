@@ -5,6 +5,7 @@ $repo = "https://raw.githubusercontent.com/axlaser/claude-status-line/master/win
 $claudeDir = "$env:USERPROFILE\.claude"
 $scriptPath = "$claudeDir\statusline.ps1"
 $settingsPath = "$claudeDir\settings.json"
+$notifyPath = "$claudeDir\notify.ps1"
 
 # --- Colors / log helpers ---
 $ESC    = [char]27
@@ -138,6 +139,82 @@ if (Test-Path $settingsPath) {
     Ok "Created settings.json"
 }
 Info $settingsPath
+
+# --- Install notification script ---
+Write-Host ""
+Step "Installing notification script"
+$localNotify = if ($myPath) { Join-Path (Split-Path -Parent $myPath) "notify.ps1" } else { $null }
+if ($localNotify -and (Test-Path $localNotify)) {
+    Copy-Item $localNotify -Destination $notifyPath -Force
+    Ok "Copied from local repo"
+} else {
+    try {
+        Invoke-WebRequest -Uri "$repo/notify.ps1" -OutFile $notifyPath -UseBasicParsing -ErrorAction Stop
+        Ok "Downloaded from GitHub"
+    } catch {
+        Err "Download failed: $_"
+        Err "Run the installer from a local clone instead."
+        exit 1
+    }
+}
+Info "$notifyPath ($(HumanSize (Get-Item $notifyPath).Length))"
+
+# --- Configure notification hooks ---
+Write-Host ""
+Step "Sound notifications"
+Info "Plays a sound when Claude needs permission or finishes responding."
+
+$existing = Get-Content $settingsPath -Raw -Encoding UTF8 | ConvertFrom-Json
+
+$hasNotifyHooks = $false
+if ($existing.hooks -and $existing.hooks.PermissionRequest) {
+    foreach ($entry in $existing.hooks.PermissionRequest) {
+        if ($entry.hooks) {
+            foreach ($h in $entry.hooks) {
+                if ($h.command -and $h.command.Contains('notify.ps1')) {
+                    $hasNotifyHooks = $true
+                    break
+                }
+            }
+        }
+        if ($hasNotifyHooks) { break }
+    }
+}
+
+if ($hasNotifyHooks) {
+    Ok "Already configured"
+} else {
+    Write-Host ""
+    $answer = Read-Host "  ${YELLOW}${BOLD} ?${RESET} Enable sound notifications? (${GREEN}y${RESET}/${RED}n${RESET})"
+    if ($answer -match '^[Yy]$') {
+        $notifyCmd = "powershell -NoProfile -File `"$notifyPath`""
+
+        $permEntry = [PSCustomObject]@{
+            hooks = @(
+                [PSCustomObject]@{ type = "command"; command = "$notifyCmd permission"; async = $true }
+            )
+        }
+        $stopEntry = [PSCustomObject]@{
+            hooks = @(
+                [PSCustomObject]@{ type = "command"; command = "$notifyCmd stop"; async = $true }
+            )
+        }
+
+        if (-not $existing.hooks) {
+            $existing | Add-Member -NotePropertyName 'hooks' -NotePropertyValue ([PSCustomObject]@{}) -Force
+        }
+        $existing.hooks | Add-Member -NotePropertyName 'PermissionRequest' -NotePropertyValue @($permEntry) -Force
+        $existing.hooks | Add-Member -NotePropertyName 'Stop' -NotePropertyValue @($stopEntry) -Force
+
+        $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+        $tmpPath = "$settingsPath.tmp"
+        [System.IO.File]::WriteAllText($tmpPath, ($existing | ConvertTo-Json -Depth 10), $utf8NoBom)
+        Move-Item $tmpPath $settingsPath -Force
+        Ok "Notifications enabled"
+    } else {
+        Info "Skipped - run the installer again to enable later"
+    }
+}
 
 # --- Done ---
 Write-Host ""

@@ -4,6 +4,7 @@
 $claudeDir = "$env:USERPROFILE\.claude"
 $scriptPath = "$claudeDir\statusline.ps1"
 $settingsPath = "$claudeDir\settings.json"
+$notifyPath = "$claudeDir\notify.ps1"
 
 # ── Colors / log helpers ──────────────────────────────────────────────────────
 $ESC    = [char]27
@@ -62,6 +63,65 @@ if (Test-Path $settingsPath) {
     }
 } else {
     Warn "settings.json not found"
+}
+
+# --- Remove notification script ---
+Write-Host ""
+Step "Removing notification script"
+if (Test-Path $notifyPath) {
+    $sz = HumanSize (Get-Item $notifyPath).Length
+    Remove-Item $notifyPath -Force
+    Ok "Deleted $notifyPath ($sz)"
+} else {
+    Info "Notification script not found (not installed)"
+}
+
+# --- Remove notification hooks ---
+if (Test-Path $settingsPath) {
+    try {
+        $existing = Get-Content $settingsPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($existing.hooks) {
+            $modified = $false
+            foreach ($eventName in @('PermissionRequest', 'Stop')) {
+                $eventHooks = $existing.hooks.$eventName
+                if ($eventHooks) {
+                    $kept = [System.Collections.ArrayList]::new()
+                    foreach ($entry in $eventHooks) {
+                        $hasNotify = $false
+                        if ($entry.hooks) {
+                            foreach ($h in $entry.hooks) {
+                                if ($h.command -and $h.command.Contains('notify.ps1')) {
+                                    $hasNotify = $true
+                                    break
+                                }
+                            }
+                        }
+                        if (-not $hasNotify) { [void]$kept.Add($entry) }
+                    }
+                    if ($kept.Count -gt 0) {
+                        $existing.hooks | Add-Member -NotePropertyName $eventName -NotePropertyValue @($kept) -Force
+                    } else {
+                        $existing.hooks.PSObject.Properties.Remove($eventName)
+                    }
+                    $modified = $true
+                }
+            }
+            if (($existing.hooks.PSObject.Properties | Measure-Object).Count -eq 0) {
+                $existing.PSObject.Properties.Remove('hooks')
+            }
+            if ($modified) {
+                Write-Host ""
+                Step "Removing notification hooks"
+                $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+                $tmpPath = "$settingsPath.tmp"
+                [System.IO.File]::WriteAllText($tmpPath, ($existing | ConvertTo-Json -Depth 10), $utf8NoBom)
+                Move-Item $tmpPath $settingsPath -Force
+                Ok "Removed notification hooks from settings.json"
+            }
+        }
+    } catch {
+        Warn "Could not update hooks in settings.json - please remove notification hooks manually"
+    }
 }
 
 # --- Clean up temp state files ---
