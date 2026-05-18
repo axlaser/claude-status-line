@@ -6,6 +6,7 @@ REPO="https://raw.githubusercontent.com/axlaser/claude-status-line/master/macos"
 CLAUDE_DIR="$HOME/.claude"
 SCRIPT_PATH="$CLAUDE_DIR/statusline.sh"
 SETTINGS_PATH="$CLAUDE_DIR/settings.json"
+NOTIFY_PATH="$CLAUDE_DIR/notify.sh"
 
 # --- Helpers ---
 RESET=$'\033[0m'
@@ -150,6 +151,56 @@ else
     fi
 fi
 info "$SETTINGS_PATH"
+
+# --- Install notification script ---
+echo ""
+step "Installing notification script"
+if [[ -n "$SCRIPT_DIR" && -f "$SCRIPT_DIR/notify.sh" ]]; then
+    tmp=$(mktemp "$CLAUDE_DIR/notify.XXXXXX")
+    cp "$SCRIPT_DIR/notify.sh" "$tmp" && mv "$tmp" "$NOTIFY_PATH" || { rm -f "$tmp"; exit 1; }
+    ok "Copied from local repo"
+else
+    tmp=$(mktemp "$CLAUDE_DIR/notify.XXXXXX")
+    curl -fsSL "$REPO/notify.sh" -o "$tmp" && mv "$tmp" "$NOTIFY_PATH" || { rm -f "$tmp"; exit 1; }
+    ok "Downloaded from GitHub"
+fi
+chmod +x "$NOTIFY_PATH"
+info "$NOTIFY_PATH ($(human_size $(file_bytes "$NOTIFY_PATH")))"
+
+# --- Configure notification hooks ---
+echo ""
+step "Sound notifications"
+info "Plays a sound when Claude needs permission or finishes responding."
+if [ -f "$SETTINGS_PATH" ] && jq -e '
+  (.hooks.PermissionRequest // []) | any(any(.hooks[]?; .command? | contains("notify.sh")))
+' "$SETTINGS_PATH" &>/dev/null; then
+    ok "Already configured"
+else
+    echo ""
+    read -rp "  ${YELLOW}${BOLD} ?${RESET} Enable sound notifications? (${GREEN}y${RESET}/${RED}n${RESET}) " answer </dev/tty
+    if [[ "$answer" =~ ^[Yy]$ ]]; then
+        tmp=$(mktemp "$SETTINGS_PATH.XXXXXX")
+        if jq '
+          .hooks = (.hooks // {}) |
+          .hooks.PermissionRequest = (
+            [(.hooks.PermissionRequest // [])[] | select(any(.hooks[]?; .command? | contains("notify.sh")) | not)]
+            + [{"hooks":[{"type":"command","command":"~/.claude/notify.sh permission","async":true}]}]
+          ) |
+          .hooks.Stop = (
+            [(.hooks.Stop // [])[] | select(any(.hooks[]?; .command? | contains("notify.sh")) | not)]
+            + [{"hooks":[{"type":"command","command":"~/.claude/notify.sh stop","async":true}]}]
+          )
+        ' "$SETTINGS_PATH" > "$tmp"; then
+            mv "$tmp" "$SETTINGS_PATH"
+            ok "Notifications enabled"
+        else
+            rm -f "$tmp"
+            warn "Failed to configure hooks (jq error)"
+        fi
+    else
+        info "Skipped — run the installer again to enable later"
+    fi
+fi
 
 # --- Done ---
 echo ""
