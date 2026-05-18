@@ -66,6 +66,41 @@ function Get-SubagentCtxSize([string]$model) {
     return 200000
 }
 
+# --- Output cache: skip re-render when all inputs are unchanged ---
+$_ocSessionId = Get-Val $json @('session_id')
+$_ocPath = if ($_ocSessionId) { Join-Path $env:TEMP "statusline-oc-$_ocSessionId.txt" } else { $null }
+$_ocTmt = ''
+$_ocTranscriptPath = Get-Val $json @('transcript_path')
+if ($_ocTranscriptPath -and (Test-Path -LiteralPath $_ocTranscriptPath -ErrorAction SilentlyContinue)) {
+    $_ocTmt = (Get-Item -LiteralPath $_ocTranscriptPath).LastWriteTimeUtc.Ticks
+}
+$_ocGmt = ''
+$_ocGitCwd = Get-Val $json @('workspace','current_dir')
+if (-not $_ocGitCwd) { $_ocGitCwd = (Get-Location).Path }
+$_ocGidx = Join-Path $_ocGitCwd '.git\index'
+if (Test-Path -LiteralPath $_ocGidx -ErrorAction SilentlyContinue) {
+    $_ocGmt = (Get-Item -LiteralPath $_ocGidx -Force).LastWriteTimeUtc.Ticks
+}
+$_ocSmt = ''
+if ($_ocTranscriptPath) {
+    $_ocSdir = Join-Path (Split-Path -Parent $_ocTranscriptPath) (Join-Path ([System.IO.Path]::GetFileNameWithoutExtension($_ocTranscriptPath)) 'subagents')
+    if (Test-Path -LiteralPath $_ocSdir -ErrorAction SilentlyContinue) {
+        $_ocSmt = (Get-Item -LiteralPath $_ocSdir -Force).LastWriteTimeUtc.Ticks
+    }
+}
+$_ocNowBucket = [int]([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() / 5)
+$_ocKey = "${raw}|${_ocTmt}|${_ocGmt}|${_ocSmt}|${_ocNowBucket}"
+
+if ($_ocPath -and (Test-Path -LiteralPath $_ocPath -ErrorAction SilentlyContinue)) {
+    $ocLines = [System.IO.File]::ReadAllLines($_ocPath)
+    if ($ocLines.Count -ge 2 -and $ocLines[0] -eq $_ocKey) {
+        Write-Log "output cache HIT"
+        $cachedOutput = ($ocLines | Select-Object -Skip 1) -join "`n"
+        Write-Host $cachedOutput -NoNewline
+        exit 0
+    }
+}
+
 # --- 1. CWD ---
 $sessionId = Get-Val $json @('session_id')
 $cwd = Get-Val $json @('workspace','current_dir')
@@ -636,5 +671,10 @@ foreach ($r in $rows) {
 $output += $botRule
 $finalOutput = $output -join "`n"
 Write-Log ("about to write: lines={0} chars={1}" -f $output.Count, $finalOutput.Length)
+if ($_ocPath) {
+    try {
+        [System.IO.File]::WriteAllText($_ocPath, "$_ocKey`n$finalOutput", (New-Object System.Text.UTF8Encoding $false))
+    } catch {}
+}
 Write-Host $finalOutput -NoNewline
 Write-Log "stdout write: OK (via Write-Host)"
