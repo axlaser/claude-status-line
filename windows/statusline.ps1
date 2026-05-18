@@ -18,7 +18,6 @@ $RED     = ansi 31
 $BLUE    = ansi 34
 $WHITE   = ansi 37
 $GRAY    = ansi 90
-$SEP = "${GRAY}$([char]0x2502)${RESET}"
 # --- Read stdin + debug log ---
 # Always exit 0 — any non-zero exit makes Claude Code hide the status line entirely.
 $logPath = "$env:USERPROFILE\.claude\statusline-debug.log"
@@ -79,7 +78,6 @@ if ($cwd -and $userHome -and $cwd.StartsWith($userHome, [System.StringComparison
 $cwdPart = "${CYAN}${cwd}${RESET}"
 # --- 2. Model + Context window % ---
 $modelDisplay = Get-Val $json @('model','display_name')
-$modelId      = Get-Val $json @('model','id')
 # Strip "Claude " prefix; cap at 24 chars so "Opus 4.7 (1M context)" still fits.
 $modelShort = $modelDisplay
 if ($modelShort) {
@@ -225,7 +223,6 @@ $sessionInTokens         = [long]0
 $sessionCacheWriteTokens = [long]0
 $sessionCacheReadTokens  = [long]0
 $sessionOutTokens        = [long]0
-$hasSessionTokens = $false
 $workingStartOutTokens = [long](-1)
 $deltaIn         = [long]0
 $deltaCacheWrite = [long]0
@@ -249,28 +246,27 @@ if ($transcriptPath -and (Test-Path -LiteralPath $transcriptPath -ErrorAction Si
             $cacheLine = Get-Content -LiteralPath $cachePath -Raw -ErrorAction SilentlyContinue
             if ($cacheLine) {
                 $parts = $cacheLine.Trim().Split('|')
-                if ($parts[0] -eq $CacheVersion -and $parts.Length -ge 9) {
-                    $prevWorkingStart = [long]$parts[8]
+                if ($parts[0] -eq $CacheVersion -and $parts.Length -ge 8) {
+                    $prevWorkingStart = [long]$parts[7]
                 }
-                if ($parts[0] -eq $CacheVersion -and $parts.Length -ge 11) {
+                if ($parts[0] -eq $CacheVersion -and $parts.Length -ge 10) {
                     $prevIn         = [long]$parts[5]
                     $prevOut        = [long]$parts[6]
-                    $prevCacheWrite = [long]$parts[9]
-                    $prevCacheRead  = [long]$parts[10]
+                    $prevCacheWrite = [long]$parts[8]
+                    $prevCacheRead  = [long]$parts[9]
                 }
-                if (($parts.Length -ge 15) -and $parts[0] -eq $CacheVersion -and $parts[1] -eq "$transcriptMt" -and $parts[2] -eq "$transcriptSz") {
+                if (($parts.Length -ge 14) -and $parts[0] -eq $CacheVersion -and $parts[1] -eq "$transcriptMt" -and $parts[2] -eq "$transcriptSz") {
                     $msgCount                = [int]$parts[3]
                     $claudeIsIdle            = [bool]::Parse($parts[4])
                     $sessionInTokens         = [long]$parts[5]
                     $sessionOutTokens        = [long]$parts[6]
-                    $hasSessionTokens        = [bool]::Parse($parts[7])
                     $workingStartOutTokens   = $prevWorkingStart
-                    $sessionCacheWriteTokens = [long]$parts[9]
-                    $sessionCacheReadTokens  = [long]$parts[10]
-                    $deltaIn                 = [long]$parts[11]
-                    $deltaOut                = [long]$parts[12]
-                    $deltaCacheWrite         = [long]$parts[13]
-                    $deltaCacheRead          = [long]$parts[14]
+                    $sessionCacheWriteTokens = [long]$parts[7]
+                    $sessionCacheReadTokens  = [long]$parts[8]
+                    $deltaIn                 = [long]$parts[9]
+                    $deltaOut                = [long]$parts[10]
+                    $deltaCacheWrite         = [long]$parts[11]
+                    $deltaCacheRead          = [long]$parts[12]
                     $useCache = $true
                 }
             }
@@ -314,7 +310,6 @@ if ($transcriptPath -and (Test-Path -LiteralPath $transcriptPath -ErrorAction Si
                 # Cumulative tokens by usage bucket across every assistant turn.
                 foreach ($ln in $lines) {
                     if ($ln -notmatch '"type"\s*:\s*"assistant"') { continue }
-                    $hasSessionTokens = $true
                     if ($ln -match '"input_tokens"\s*:\s*(\d+)')                { $sessionInTokens         += [long]$Matches[1] }
                     if ($ln -match '"cache_creation_input_tokens"\s*:\s*(\d+)') { $sessionCacheWriteTokens += [long]$Matches[1] }
                     if ($ln -match '"cache_read_input_tokens"\s*:\s*(\d+)')    { $sessionCacheReadTokens  += [long]$Matches[1] }
@@ -336,7 +331,7 @@ if ($transcriptPath -and (Test-Path -LiteralPath $transcriptPath -ErrorAction Si
                     try {
                         [System.IO.File]::WriteAllText(
                             $cachePath,
-                            ("{0}|{1}|{2}|{3}|{4}|{5}|{6}|{7}|{8}|{9}|{10}|{11}|{12}|{13}|{14}" -f $CacheVersion, $transcriptMt, $transcriptSz, $msgCount, $claudeIsIdle, $sessionInTokens, $sessionOutTokens, $hasSessionTokens, $workingStartOutTokens, $sessionCacheWriteTokens, $sessionCacheReadTokens, $deltaIn, $deltaOut, $deltaCacheWrite, $deltaCacheRead),
+                            ("{0}|{1}|{2}|{3}|{4}|{5}|{6}|{7}|{8}|{9}|{10}|{11}|{12}|{13}" -f $CacheVersion, $transcriptMt, $transcriptSz, $msgCount, $claudeIsIdle, $sessionInTokens, $sessionOutTokens, $workingStartOutTokens, $sessionCacheWriteTokens, $sessionCacheReadTokens, $deltaIn, $deltaOut, $deltaCacheWrite, $deltaCacheRead),
                             (New-Object System.Text.UTF8Encoding $false))
                     } catch {}
                 }
@@ -557,7 +552,6 @@ $BoxH   = [char]0x2501
 $BoxV   = [char]0x2503
 $BoxT_L  = [char]0x2523
 $BoxT_R  = [char]0x252B
-$BoxSecH = [char]0x2501
 $BoxRowH = [char]0x2500
 # Visible width — strip ANSI escapes so color codes don't count.
 $ansiPattern = "$ESC\[[0-9;]*[a-zA-Z]"

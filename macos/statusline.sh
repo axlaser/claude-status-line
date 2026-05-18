@@ -332,7 +332,6 @@ session_in_tokens=0
 session_cache_write_tokens=0
 session_cache_read_tokens=0
 session_out_tokens=0
-has_session_tokens=false
 working_start_out_tokens=-1
 delta_in=0
 delta_cache_write=0
@@ -356,7 +355,7 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
 
     # Read prior cache even on miss — needed for workingStart + deltas.
     if [[ -n "$cache_path" && -f "$cache_path" ]]; then
-        IFS='|' read -r c_ver c_mt c_sz c_msg c_idle c_in c_out c_has c_wstart c_cwrite c_cread c_din c_dout c_dcw c_dcr < "$cache_path"
+        IFS='|' read -r c_ver c_mt c_sz c_msg c_idle c_in c_out c_wstart c_cwrite c_cread c_din c_dout c_dcw c_dcr < "$cache_path"
         # Validate all numeric cache fields to prevent arithmetic injection
         [[ "$c_in" =~ ^-?[0-9]+$ ]] || c_in=0
         [[ "$c_out" =~ ^-?[0-9]+$ ]] || c_out=0
@@ -378,7 +377,6 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
             claude_is_idle="$c_idle"
             session_in_tokens="$c_in"
             session_out_tokens="$c_out"
-            has_session_tokens="$c_has"
             working_start_out_tokens="$prev_working_start"
             session_cache_write_tokens="$c_cwrite"
             session_cache_read_tokens="$c_cread"
@@ -429,20 +427,18 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
             done < <(tail -r "$transcript_path" 2>/dev/null)
 
             # awk pass is much faster than bash loop on large transcripts.
-            read -r session_in_tokens session_cache_write_tokens session_cache_read_tokens session_out_tokens has_any < <(
+            read -r session_in_tokens session_cache_write_tokens session_cache_read_tokens session_out_tokens < <(
                 awk '
                     /"type"[[:space:]]*:[[:space:]]*"assistant"/ {
-                        found = 1
                         s = $0
                         t = s; sub(/.*"input_tokens"[[:space:]]*:[[:space:]]*/, "", t); sub(/[^0-9].*/, "", t); if (t+0 > 0) inp += t+0
                         t = s; sub(/.*"cache_creation_input_tokens"[[:space:]]*:[[:space:]]*/, "", t); sub(/[^0-9].*/, "", t); if (t+0 > 0) cw += t+0
                         t = s; sub(/.*"cache_read_input_tokens"[[:space:]]*:[[:space:]]*/, "", t); sub(/[^0-9].*/, "", t); if (t+0 > 0) cr += t+0
                         t = s; sub(/.*"output_tokens"[[:space:]]*:[[:space:]]*/, "", t); sub(/[^0-9].*/, "", t); if (t+0 > 0) out += t+0
                     }
-                    END { print inp+0, cw+0, cr+0, out+0, (found ? "true" : "false") }
+                    END { print inp+0, cw+0, cr+0, out+0 }
                 ' "$transcript_path" 2>/dev/null
             )
-            has_session_tokens="$has_any"
 
             delta_in=$(( session_in_tokens - prev_in ))
             delta_out=$(( session_out_tokens - prev_out ))
@@ -462,9 +458,9 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
             fi
 
             if [[ -n "$cache_path" ]]; then
-                printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s' \
+                printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s' \
                     "$CACHE_VERSION" "$transcript_mt" "$transcript_sz" "$msg_count" "$claude_is_idle" \
-                    "$session_in_tokens" "$session_out_tokens" "$has_session_tokens" \
+                    "$session_in_tokens" "$session_out_tokens" \
                     "$working_start_out_tokens" "$session_cache_write_tokens" \
                     "$session_cache_read_tokens" "$delta_in" "$delta_out" \
                     "$delta_cache_write" "$delta_cache_read" > "$cache_path" 2>/dev/null
