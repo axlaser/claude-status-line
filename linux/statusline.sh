@@ -94,6 +94,7 @@ J_AGENT_OUT="${_jf[21]}"
 _oc_path="${TMPDIR:-/tmp}/statusline-oc-${J_SESSION_ID//[^a-zA-Z0-9_-]/}.txt"
 _oc_tmt=""
 [[ -n "$J_TRANSCRIPT_PATH" && -f "$J_TRANSCRIPT_PATH" ]] && _oc_tmt=$(stat -c %Y "$J_TRANSCRIPT_PATH" 2>/dev/null)
+_oc_now=$(date +%s)
 _oc_gmt=""
 _oc_gidx="${J_GIT_CWD:-.}/.git/index"
 [[ -f "$_oc_gidx" ]] && _oc_gmt=$(stat -c %Y "$_oc_gidx" 2>/dev/null)
@@ -102,7 +103,7 @@ if [[ -n "$J_TRANSCRIPT_PATH" ]]; then
     _oc_sdir="$(dirname "$J_TRANSCRIPT_PATH")/$(basename "$J_TRANSCRIPT_PATH" .jsonl)/subagents"
     [[ -d "$_oc_sdir" ]] && _oc_smt=$(stat -c %Y "$_oc_sdir" 2>/dev/null)
 fi
-_oc_key="${raw}|${_oc_tmt}|${_oc_gmt}|${_oc_smt}"
+_oc_key="${raw}|${_oc_tmt}|${_oc_gmt}|${_oc_smt}|$(( _oc_now / 5 ))"
 
 if [[ -n "$J_SESSION_ID" && -f "$_oc_path" ]]; then
     IFS= read -r _oc_cached_key < "$_oc_path"
@@ -261,8 +262,11 @@ if [[ -f "$git_index" ]]; then
     if [[ -f "$git_cache_path" ]]; then
         IFS='|' read -r gc_mt gc_branch gc_ins gc_del gc_unt < "$git_cache_path"
         if [[ "$gc_mt" == "$git_index_mt" ]]; then
-            branch="$gc_branch"; insertions="$gc_ins"; deletions="$gc_del"; untracked="$gc_unt"
-            git_use_cache=true
+            gc_file_age=$(( _oc_now - $(stat -c %Y "$git_cache_path" 2>/dev/null || echo 0) ))
+            if (( gc_file_age < 5 )); then
+                branch="$gc_branch"; insertions="$gc_ins"; deletions="$gc_del"; untracked="$gc_unt"
+                git_use_cache=true
+            fi
         fi
     fi
 
