@@ -145,7 +145,6 @@ if (Test-Path $settingsPath) {
             Move-Item $tmpPath $settingsPath -Force
             Ok "Removed notification hooks from settings.json"
             }
-        }
     } catch {
         Warn "Could not update hooks in settings.json - please remove notification hooks manually"
     }
