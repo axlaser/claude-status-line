@@ -401,14 +401,25 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
 
     if [[ "$use_cache" != true ]]; then
         if [[ -s "$transcript_path" ]]; then
-            # Filter per-line (chained grep -v) instead of summing counters — the
-            # marker strings can co-occur on the same line, causing over-subtraction.
-            msg_count=$(grep -E '"type"[[:space:]]*:[[:space:]]*"user"' "$transcript_path" 2>/dev/null \
-                | grep -v '"toolUseResult"' \
-                | grep -Ev '"isMeta"[[:space:]]*:[[:space:]]*true' \
-                | grep -v '<command-name>' \
-                | grep -v '<local-command-stdout>' \
-                | wc -l | tr -d ' ')
+            # Single awk pass counts real user messages and sums all token fields.
+            read -r msg_count session_in_tokens session_cache_write_tokens session_cache_read_tokens session_out_tokens < <(
+                awk '
+                    /"type"[[:space:]]*:[[:space:]]*"user"/ {
+                        if ($0 !~ /"toolUseResult"/ &&
+                            $0 !~ /"isMeta"[[:space:]]*:[[:space:]]*true/ &&
+                            $0 !~ /<command-name>/ &&
+                            $0 !~ /<local-command-stdout>/) mc++
+                    }
+                    /"type"[[:space:]]*:[[:space:]]*"assistant"/ {
+                        s = $0
+                        t = s; sub(/.*"input_tokens"[[:space:]]*:[[:space:]]*/, "", t); sub(/[^0-9].*/, "", t); if (t+0 > 0) inp += t+0
+                        t = s; sub(/.*"cache_creation_input_tokens"[[:space:]]*:[[:space:]]*/, "", t); sub(/[^0-9].*/, "", t); if (t+0 > 0) cw += t+0
+                        t = s; sub(/.*"cache_read_input_tokens"[[:space:]]*:[[:space:]]*/, "", t); sub(/[^0-9].*/, "", t); if (t+0 > 0) cr += t+0
+                        t = s; sub(/.*"output_tokens"[[:space:]]*:[[:space:]]*/, "", t); sub(/[^0-9].*/, "", t); if (t+0 > 0) out += t+0
+                    }
+                    END { print mc+0, inp+0, cw+0, cr+0, out+0 }
+                ' "$transcript_path" 2>/dev/null
+            )
             [[ -z "$msg_count" ]] && msg_count=0
 
             # Scan from end (tail -r = macOS tac), skip synthetic entries — without
@@ -436,20 +447,6 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
                     break
                 fi
             done < <(tail -r "$transcript_path" 2>/dev/null)
-
-            # awk pass is much faster than bash loop on large transcripts.
-            read -r session_in_tokens session_cache_write_tokens session_cache_read_tokens session_out_tokens < <(
-                awk '
-                    /"type"[[:space:]]*:[[:space:]]*"assistant"/ {
-                        s = $0
-                        t = s; sub(/.*"input_tokens"[[:space:]]*:[[:space:]]*/, "", t); sub(/[^0-9].*/, "", t); if (t+0 > 0) inp += t+0
-                        t = s; sub(/.*"cache_creation_input_tokens"[[:space:]]*:[[:space:]]*/, "", t); sub(/[^0-9].*/, "", t); if (t+0 > 0) cw += t+0
-                        t = s; sub(/.*"cache_read_input_tokens"[[:space:]]*:[[:space:]]*/, "", t); sub(/[^0-9].*/, "", t); if (t+0 > 0) cr += t+0
-                        t = s; sub(/.*"output_tokens"[[:space:]]*:[[:space:]]*/, "", t); sub(/[^0-9].*/, "", t); if (t+0 > 0) out += t+0
-                    }
-                    END { print inp+0, cw+0, cr+0, out+0 }
-                ' "$transcript_path" 2>/dev/null
-            )
 
             delta_in=$(( session_in_tokens - prev_in ))
             delta_out=$(( session_out_tokens - prev_out ))
