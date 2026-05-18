@@ -172,7 +172,7 @@ echo ""
 step "Sound notifications"
 info "Plays a sound when Claude needs permission or finishes responding."
 if [ -f "$SETTINGS_PATH" ] && jq -e '
-  (.hooks.PermissionRequest // []) | any(any(.hooks[]?; .command? | contains("notify.sh")))
+  (.hooks.PermissionRequest // []) + (.hooks.Stop // []) | any(any(.hooks[]?; .command? | contains("notify.sh")))
 ' "$SETTINGS_PATH" &>/dev/null; then
     ok "Already configured"
 else

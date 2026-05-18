@@ -167,14 +167,20 @@ Info "Plays a sound when Claude needs permission or finishes responding."
 $existing = Get-Content $settingsPath -Raw -Encoding UTF8 | ConvertFrom-Json
 
 $hasNotifyHooks = $false
-if ($existing.hooks -and $existing.hooks.PermissionRequest) {
-    foreach ($entry in $existing.hooks.PermissionRequest) {
-        if ($entry.hooks) {
-            foreach ($h in $entry.hooks) {
-                if ($h.command -and $h.command.Contains('notify.ps1')) {
-                    $hasNotifyHooks = $true
-                    break
+if ($existing.hooks) {
+    foreach ($eventName in @('PermissionRequest', 'Stop')) {
+        $eventHooks = $existing.hooks.$eventName
+        if ($eventHooks) {
+            foreach ($entry in $eventHooks) {
+                if ($entry.hooks) {
+                    foreach ($h in $entry.hooks) {
+                        if ($h.command -and $h.command.Contains('notify.ps1')) {
+                            $hasNotifyHooks = $true
+                            break
+                        }
+                    }
                 }
+                if ($hasNotifyHooks) { break }
             }
         }
         if ($hasNotifyHooks) { break }
@@ -203,8 +209,29 @@ if ($hasNotifyHooks) {
         if (-not $existing.hooks) {
             $existing | Add-Member -NotePropertyName 'hooks' -NotePropertyValue ([PSCustomObject]@{}) -Force
         }
-        $existing.hooks | Add-Member -NotePropertyName 'PermissionRequest' -NotePropertyValue @($permEntry) -Force
-        $existing.hooks | Add-Member -NotePropertyName 'Stop' -NotePropertyValue @($stopEntry) -Force
+
+        foreach ($pair in @(@('PermissionRequest', $permEntry), @('Stop', $stopEntry))) {
+            $eventName = $pair[0]
+            $newEntry = $pair[1]
+            $kept = [System.Collections.ArrayList]::new()
+            $eventHooks = $existing.hooks.$eventName
+            if ($eventHooks) {
+                foreach ($entry in $eventHooks) {
+                    $hasNotify = $false
+                    if ($entry.hooks) {
+                        foreach ($h in $entry.hooks) {
+                            if ($h.command -and $h.command.Contains('notify.ps1')) {
+                                $hasNotify = $true
+                                break
+                            }
+                        }
+                    }
+                    if (-not $hasNotify) { [void]$kept.Add($entry) }
+                }
+            }
+            [void]$kept.Add($newEntry)
+            $existing.hooks | Add-Member -NotePropertyName $eventName -NotePropertyValue @($kept) -Force
+        }
 
         $utf8NoBom = New-Object System.Text.UTF8Encoding $false
         $tmpPath = "$settingsPath.tmp"

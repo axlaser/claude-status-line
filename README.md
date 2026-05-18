@@ -297,7 +297,7 @@ Notifications use platform-native sounds — no additional software needed:
 |----------|-----------------|------------------|--------|
 | macOS | Tink | Glass | `afplay` |
 | Linux | freedesktop bell (or terminal bell) | freedesktop complete (or terminal bell) | `paplay` / `aplay` |
-| Windows | System Exclamation | System Asterisk | `SystemSounds` |
+| Windows | System Exclamation | System Asterisk | Built-in (`SystemSounds`) |
 
 To enable after initial install, re-run the installer and answer **y** to the notification prompt. To disable, run the uninstaller — it removes notification hooks while preserving your other settings.
 
