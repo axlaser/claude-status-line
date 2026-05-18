@@ -6,6 +6,7 @@ $claudeDir = "$env:USERPROFILE\.claude"
 $scriptPath = "$claudeDir\statusline.ps1"
 $settingsPath = "$claudeDir\settings.json"
 $notifyPath = "$claudeDir\notify.ps1"
+$gitRefreshPath = "$claudeDir\git-refresh.ps1"
 
 # --- Colors / log helpers ---
 $ESC    = [char]27
@@ -139,6 +140,93 @@ if (Test-Path $settingsPath) {
     Ok "Created settings.json"
 }
 Info $settingsPath
+
+# --- Install git-refresh hook script ---
+Write-Host ""
+Step "Installing git-refresh hook"
+$localGitRefresh = if ($myPath) { Join-Path (Split-Path -Parent $myPath) "git-refresh.ps1" } else { $null }
+if ($localGitRefresh -and (Test-Path $localGitRefresh)) {
+    Copy-Item $localGitRefresh -Destination $gitRefreshPath -Force
+    Ok "Copied from local repo"
+} else {
+    try {
+        Invoke-WebRequest -Uri "$repo/git-refresh.ps1" -OutFile $gitRefreshPath -UseBasicParsing -ErrorAction Stop
+        Ok "Downloaded from GitHub"
+    } catch {
+        Err "Download failed: $_"
+        Err "Run the installer from a local clone instead."
+        exit 1
+    }
+}
+Info "$gitRefreshPath ($(HumanSize (Get-Item $gitRefreshPath).Length))"
+
+# --- Register PostToolUse hook for git refresh ---
+Write-Host ""
+Step "Live git status"
+Info "Keeps git diff/untracked counts up to date as files change."
+
+try {
+    $existing = Get-Content $settingsPath -Raw -Encoding UTF8 | ConvertFrom-Json
+} catch {
+    Err "settings.json could not be parsed: $_"
+    exit 1
+}
+
+$hasRefreshHook = $false
+if ($existing.hooks -and $existing.hooks.PostToolUse) {
+    foreach ($entry in $existing.hooks.PostToolUse) {
+        if ($entry.hooks) {
+            foreach ($h in $entry.hooks) {
+                if ($h.command -and $h.command.Contains('git-refresh.ps1')) {
+                    $hasRefreshHook = $true
+                    break
+                }
+            }
+        }
+        if ($hasRefreshHook) { break }
+    }
+}
+
+if ($hasRefreshHook) {
+    Ok "Already configured"
+} else {
+    $refreshCmd = "powershell -NoProfile -File `"$gitRefreshPath`""
+    $hookEntry = [PSCustomObject]@{
+        matcher = "Edit|Write|MultiEdit|Bash|NotebookEdit"
+        hooks = @(
+            [PSCustomObject]@{ type = "command"; command = $refreshCmd; async = $true }
+        )
+    }
+
+    if (-not $existing.hooks) {
+        $existing | Add-Member -NotePropertyName 'hooks' -NotePropertyValue ([PSCustomObject]@{}) -Force
+    }
+
+    $kept = [System.Collections.ArrayList]::new()
+    $eventHooks = $existing.hooks.PostToolUse
+    if ($eventHooks) {
+        foreach ($entry in $eventHooks) {
+            $hasRefresh = $false
+            if ($entry.hooks) {
+                foreach ($h in $entry.hooks) {
+                    if ($h.command -and $h.command.Contains('git-refresh.ps1')) {
+                        $hasRefresh = $true
+                        break
+                    }
+                }
+            }
+            if (-not $hasRefresh) { [void]$kept.Add($entry) }
+        }
+    }
+    [void]$kept.Add($hookEntry)
+    $existing.hooks | Add-Member -NotePropertyName 'PostToolUse' -NotePropertyValue @($kept) -Force
+
+    $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+    $tmpPath = "$settingsPath.tmp"
+    [System.IO.File]::WriteAllText($tmpPath, ($existing | ConvertTo-Json -Depth 10), $utf8NoBom)
+    Move-Item $tmpPath $settingsPath -Force
+    Ok "PostToolUse hook enabled"
+}
 
 # --- Install notification script ---
 Write-Host ""

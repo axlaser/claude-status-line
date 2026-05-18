@@ -5,6 +5,7 @@ $claudeDir = "$env:USERPROFILE\.claude"
 $scriptPath = "$claudeDir\statusline.ps1"
 $settingsPath = "$claudeDir\settings.json"
 $notifyPath = "$claudeDir\notify.ps1"
+$gitRefreshPath = "$claudeDir\git-refresh.ps1"
 
 # ── Colors / log helpers ──────────────────────────────────────────────────────
 $ESC    = [char]27
@@ -76,6 +77,15 @@ if (Test-Path $notifyPath) {
     Info "Notification script not found (not installed)"
 }
 
+# --- Remove git-refresh script ---
+if (Test-Path $gitRefreshPath) {
+    $sz = HumanSize (Get-Item $gitRefreshPath).Length
+    Remove-Item $gitRefreshPath -Force
+    Ok "Deleted $gitRefreshPath ($sz)"
+} else {
+    Info "Git-refresh script not found (not installed)"
+}
+
 # --- Remove notification hooks ---
 if (Test-Path $settingsPath) {
     try {
@@ -138,6 +148,59 @@ if (Test-Path $settingsPath) {
         }
     } catch {
         Warn "Could not update hooks in settings.json - please remove notification hooks manually"
+    }
+}
+
+# --- Remove PostToolUse git-refresh hook ---
+if (Test-Path $settingsPath) {
+    try {
+        $existing = Get-Content $settingsPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $hasRefreshHook = $false
+        if ($existing.hooks -and $existing.hooks.PostToolUse) {
+            foreach ($entry in $existing.hooks.PostToolUse) {
+                if ($entry.hooks) {
+                    foreach ($h in $entry.hooks) {
+                        if ($h.command -and $h.command.Contains('git-refresh.ps1')) {
+                            $hasRefreshHook = $true
+                            break
+                        }
+                    }
+                }
+                if ($hasRefreshHook) { break }
+            }
+        }
+        if ($hasRefreshHook) {
+            $kept = [System.Collections.ArrayList]::new()
+            foreach ($entry in $existing.hooks.PostToolUse) {
+                $hasRefresh = $false
+                if ($entry.hooks) {
+                    foreach ($h in $entry.hooks) {
+                        if ($h.command -and $h.command.Contains('git-refresh.ps1')) {
+                            $hasRefresh = $true
+                            break
+                        }
+                    }
+                }
+                if (-not $hasRefresh) { [void]$kept.Add($entry) }
+            }
+            if ($kept.Count -gt 0) {
+                $existing.hooks | Add-Member -NotePropertyName 'PostToolUse' -NotePropertyValue @($kept) -Force
+            } else {
+                $existing.hooks.PSObject.Properties.Remove('PostToolUse')
+            }
+            if (($existing.hooks.PSObject.Properties | Measure-Object).Count -eq 0) {
+                $existing.PSObject.Properties.Remove('hooks')
+            }
+            Write-Host ""
+            Step "Removing git-refresh hook"
+            $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+            $tmpPath = "$settingsPath.tmp"
+            [System.IO.File]::WriteAllText($tmpPath, ($existing | ConvertTo-Json -Depth 10), $utf8NoBom)
+            Move-Item $tmpPath $settingsPath -Force
+            Ok "Removed PostToolUse hook from settings.json"
+        }
+    } catch {
+        Warn "Could not update hooks in settings.json - please remove PostToolUse hook manually"
     }
 }
 
