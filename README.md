@@ -31,6 +31,7 @@ showing context usage, git state, costs, rate limits, and more — all inside a 
 | **tokens** | Cumulative session breakdown — `in` (fresh input), `cache↑` (cache writes), `cache↓` (cache reads), `out` (output) |
 | **cost** | Session cost in USD, message count, and wall-clock duration |
 | **limits** | 5-hour and 7-day rate limit usage with burn-rate arrows (`⇡` over pace / `⇣` under pace) and time until reset |
+| **notifications** | Optional sound alerts — distinct tones for permission requests and task completion (enable during install) |
 
 All rows are dynamic — empty rows are automatically hidden.
 
@@ -284,6 +285,22 @@ Both scripts write debug logs to help troubleshoot issues:
 | macOS / Linux | `~/.claude/statusline-debug.log` |
 | Windows | `%USERPROFILE%\.claude\statusline-debug.log` |
 
+### Sound Notifications
+
+The installer can optionally configure sound hooks that play:
+- A short alert tone when Claude shows a permission dialog
+- A softer completion tone when Claude finishes responding
+
+Notifications use platform-native sounds — no additional software needed:
+
+| Platform | Permission sound | Completion sound | Player |
+|----------|-----------------|------------------|--------|
+| macOS | Tink | Glass | `afplay` |
+| Linux | freedesktop bell (or terminal bell) | freedesktop complete (or terminal bell) | `paplay` / `aplay` |
+| Windows | System Exclamation | System Asterisk | `SystemSounds` |
+
+To enable after initial install, re-run the installer and answer **y** to the notification prompt. To disable, run the uninstaller — it removes notification hooks while preserving your other settings.
+
 ---
 
 ## Troubleshooting
@@ -323,6 +340,17 @@ This is normal. Claude Code doesn't report context usage until after the first A
 <summary><strong>Rate limits row not showing</strong></summary>
 
 Rate limit data is only available for Claude.ai Pro and Max subscribers. API users (Anthropic Console) won't see this row. The data also only appears after the first API response in a session.
+
+</details>
+
+<details>
+<summary><strong>Notification sounds not playing</strong></summary>
+
+- Verify the script exists and is executable: `ls -la ~/.claude/notify.sh`
+- Test directly: `~/.claude/notify.sh permission` (should play a sound)
+- Check hooks are configured: `jq '.hooks' ~/.claude/settings.json`
+- Linux: ensure PulseAudio/PipeWire is running (`paplay` requires it) or ALSA is available (`aplay`)
+- Restart Claude Code after installation — hooks are loaded at startup
 
 </details>
 
