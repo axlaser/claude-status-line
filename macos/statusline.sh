@@ -304,8 +304,8 @@ total_cost="$J_TOTAL_COST"
 [[ -z "$total_cost" ]] && total_cost="$J_TOTAL_COST_LEGACY"
 
 if [[ -n "$total_cost" ]]; then
-    cost_fmt=$(awk "BEGIN { printf \"\\$%.4f\", $total_cost }")
-    cost_gt=$(awk "BEGIN { print ($total_cost > 0.50) ? 1 : 0 }")
+    cost_fmt=$(awk -v c="$total_cost" 'BEGIN { printf "$%.4f", c }')
+    cost_gt=$(awk -v c="$total_cost" 'BEGIN { print (c > 0.50) ? 1 : 0 }')
     if (( cost_gt )); then cost_color="$YELLOW"; else cost_color="$GREEN"; fi
     cost_part="${cost_color}${cost_fmt}${RESET}"
 fi
