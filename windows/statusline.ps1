@@ -60,6 +60,12 @@ function Format-Tokens($n) {  # 1234567 -> "1.2M"
     if ($v -ge 1000)    { return ('{0:F1}K' -f ($v / 1000))    }
     return "$([int]$v)"
 }
+
+function Get-SubagentCtxSize([string]$model) {
+    if ($model -match '\[1m\]' -or $model -match '-1m\b') { return 1000000 }
+    return 200000
+}
+
 # --- 1. CWD ---
 $sessionId = Get-Val $json @('session_id')
 $cwd = Get-Val $json @('workspace','current_dir')
@@ -519,9 +525,7 @@ if ($sessionId -and $transcriptPath) {
 
                 if ($saSr -eq 'end_turn') { continue }
                 $saUsed = $inTok + $cwTok + $crTok
-                # 200K default; 1M for Opus 4.x [1m] variants.
-                $saCtxSize = 200000
-                if ($saModel -match '\[1m\]' -or $saModel -match '-1m\b') { $saCtxSize = 1000000 }
+                $saCtxSize = Get-SubagentCtxSize $saModel
                 # Bar + label — mirrors the main context row.
                 $saPctRaw  = [Math]::Max(0.0, [Math]::Min(100.0, ($saUsed / [double]$saCtxSize) * 100))
                 $saPctInt  = [int][Math]::Round($saPctRaw)

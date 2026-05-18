@@ -127,6 +127,13 @@ format_tokens() {  # 1234567 -> "1.2M"; "0" for empty
     fi
 }
 
+sa_ctx_for_model() {
+    case "$1" in
+        *\[1m\]*|*-1m*) echo 1000000 ;;
+        *)              echo 200000  ;;
+    esac
+}
+
 shopt -s extglob
 get_vis() {
     local s="$1"
@@ -658,10 +665,7 @@ if [[ -n "$session_id" && -n "$transcript_path" ]]; then
 
             sa_used=$((sa_in + sa_cw + sa_cr))
 
-            sa_ctx_size=200000
-            case "$sa_model" in
-                *\[1m\]*|*-1m*) sa_ctx_size=1000000 ;;
-            esac
+            sa_ctx_size=$(sa_ctx_for_model "$sa_model")
 
             sa_pct_int=$(( sa_used * 100 / sa_ctx_size ))
             (( sa_pct_int < 0 )) && sa_pct_int=0
