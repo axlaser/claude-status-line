@@ -80,8 +80,27 @@ if (Test-Path $notifyPath) {
 if (Test-Path $settingsPath) {
     try {
         $existing = Get-Content $settingsPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $hasNotifyHooks = $false
         if ($existing.hooks) {
-            $modified = $false
+            foreach ($eventName in @('PermissionRequest', 'Stop')) {
+                $eventHooks = $existing.hooks.$eventName
+                if ($eventHooks) {
+                    foreach ($entry in $eventHooks) {
+                        if ($entry.hooks) {
+                            foreach ($h in $entry.hooks) {
+                                if ($h.command -and $h.command.Contains('notify.ps1')) {
+                                    $hasNotifyHooks = $true
+                                    break
+                                }
+                            }
+                        }
+                        if ($hasNotifyHooks) { break }
+                    }
+                }
+                if ($hasNotifyHooks) { break }
+            }
+        }
+        if ($hasNotifyHooks) {
             foreach ($eventName in @('PermissionRequest', 'Stop')) {
                 $eventHooks = $existing.hooks.$eventName
                 if ($eventHooks) {
@@ -103,20 +122,18 @@ if (Test-Path $settingsPath) {
                     } else {
                         $existing.hooks.PSObject.Properties.Remove($eventName)
                     }
-                    $modified = $true
                 }
             }
             if (($existing.hooks.PSObject.Properties | Measure-Object).Count -eq 0) {
                 $existing.PSObject.Properties.Remove('hooks')
             }
-            if ($modified) {
-                Write-Host ""
-                Step "Removing notification hooks"
-                $utf8NoBom = New-Object System.Text.UTF8Encoding $false
-                $tmpPath = "$settingsPath.tmp"
-                [System.IO.File]::WriteAllText($tmpPath, ($existing | ConvertTo-Json -Depth 10), $utf8NoBom)
-                Move-Item $tmpPath $settingsPath -Force
-                Ok "Removed notification hooks from settings.json"
+            Write-Host ""
+            Step "Removing notification hooks"
+            $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+            $tmpPath = "$settingsPath.tmp"
+            [System.IO.File]::WriteAllText($tmpPath, ($existing | ConvertTo-Json -Depth 10), $utf8NoBom)
+            Move-Item $tmpPath $settingsPath -Force
+            Ok "Removed notification hooks from settings.json"
             }
         }
     } catch {

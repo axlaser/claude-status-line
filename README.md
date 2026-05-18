@@ -350,6 +350,7 @@ Rate limit data is only available for Claude.ai Pro and Max subscribers. API use
 - Test directly: `~/.claude/notify.sh permission` (should play a sound)
 - Check hooks are configured: `jq '.hooks' ~/.claude/settings.json`
 - Linux: ensure PulseAudio/PipeWire is running (`paplay` requires it) or ALSA is available (`aplay`)
+- Windows: verify `%USERPROFILE%\.claude\notify.ps1` exists, test with `powershell -File ~\.claude\notify.ps1 permission`
 - Restart Claude Code after installation — hooks are loaded at startup
 
 </details>

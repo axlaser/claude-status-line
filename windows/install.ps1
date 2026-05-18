@@ -164,7 +164,12 @@ Write-Host ""
 Step "Sound notifications"
 Info "Plays a sound when Claude needs permission or finishes responding."
 
-$existing = Get-Content $settingsPath -Raw -Encoding UTF8 | ConvertFrom-Json
+try {
+    $existing = Get-Content $settingsPath -Raw -Encoding UTF8 | ConvertFrom-Json
+} catch {
+    Err "settings.json could not be parsed: $_"
+    exit 1
+}
 
 $hasNotifyHooks = $false
 if ($existing.hooks) {
