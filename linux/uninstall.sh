@@ -4,6 +4,7 @@ set -e
 CLAUDE_DIR="$HOME/.claude"
 SCRIPT_PATH="$CLAUDE_DIR/statusline.sh"
 SETTINGS_PATH="$CLAUDE_DIR/settings.json"
+NOTIFY_PATH="$CLAUDE_DIR/notify.sh"
 
 # --- Colors & output helpers ---
 RESET=$'\033[0m'
@@ -62,6 +63,44 @@ if [ -f "$SETTINGS_PATH" ]; then
     fi
 else
     warn "settings.json not found"
+fi
+
+# --- Remove notification script ---
+echo ""
+step "Removing notification script"
+if [ -f "$NOTIFY_PATH" ]; then
+    _sz=$(human_size $(file_bytes "$NOTIFY_PATH"))
+    rm "$NOTIFY_PATH"
+    ok "Deleted $NOTIFY_PATH ($_sz)"
+else
+    info "Notification script not found (not installed)"
+fi
+
+# --- Remove notification hooks ---
+if [ -f "$SETTINGS_PATH" ] && command -v jq &>/dev/null; then
+    if jq -e '
+      (.hooks.PermissionRequest // []) + (.hooks.Stop // []) | any(any(.hooks[]?; .command? | contains("notify.sh")))
+    ' "$SETTINGS_PATH" &>/dev/null; then
+        echo ""
+        step "Removing notification hooks"
+        tmp=$(mktemp "$SETTINGS_PATH.XXXXXX")
+        if jq '
+          (if .hooks.PermissionRequest then
+            .hooks.PermissionRequest |= [.[] | select(any(.hooks[]?; .command? | contains("notify.sh")) | not)]
+          else . end) |
+          (if .hooks.Stop then
+            .hooks.Stop |= [.[] | select(any(.hooks[]?; .command? | contains("notify.sh")) | not)]
+          else . end) |
+          (if .hooks then .hooks |= with_entries(select(.value | length > 0)) else . end) |
+          (if .hooks and (.hooks | keys | length == 0) then del(.hooks) else . end)
+        ' "$SETTINGS_PATH" > "$tmp"; then
+            mv "$tmp" "$SETTINGS_PATH"
+            ok "Removed notification hooks from settings.json"
+        else
+            rm -f "$tmp"
+            warn "Failed to update settings.json — remove notification hooks manually"
+        fi
+    fi
 fi
 
 # --- Clean up temp state files ---
