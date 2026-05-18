@@ -5,6 +5,7 @@ CLAUDE_DIR="$HOME/.claude"
 SCRIPT_PATH="$CLAUDE_DIR/statusline.sh"
 SETTINGS_PATH="$CLAUDE_DIR/settings.json"
 NOTIFY_PATH="$CLAUDE_DIR/notify.sh"
+GIT_REFRESH_PATH="$CLAUDE_DIR/git-refresh.sh"
 
 # --- Colors & output helpers ---
 RESET=$'\033[0m'
@@ -76,6 +77,15 @@ else
     info "Notification script not found (not installed)"
 fi
 
+# --- Remove git-refresh script ---
+if [ -f "$GIT_REFRESH_PATH" ]; then
+    _sz=$(human_size $(file_bytes "$GIT_REFRESH_PATH"))
+    rm "$GIT_REFRESH_PATH"
+    ok "Deleted $GIT_REFRESH_PATH ($_sz)"
+else
+    info "Git-refresh script not found (not installed)"
+fi
+
 # --- Remove notification hooks ---
 if [ -f "$SETTINGS_PATH" ] && command -v jq &>/dev/null; then
     if jq -e '
@@ -99,6 +109,30 @@ if [ -f "$SETTINGS_PATH" ] && command -v jq &>/dev/null; then
         else
             rm -f "$tmp"
             warn "Failed to update settings.json — remove notification hooks manually"
+        fi
+    fi
+fi
+
+# --- Remove PostToolUse git-refresh hook ---
+if [ -f "$SETTINGS_PATH" ] && command -v jq &>/dev/null; then
+    if jq -e '
+      (.hooks.PostToolUse // []) | any(any(.hooks[]?; .command? | contains("git-refresh.sh")))
+    ' "$SETTINGS_PATH" &>/dev/null; then
+        echo ""
+        step "Removing git-refresh hook"
+        tmp=$(mktemp "$SETTINGS_PATH.XXXXXX")
+        if jq '
+          (if .hooks.PostToolUse then
+            .hooks.PostToolUse |= [.[] | select(any(.hooks[]?; .command? | contains("git-refresh.sh")) | not)]
+          else . end) |
+          (if .hooks then .hooks |= with_entries(select(.value | length > 0)) else . end) |
+          (if .hooks and (.hooks | keys | length == 0) then del(.hooks) else . end)
+        ' "$SETTINGS_PATH" > "$tmp"; then
+            mv "$tmp" "$SETTINGS_PATH"
+            ok "Removed PostToolUse hook from settings.json"
+        else
+            rm -f "$tmp"
+            warn "Failed to update settings.json — remove PostToolUse hook manually"
         fi
     fi
 fi
