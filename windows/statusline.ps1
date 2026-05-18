@@ -159,8 +159,11 @@ try {
         if (Test-Path -LiteralPath $gitCachePath) {
             $gc = (Get-Content -LiteralPath $gitCachePath -Raw -ErrorAction SilentlyContinue) -split '\|'
             if ($gc.Count -ge 5 -and $gc[0] -eq "$gitIndexMt") {
-                $branch = $gc[1]; $insertions = [int]$gc[2]; $deletions = [int]$gc[3]; $untracked = [int]$gc[4]
-                $gitUseCache = $true
+                $cacheAge = ([DateTimeOffset]::UtcNow - [DateTimeOffset](Get-Item -LiteralPath $gitCachePath -Force).LastWriteTimeUtc).TotalSeconds
+                if ($cacheAge -lt 5) {
+                    $branch = $gc[1]; $insertions = [int]$gc[2]; $deletions = [int]$gc[3]; $untracked = [int]$gc[4]
+                    $gitUseCache = $true
+                }
             }
         }
 
