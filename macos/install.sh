@@ -7,6 +7,7 @@ CLAUDE_DIR="$HOME/.claude"
 SCRIPT_PATH="$CLAUDE_DIR/statusline.sh"
 SETTINGS_PATH="$CLAUDE_DIR/settings.json"
 NOTIFY_PATH="$CLAUDE_DIR/notify.sh"
+GIT_REFRESH_PATH="$CLAUDE_DIR/git-refresh.sh"
 
 # --- Helpers ---
 RESET=$'\033[0m'
@@ -151,6 +152,46 @@ else
     fi
 fi
 info "$SETTINGS_PATH"
+
+# --- Install git-refresh hook script ---
+echo ""
+step "Installing git-refresh hook"
+if [[ -n "$SCRIPT_DIR" && -f "$SCRIPT_DIR/git-refresh.sh" ]]; then
+    tmp=$(mktemp "$CLAUDE_DIR/git-refresh.XXXXXX")
+    cp "$SCRIPT_DIR/git-refresh.sh" "$tmp" && mv "$tmp" "$GIT_REFRESH_PATH" || { rm -f "$tmp"; exit 1; }
+    ok "Copied from local repo"
+else
+    tmp=$(mktemp "$CLAUDE_DIR/git-refresh.XXXXXX")
+    curl -fsSL "$REPO/git-refresh.sh" -o "$tmp" && mv "$tmp" "$GIT_REFRESH_PATH" || { rm -f "$tmp"; exit 1; }
+    ok "Downloaded from GitHub"
+fi
+chmod +x "$GIT_REFRESH_PATH"
+info "$GIT_REFRESH_PATH ($(human_size $(file_bytes "$GIT_REFRESH_PATH")))"
+
+# --- Register PostToolUse hook for git refresh ---
+echo ""
+step "Live git status"
+info "Keeps git diff/untracked counts up to date as files change."
+if [ -f "$SETTINGS_PATH" ] && jq -e '
+  (.hooks.PostToolUse // []) | any(any(.hooks[]?; .command? | contains("git-refresh.sh")))
+' "$SETTINGS_PATH" &>/dev/null; then
+    ok "Already configured"
+else
+    tmp=$(mktemp "$SETTINGS_PATH.XXXXXX")
+    if jq '
+      .hooks = (.hooks // {}) |
+      .hooks.PostToolUse = (
+        [(.hooks.PostToolUse // [])[] | select(any(.hooks[]?; .command? | contains("git-refresh.sh")) | not)]
+        + [{"matcher":"Edit|Write|MultiEdit|Bash|NotebookEdit","hooks":[{"type":"command","command":"~/.claude/git-refresh.sh","async":true}]}]
+      )
+    ' "$SETTINGS_PATH" > "$tmp"; then
+        mv "$tmp" "$SETTINGS_PATH"
+        ok "PostToolUse hook enabled"
+    else
+        rm -f "$tmp"
+        warn "Failed to configure hook (jq error)"
+    fi
+fi
 
 # --- Install notification script ---
 echo ""
