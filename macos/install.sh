@@ -96,6 +96,28 @@ else
 fi
 echo ""
 
+# --- Check for terminal-notifier ---
+step "Checking for terminal-notifier"
+if command -v terminal-notifier &>/dev/null; then
+    ok "terminal-notifier found"
+else
+    warn "terminal-notifier not installed (needed for visual notifications)"
+    echo ""
+    if command -v brew &>/dev/null; then
+        read -rp "  ${YELLOW}${BOLD} ?${RESET} Install terminal-notifier via Homebrew? (${GREEN}y${RESET}/${RED}n${RESET}) " answer </dev/tty
+        if [[ "$answer" =~ ^[Yy]$ ]]; then
+            brew install terminal-notifier
+            ok "terminal-notifier installed"
+        else
+            info "Visual notifications will be disabled (sound-only)"
+        fi
+    else
+        info "Install manually: brew install terminal-notifier"
+        info "Visual notifications will be disabled until installed"
+    fi
+fi
+echo ""
+
 # --- Install the script ---
 step "Installing status line script"
 mkdir -p "$CLAUDE_DIR"
@@ -208,10 +230,34 @@ fi
 chmod +x "$NOTIFY_PATH"
 info "$NOTIFY_PATH ($(human_size $(file_bytes "$NOTIFY_PATH")))"
 
+# --- Create notification config ---
+echo ""
+step "Notification configuration"
+NOTIFY_CONFIG_PATH="$CLAUDE_DIR/notify-config.json"
+if [[ -f "$NOTIFY_CONFIG_PATH" ]]; then
+    ok "Config already exists (preserving)"
+    info "$NOTIFY_CONFIG_PATH"
+else
+    cat > "$NOTIFY_CONFIG_PATH" <<'NCEOF'
+{
+  "permission":        { "sound": true, "visual": true },
+  "stop":              { "sound": true, "visual": true },
+  "rate_limit":        { "sound": true, "visual": true, "threshold": 80 },
+  "context_high":      { "sound": false, "visual": true, "threshold": 70 },
+  "compaction_start":  { "sound": true, "visual": true },
+  "compaction_done":   { "sound": true, "visual": true }
+}
+NCEOF
+    ok "Created default config"
+    info "$NOTIFY_CONFIG_PATH"
+fi
+
 # --- Configure notification hooks ---
 echo ""
 step "Sound notifications"
-info "Plays a sound when Claude needs permission or finishes responding."
+info "Plays a sound when Claude needs attention."
+ENABLE_SOUND=""
+ENABLE_VISUAL=""
 if [ -f "$SETTINGS_PATH" ] && jq -e '
   (.hooks.PermissionRequest // []) + (.hooks.Stop // []) | any(any(.hooks[]?; .command? | contains("notify.sh")))
 ' "$SETTINGS_PATH" &>/dev/null; then
@@ -219,28 +265,72 @@ if [ -f "$SETTINGS_PATH" ] && jq -e '
 else
     echo ""
     read -rp "  ${YELLOW}${BOLD} ?${RESET} Enable sound notifications? (${GREEN}y${RESET}/${RED}n${RESET}) " answer </dev/tty
-    if [[ "$answer" =~ ^[Yy]$ ]]; then
-        tmp=$(mktemp "$SETTINGS_PATH.XXXXXX")
-        if jq '
-          .hooks = (.hooks // {}) |
-          .hooks.PermissionRequest = (
-            [(.hooks.PermissionRequest // [])[] | select(any(.hooks[]?; .command? | contains("notify.sh")) | not)]
-            + [{"hooks":[{"type":"command","command":"~/.claude/notify.sh permission","async":true}]}]
-          ) |
-          .hooks.Stop = (
-            [(.hooks.Stop // [])[] | select(any(.hooks[]?; .command? | contains("notify.sh")) | not)]
-            + [{"hooks":[{"type":"command","command":"~/.claude/notify.sh stop","async":true}]}]
-          )
-        ' "$SETTINGS_PATH" > "$tmp"; then
-            mv "$tmp" "$SETTINGS_PATH"
-            ok "Notifications enabled"
-        else
-            rm -f "$tmp"
-            warn "Failed to configure hooks (jq error)"
-        fi
+    ENABLE_SOUND="$answer"
+fi
+
+echo ""
+step "Visual notifications"
+info "Shows native OS popups for Claude events."
+if command -v terminal-notifier &>/dev/null; then
+    echo ""
+    read -rp "  ${YELLOW}${BOLD} ?${RESET} Enable visual notifications? (${GREEN}y${RESET}/${RED}n${RESET}) " answer </dev/tty
+    ENABLE_VISUAL="$answer"
+else
+    warn "terminal-notifier not found — visual notifications disabled"
+    ENABLE_VISUAL="n"
+fi
+
+# Apply sound/visual choices to config
+if [[ -f "$NOTIFY_CONFIG_PATH" ]] && command -v jq &>/dev/null; then
+    _snd=true; [[ ! "$ENABLE_SOUND" =~ ^[Yy]$ ]] && _snd=false
+    _vis=true; [[ ! "$ENABLE_VISUAL" =~ ^[Yy]$ ]] && _vis=false
+    tmp=$(mktemp "$NOTIFY_CONFIG_PATH.XXXXXX")
+    if jq --argjson s "$_snd" --argjson v "$_vis" '
+      to_entries | map(.value.sound = $s | .value.visual = $v) | from_entries
+    ' "$NOTIFY_CONFIG_PATH" > "$tmp"; then
+        mv "$tmp" "$NOTIFY_CONFIG_PATH"
+        ok "Config updated (sound=$_snd, visual=$_vis)"
     else
-        info "Skipped — run the installer again to enable later"
+        rm -f "$tmp"
     fi
+fi
+
+# Register hooks for PermissionRequest, Stop, PreCompact, PostCompact
+if [[ "$ENABLE_SOUND" =~ ^[Yy]$ ]] || [[ "$ENABLE_VISUAL" =~ ^[Yy]$ ]]; then
+    tmp=$(mktemp "$SETTINGS_PATH.XXXXXX")
+    if jq '
+      .hooks = (.hooks // {}) |
+      .hooks.PermissionRequest = (
+        [(.hooks.PermissionRequest // [])[] | select(any(.hooks[]?; .command? | contains("notify.sh")) | not)]
+        + [{"hooks":[{"type":"command","command":"~/.claude/notify.sh permission","async":true}]}]
+      ) |
+      .hooks.Stop = (
+        [(.hooks.Stop // [])[] | select(any(.hooks[]?; .command? | contains("notify.sh")) | not)]
+        + [{"hooks":[{"type":"command","command":"~/.claude/notify.sh stop","async":true}]}]
+      ) |
+      .hooks.PreCompact = (
+        [(.hooks.PreCompact // [])[] | select(any(.hooks[]?; .command? | contains("notify.sh")) | not)]
+        + [{"matcher":"*","hooks":[{"type":"command","command":"~/.claude/notify.sh compaction_start","async":true}]}]
+      ) |
+      .hooks.PostCompact = (
+        [(.hooks.PostCompact // [])[] | select(any(.hooks[]?; .command? | contains("notify.sh")) | not)]
+        + [{"matcher":"*","hooks":[{"type":"command","command":"~/.claude/notify.sh compaction_done","async":true}]}]
+      )
+    ' "$SETTINGS_PATH" > "$tmp"; then
+        mv "$tmp" "$SETTINGS_PATH"
+        ok "Notification hooks enabled (PermissionRequest, Stop, PreCompact, PostCompact)"
+    else
+        rm -f "$tmp"
+        warn "Failed to configure hooks (jq error)"
+    fi
+
+    # Verification toast
+    if [[ "$ENABLE_VISUAL" =~ ^[Yy]$ ]] && command -v terminal-notifier &>/dev/null; then
+        terminal-notifier -title "Claude Status Line" -message "Notifications enabled!" 2>/dev/null
+        ok "Test notification sent"
+    fi
+else
+    info "Skipped — run the installer again to enable later"
 fi
 
 # --- Done ---
