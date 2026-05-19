@@ -802,6 +802,62 @@ done
 
 output+=$'\n'"$bot_rule"
 
+# --- Threshold notifications ---
+if [[ -n "$J_SESSION_ID" ]]; then
+    _notify_state="${TMPDIR:-/tmp}/statusline-notify-${J_SESSION_ID//[^a-zA-Z0-9_-]/}.json"
+    _ns_ctx=false _ns_rate=false _ns_rate_resets=""
+
+    if [[ -f "$_notify_state" ]] && command -v jq &>/dev/null; then
+        _ns_ctx=$(jq -r '.notified_context_high // false' "$_notify_state" 2>/dev/null)
+        _ns_rate=$(jq -r '.notified_rate_limit // false' "$_notify_state" 2>/dev/null)
+        _ns_rate_resets=$(jq -r '.last_rate_resets_at // ""' "$_notify_state" 2>/dev/null)
+    fi
+
+    _ctx_thresh=70 _rate_thresh=80
+    if [[ -f "$HOME/.claude/notify-config.json" ]] && command -v jq &>/dev/null; then
+        _ct=$(jq -r '.context_high.threshold // 70' "$HOME/.claude/notify-config.json" 2>/dev/null)
+        _rt=$(jq -r '.rate_limit.threshold // 80' "$HOME/.claude/notify-config.json" 2>/dev/null)
+        [[ "$_ct" =~ ^[0-9]+$ ]] && _ctx_thresh=$_ct
+        [[ "$_rt" =~ ^[0-9]+$ ]] && _rate_thresh=$_rt
+    fi
+
+    _ctx_pct="${pct_int:-0}"
+    _rate_max=0
+    [[ -n "$five_pct" ]] && { _fp=${five_pct%.*}; (( _fp > _rate_max )) && _rate_max=$_fp; }
+    [[ -n "$seven_pct" ]] && { _sp=${seven_pct%.*}; (( _sp > _rate_max )) && _rate_max=$_sp; }
+
+    _rate_resets_now="${J_RATE_5H_RESETS}"
+    [[ -n "$seven_pct" && -n "$five_pct" ]] && { _sp=${seven_pct%.*}; _fp=${five_pct%.*}; (( _sp > _fp )) && _rate_resets_now="${J_RATE_7D_RESETS}"; }
+    [[ -z "$five_pct" && -n "$seven_pct" ]] && _rate_resets_now="${J_RATE_7D_RESETS}"
+
+    _ns_changed=false
+    NOTIFY_SCRIPT="$HOME/.claude/notify.sh"
+
+    if (( _ctx_pct >= _ctx_thresh )) && [[ "$_ns_ctx" != "true" ]]; then
+        [[ -x "$NOTIFY_SCRIPT" ]] && "$NOTIFY_SCRIPT" context_high "$_ctx_pct" &
+        _ns_ctx=true; _ns_changed=true
+        log_msg "notify: context_high fired at ${_ctx_pct}%"
+    elif (( _ctx_pct < _ctx_thresh )) && [[ "$_ns_ctx" == "true" ]]; then
+        _ns_ctx=false; _ns_changed=true
+        log_msg "notify: context_high reset (${_ctx_pct}% < ${_ctx_thresh}%)"
+    fi
+
+    if [[ "$_rate_resets_now" != "$_ns_rate_resets" ]]; then
+        _ns_rate=false; _ns_changed=true
+        log_msg "notify: rate_limit reset (resets_at changed)"
+    fi
+    if (( _rate_max >= _rate_thresh )) && [[ "$_ns_rate" != "true" ]]; then
+        [[ -x "$NOTIFY_SCRIPT" ]] && "$NOTIFY_SCRIPT" rate_limit "$_rate_max" &
+        _ns_rate=true; _ns_changed=true
+        log_msg "notify: rate_limit fired at ${_rate_max}%"
+    fi
+
+    if [[ "$_ns_changed" == true ]]; then
+        printf '{"notified_context_high":%s,"notified_rate_limit":%s,"last_rate_resets_at":"%s"}' \
+            "$_ns_ctx" "$_ns_rate" "$_rate_resets_now" > "$_notify_state" 2>/dev/null
+    fi
+fi
+
 log_msg "about to write: chars=${#output}"
 if [[ -n "$J_SESSION_ID" ]]; then
     printf '%s\n%s' "$_oc_key" "$output" > "$_oc_path" 2>/dev/null
