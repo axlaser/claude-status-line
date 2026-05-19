@@ -100,6 +100,29 @@ Write-Host "  ${DIM}Windows Installer${RESET}"
 Write-Host "  ${GRAY}$([string][char]0x2501 * 43)${RESET}"
 Write-Host ""
 
+# --- Check for BurntToast ---
+Step "Checking for BurntToast"
+$hasBT = $null -ne (Get-Module -ListAvailable -Name BurntToast -ErrorAction SilentlyContinue)
+if ($hasBT) {
+    Ok "BurntToast found"
+} else {
+    Warn "BurntToast not installed (needed for visual notifications)"
+    Write-Host ""
+    $answer = Read-Host "  ${YELLOW}${BOLD} ?${RESET} Install BurntToast module? (${GREEN}y${RESET}/${RED}n${RESET})"
+    if ($answer -match '^[Yy]$') {
+        try {
+            Install-Module -Name BurntToast -Scope CurrentUser -Force -ErrorAction Stop
+            Ok "BurntToast installed"
+        } catch {
+            Warn "Failed to install BurntToast: $_"
+            Info "Visual notifications will be disabled (sound-only)"
+        }
+    } else {
+        Info "Visual notifications will be disabled (sound-only)"
+    }
+}
+Write-Host ""
+
 # --- Install the script ---
 # $MyInvocation.MyCommand.Path is $null when run via `irm | iex` -- that's how we detect the piped case.
 Step "Installing status line script"
@@ -292,19 +315,42 @@ if ($localNotify -and (Test-Path $localNotify)) {
 }
 Info "$notifyPath ($(HumanSize (Get-Item $notifyPath).Length))"
 
+# --- Create notification config ---
+Write-Host ""
+Step "Notification configuration"
+$notifyConfigPath = "$claudeDir\notify-config.json"
+if (Test-Path $notifyConfigPath) {
+    Ok "Config already exists (preserving)"
+    Info $notifyConfigPath
+} else {
+    $defaultConfig = @'
+{
+  "permission":        { "sound": true, "visual": true },
+  "stop":              { "sound": true, "visual": true },
+  "rate_limit":        { "sound": true, "visual": true, "threshold": 80 },
+  "context_high":      { "sound": false, "visual": true, "threshold": 70 },
+  "compaction_start":  { "sound": true, "visual": true },
+  "compaction_done":   { "sound": true, "visual": true }
+}
+'@
+    $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+    [System.IO.File]::WriteAllText($notifyConfigPath, $defaultConfig, $utf8NoBom)
+    Ok "Created default config"
+    Info $notifyConfigPath
+}
+
 # --- Configure notification hooks ---
 Write-Host ""
 Step "Sound notifications"
-Info "Plays a sound when Claude needs permission or finishes responding."
+Info "Plays a sound when Claude needs attention."
 
+$hasNotifyHooks = $false
 try {
     $existing = Get-Content $settingsPath -Raw -Encoding UTF8 | ConvertFrom-Json
 } catch {
     Err "settings.json could not be parsed: $_"
     exit 1
 }
-
-$hasNotifyHooks = $false
 if ($existing.hooks) {
     foreach ($eventName in @('PermissionRequest', 'Stop')) {
         $eventHooks = $existing.hooks.$eventName
@@ -325,30 +371,60 @@ if ($existing.hooks) {
     }
 }
 
+$enableSound = 'n'
+$enableVisual = 'n'
+
 if ($hasNotifyHooks) {
     Ok "Already configured"
 } else {
     Write-Host ""
-    $answer = Read-Host "  ${YELLOW}${BOLD} ?${RESET} Enable sound notifications? (${GREEN}y${RESET}/${RED}n${RESET})"
-    if ($answer -match '^[Yy]$') {
-        $notifyCmd = "powershell -NoProfile -File `"$notifyPath`""
+    $enableSound = Read-Host "  ${YELLOW}${BOLD} ?${RESET} Enable sound notifications? (${GREEN}y${RESET}/${RED}n${RESET})"
 
-        $permEntry = [PSCustomObject]@{
-            hooks = @(
-                [PSCustomObject]@{ type = "command"; command = "$notifyCmd permission"; async = $true }
-            )
+    Write-Host ""
+    Step "Visual notifications"
+    Info "Shows native OS popups for Claude events."
+    $hasBT = $null -ne (Get-Module -ListAvailable -Name BurntToast -ErrorAction SilentlyContinue)
+    if ($hasBT) {
+        Write-Host ""
+        $enableVisual = Read-Host "  ${YELLOW}${BOLD} ?${RESET} Enable visual notifications? (${GREEN}y${RESET}/${RED}n${RESET})"
+    } else {
+        Warn "BurntToast not found - visual notifications disabled"
+    }
+
+    # Apply choices to config
+    if (Test-Path $notifyConfigPath) {
+        try {
+            $ncfg = Get-Content $notifyConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
+            $sndVal = $enableSound -match '^[Yy]$'
+            $visVal = $enableVisual -match '^[Yy]$'
+            foreach ($prop in $ncfg.PSObject.Properties) {
+                $prop.Value.sound = $sndVal
+                $prop.Value.visual = $visVal
+            }
+            $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+            [System.IO.File]::WriteAllText($notifyConfigPath, (Format-Json ($ncfg | ConvertTo-Json -Depth 10)), $utf8NoBom)
+            Ok "Config updated (sound=$sndVal, visual=$visVal)"
+        } catch {
+            Warn "Failed to update config: $_"
         }
-        $stopEntry = [PSCustomObject]@{
-            hooks = @(
-                [PSCustomObject]@{ type = "command"; command = "$notifyCmd stop"; async = $true }
-            )
-        }
+    }
+
+    # Register hooks
+    if ($enableSound -match '^[Yy]$' -or $enableVisual -match '^[Yy]$') {
+        $notifyCmd = "powershell -NoProfile -File `"$notifyPath`""
 
         if (-not $existing.hooks) {
             $existing | Add-Member -NotePropertyName 'hooks' -NotePropertyValue ([PSCustomObject]@{}) -Force
         }
 
-        foreach ($pair in @(@('PermissionRequest', $permEntry), @('Stop', $stopEntry))) {
+        $hookPairs = @(
+            @('PermissionRequest', [PSCustomObject]@{ hooks = @([PSCustomObject]@{ type = 'command'; command = "$notifyCmd permission"; async = $true }) }),
+            @('Stop',              [PSCustomObject]@{ hooks = @([PSCustomObject]@{ type = 'command'; command = "$notifyCmd stop"; async = $true }) }),
+            @('PreCompact',        [PSCustomObject]@{ matcher = '*'; hooks = @([PSCustomObject]@{ type = 'command'; command = "$notifyCmd compaction_start"; async = $true }) }),
+            @('PostCompact',       [PSCustomObject]@{ matcher = '*'; hooks = @([PSCustomObject]@{ type = 'command'; command = "$notifyCmd compaction_done"; async = $true }) })
+        )
+
+        foreach ($pair in $hookPairs) {
             $eventName = $pair[0]
             $newEntry = $pair[1]
             $kept = [System.Collections.ArrayList]::new()
@@ -375,7 +451,19 @@ if ($hasNotifyHooks) {
         $tmpPath = "$settingsPath.tmp"
         [System.IO.File]::WriteAllText($tmpPath, (Format-Json ($existing | ConvertTo-Json -Depth 10)), $utf8NoBom)
         Move-Item $tmpPath $settingsPath -Force
-        Ok "Notifications enabled"
+        Ok "Notification hooks enabled (PermissionRequest, Stop, PreCompact, PostCompact)"
+
+        # Verification toast
+        if ($enableVisual -match '^[Yy]$') {
+            $hasBT = $null -ne (Get-Module -ListAvailable -Name BurntToast -ErrorAction SilentlyContinue)
+            if ($hasBT) {
+                try {
+                    Import-Module BurntToast -ErrorAction SilentlyContinue
+                    New-BurntToastNotification -Text "Claude Status Line", "Notifications enabled!" -ErrorAction SilentlyContinue
+                    Ok "Test notification sent"
+                } catch {}
+            }
+        }
     } else {
         Info "Skipped - run the installer again to enable later"
     }
