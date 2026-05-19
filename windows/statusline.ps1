@@ -682,6 +682,74 @@ foreach ($r in $rows) {
 }
 $output += $botRule
 $finalOutput = $output -join "`n"
+
+# --- Threshold notifications ---
+$_nsSessionId = Get-Val $json @('session_id')
+if ($_nsSessionId) {
+    $_notifyState = Join-Path $env:TEMP "statusline-notify-$_nsSessionId.json"
+    $_nsCtx = $false; $_nsRate = $false; $_nsRateResets = ''
+
+    if (Test-Path -LiteralPath $_notifyState -ErrorAction SilentlyContinue) {
+        try {
+            $_nsData = Get-Content -LiteralPath $_notifyState -Raw -Encoding UTF8 | ConvertFrom-Json
+            $_nsCtx = if ($_nsData.notified_context_high -eq $true) { $true } else { $false }
+            $_nsRate = if ($_nsData.notified_rate_limit -eq $true) { $true } else { $false }
+            $_nsRateResets = if ($_nsData.last_rate_resets_at) { $_nsData.last_rate_resets_at } else { '' }
+        } catch {}
+    }
+
+    $_ctxThresh = 70; $_rateThresh = 80
+    $ncPath = "$env:USERPROFILE\.claude\notify-config.json"
+    if (Test-Path $ncPath) {
+        try {
+            $_nc = Get-Content $ncPath -Raw -Encoding UTF8 | ConvertFrom-Json
+            if ($_nc.context_high.threshold) { $_ctxThresh = [int]$_nc.context_high.threshold }
+            if ($_nc.rate_limit.threshold) { $_rateThresh = [int]$_nc.rate_limit.threshold }
+        } catch {}
+    }
+
+    $_ctxPct = if ($null -ne $pctInt) { $pctInt } else { 0 }
+    $_rateMax = 0
+    if ($null -ne $fivePct)  { $_fp = [int][Math]::Floor([double]$fivePct);  if ($_fp -gt $_rateMax) { $_rateMax = $_fp } }
+    if ($null -ne $sevenPct) { $_sp = [int][Math]::Floor([double]$sevenPct); if ($_sp -gt $_rateMax) { $_rateMax = $_sp } }
+
+    $_rateResetsNow = Get-Val $json @('rate_limits','five_hour','resets_at') ''
+    if ($null -ne $sevenPct -and $null -ne $fivePct) {
+        $_sp2 = [int][Math]::Floor([double]$sevenPct); $_fp2 = [int][Math]::Floor([double]$fivePct)
+        if ($_sp2 -gt $_fp2) { $_rateResetsNow = Get-Val $json @('rate_limits','seven_day','resets_at') '' }
+    }
+    if ($null -eq $fivePct -and $null -ne $sevenPct) { $_rateResetsNow = Get-Val $json @('rate_limits','seven_day','resets_at') '' }
+
+    $_nsChanged = $false
+    $notifyScript = "$env:USERPROFILE\.claude\notify.ps1"
+
+    if ($_ctxPct -ge $_ctxThresh -and -not $_nsCtx) {
+        if (Test-Path $notifyScript) { Start-Process -NoNewWindow -FilePath 'powershell' -ArgumentList "-NoProfile -File `"$notifyScript`" context_high $_ctxPct" }
+        $_nsCtx = $true; $_nsChanged = $true
+        Write-Log "notify: context_high fired at ${_ctxPct}%"
+    } elseif ($_ctxPct -lt $_ctxThresh -and $_nsCtx) {
+        $_nsCtx = $false; $_nsChanged = $true
+        Write-Log "notify: context_high reset (${_ctxPct}% < ${_ctxThresh}%)"
+    }
+
+    if ($_rateResetsNow -ne $_nsRateResets) {
+        $_nsRate = $false; $_nsChanged = $true
+        Write-Log "notify: rate_limit reset (resets_at changed)"
+    }
+    if ($_rateMax -ge $_rateThresh -and -not $_nsRate) {
+        if (Test-Path $notifyScript) { Start-Process -NoNewWindow -FilePath 'powershell' -ArgumentList "-NoProfile -File `"$notifyScript`" rate_limit $_rateMax" }
+        $_nsRate = $true; $_nsChanged = $true
+        Write-Log "notify: rate_limit fired at ${_rateMax}%"
+    }
+
+    if ($_nsChanged) {
+        $nsCtxStr  = if ($_nsCtx)  { 'true' } else { 'false' }
+        $nsRateStr = if ($_nsRate) { 'true' } else { 'false' }
+        $nsJson = "{`"notified_context_high`":$nsCtxStr,`"notified_rate_limit`":$nsRateStr,`"last_rate_resets_at`":`"$_rateResetsNow`"}"
+        try { [System.IO.File]::WriteAllText($_notifyState, $nsJson, (New-Object System.Text.UTF8Encoding $false)) } catch {}
+    }
+}
+
 Write-Log ("about to write: lines={0} chars={1}" -f $output.Count, $finalOutput.Length)
 if ($_ocPath) {
     try {
