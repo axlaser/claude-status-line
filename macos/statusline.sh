@@ -21,6 +21,7 @@ RED="${ESC}[31m"
 BLUE="${ESC}[34m"
 WHITE="${ESC}[37m"
 GRAY="${ESC}[90m"
+BAR_EMPTY="${ESC}[38;5;242m"
 
 # --- Debug log ---
 LOG_PATH="$HOME/.claude/statusline-debug.log"
@@ -220,7 +221,7 @@ empty_count=$((bar_width - filled))
 
 filled_chars=$(repeat_char "█" "$filled")
 empty_chars=$(repeat_char "░" "$empty_count")
-bar="${bar_color}${filled_chars}${RESET}${GRAY}${empty_chars}${RESET}"
+bar="${bar_color}${filled_chars}${RESET}${BAR_EMPTY}${empty_chars}${RESET}"
 
 token_suffix=""
 if [[ -n "$ctx_size" ]]; then
@@ -261,6 +262,9 @@ branch=""
 insertions=0
 deletions=0
 untracked=0
+ahead=0
+behind=0
+stash=0
 
 git_index="$git_cwd/.git/index"
 if [[ -f "$git_index" ]]; then
@@ -269,11 +273,12 @@ if [[ -f "$git_index" ]]; then
     git_use_cache=false
 
     if [[ -f "$git_cache_path" ]]; then
-        IFS='|' read -r gc_mt gc_branch gc_ins gc_del gc_unt < "$git_cache_path"
+        IFS='|' read -r gc_mt gc_branch gc_ins gc_del gc_unt gc_ahead gc_behind gc_stash < "$git_cache_path"
         if [[ "$gc_mt" == "$git_index_mt" ]]; then
             gc_file_age=$(( _oc_now - $(stat -f %m "$git_cache_path" 2>/dev/null || echo 0) ))
             if (( gc_file_age < 5 )); then
                 branch="$gc_branch"; insertions="$gc_ins"; deletions="$gc_del"; untracked="$gc_unt"
+                ahead="${gc_ahead:-0}"; behind="${gc_behind:-0}"; stash="${gc_stash:-0}"
                 git_use_cache=true
             fi
         fi
@@ -289,9 +294,15 @@ if [[ -f "$git_index" ]]; then
                     [[ "$diff_stat" =~ ([0-9]+)\ deletion ]]  && deletions="${BASH_REMATCH[1]}"
                 fi
                 untracked=$(git --no-optional-locks -C "$git_cwd" status --porcelain 2>/dev/null | grep -c '^??' || true)
+                ab_count=$(git --no-optional-locks -C "$git_cwd" rev-list --left-right --count HEAD...@{upstream} 2>/dev/null)
+                if [[ -n "$ab_count" ]]; then
+                    read -r ahead behind <<< "$ab_count"
+                fi
+                stash=$(git --no-optional-locks -C "$git_cwd" stash list 2>/dev/null | wc -l)
+                stash="${stash##* }"
             fi
         fi
-        printf '%s|%s|%s|%s|%s' "$git_index_mt" "$branch" "$insertions" "$deletions" "$untracked" > "$git_cache_path" 2>/dev/null
+        printf '%s|%s|%s|%s|%s|%s|%s|%s' "$git_index_mt" "$branch" "$insertions" "$deletions" "$untracked" "$ahead" "$behind" "$stash" > "$git_cache_path" 2>/dev/null
     fi
 fi
 
@@ -300,9 +311,12 @@ if [[ -n "$branch" ]]; then
     (( insertions > 0 || deletions > 0 || untracked > 0 )) && is_dirty=true
     if $is_dirty; then branch_color="$YELLOW"; else branch_color="$GREEN"; fi
     git_part="${branch_color}${branch}${RESET}"
+    (( ahead > 0 ))      && git_part+=" ${CYAN}↑${ahead}${RESET}"
+    (( behind > 0 ))     && git_part+=" ${MAGENTA}↓${behind}${RESET}"
     (( insertions > 0 )) && git_part+=" ${GREEN}+${insertions}${RESET}"
     (( deletions > 0 ))  && git_part+=" ${RED}-${deletions}${RESET}"
     (( untracked > 0 ))  && git_part+=" ${GRAY}~${untracked}${RESET}"
+    (( stash > 0 ))      && git_part+=" ${DIM}⊟${stash}${RESET}"
 fi
 
 # --- 5. Cost + Duration ---
@@ -679,7 +693,7 @@ if [[ -n "$session_id" && -n "$transcript_path" ]]; then
             sa_empty=$((bar_width - sa_filled))
             sa_filled_chars=$(repeat_char "█" "$sa_filled")
             sa_empty_chars=$(repeat_char "░" "$sa_empty")
-            sa_bar="${sa_color}${sa_filled_chars}${RESET}${GRAY}${sa_empty_chars}${RESET}"
+            sa_bar="${sa_color}${sa_filled_chars}${RESET}${BAR_EMPTY}${sa_empty_chars}${RESET}"
 
             sa_used_lbl=$(format_tokens "$sa_used")
             sa_ctx_lbl=$(format_tokens "$sa_ctx_size")

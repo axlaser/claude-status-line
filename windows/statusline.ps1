@@ -195,7 +195,7 @@ try {
         $gitIndexMt = (Get-Item -LiteralPath $gitIndex -Force).LastWriteTimeUtc.Ticks
         $gitCachePath = Join-Path $env:TEMP "statusline-git-$sessionId.txt"
         $gitUseCache = $false
-        $branch = $null; $insertions = 0; $deletions = 0; $untracked = 0
+        $branch = $null; $insertions = 0; $deletions = 0; $untracked = 0; $ahead = 0; $behind = 0; $stash = 0
 
         if (Test-Path -LiteralPath $gitCachePath) {
             $gc = (Get-Content -LiteralPath $gitCachePath -Raw -ErrorAction SilentlyContinue) -split '\|'
@@ -203,6 +203,9 @@ try {
                 $cacheAge = ([DateTimeOffset]::UtcNow - [DateTimeOffset](Get-Item -LiteralPath $gitCachePath -Force).LastWriteTimeUtc).TotalSeconds
                 if ($cacheAge -lt 5) {
                     $branch = $gc[1]; $insertions = [int]$gc[2]; $deletions = [int]$gc[3]; $untracked = [int]$gc[4]
+                    $ahead  = if ($gc.Count -ge 8) { [int]$gc[5] } else { 0 }
+                    $behind = if ($gc.Count -ge 8) { [int]$gc[6] } else { 0 }
+                    $stash  = if ($gc.Count -ge 8) { [int]$gc[7] } else { 0 }
                     $gitUseCache = $true
                 }
             }
@@ -219,8 +222,14 @@ try {
                 }
                 $porcelain = & git --no-optional-locks -C $gitCwd status --porcelain 2>$null
                 $untracked = @($porcelain | Where-Object { $_ -match '^\?\?' }).Count
+                $abRaw = & git --no-optional-locks -C $gitCwd rev-list --left-right --count "HEAD...@{upstream}" 2>$null
+                if ($abRaw -and $abRaw.Trim() -ne '') {
+                    $abParts = $abRaw.Trim() -split '\s+'
+                    if ($abParts.Count -ge 2) { $ahead = [int]$abParts[0]; $behind = [int]$abParts[1] }
+                }
+                $stash = @(& git --no-optional-locks -C $gitCwd stash list 2>$null).Count
             } else { $branch = $null }
-            "$gitIndexMt|$branch|$insertions|$deletions|$untracked" | Set-Content -LiteralPath $gitCachePath -Encoding utf8 -ErrorAction SilentlyContinue
+            "$gitIndexMt|$branch|$insertions|$deletions|$untracked|$ahead|$behind|$stash" | Set-Content -LiteralPath $gitCachePath -Encoding utf8 -ErrorAction SilentlyContinue
         }
 
         if ($branch) {
@@ -228,9 +237,12 @@ try {
             $branchColor = if ($isDirty) { $YELLOW } else { $GREEN }
             $gitPart = "${branchColor}${branch}${RESET}"
             $statParts = @()
+            if ($ahead      -gt 0) { $statParts += "${CYAN}$([char]0x2191)${ahead}${RESET}" }
+            if ($behind     -gt 0) { $statParts += "${MAGENTA}$([char]0x2193)${behind}${RESET}" }
             if ($insertions -gt 0) { $statParts += "${GREEN}+${insertions}${RESET}" }
             if ($deletions  -gt 0) { $statParts += "${RED}-${deletions}${RESET}" }
             if ($untracked  -gt 0) { $statParts += "${GRAY}~${untracked}${RESET}" }
+            if ($stash      -gt 0) { $statParts += "${DIM}$([char]0x229F)${stash}${RESET}" }
             if ($statParts.Count -gt 0) { $gitPart += ' ' + ($statParts -join ' ') }
         }
     }
