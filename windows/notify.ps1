@@ -2,6 +2,11 @@
 param([string]$Event, [string]$Value)
 if (-not $Event) { exit 0 }
 
+$stdinData = $null
+if ($Event -eq 'permission') {
+    try { $stdinData = [Console]::In.ReadToEnd() } catch {}
+}
+
 $configPath = "$env:USERPROFILE\.claude\notify-config.json"
 $logPath    = "$env:USERPROFILE\.claude\statusline-debug.log"
 
@@ -52,7 +57,31 @@ if ($visualEnabled) {
         Write-Log "BurntToast not found, skipping visual"
     } else {
         $msg = switch ($Event) {
-            'permission'       { 'Waiting for permission' }
+            'permission'       {
+                $permMsg = 'Waiting for permission'
+                if ($stdinData) {
+                    try {
+                        $hookJson = $stdinData | ConvertFrom-Json -ErrorAction SilentlyContinue
+                        $toolName = $hookJson.tool_name
+                        if ($toolName) {
+                            $detail = switch ($toolName) {
+                                'Bash'  { $hookJson.tool_input.command }
+                                'Edit'  { $hookJson.tool_input.file_path }
+                                'Write' { $hookJson.tool_input.file_path }
+                                'Read'  { $hookJson.tool_input.file_path }
+                                default { $null }
+                            }
+                            if ($detail) {
+                                if ($detail.Length -gt 80) { $detail = $detail.Substring(0, 80) }
+                                $permMsg = "${toolName}: ${detail}"
+                            } else {
+                                $permMsg = $toolName
+                            }
+                        }
+                    } catch {}
+                }
+                $permMsg
+            }
             'stop'             { 'Task complete' }
             'compaction_start' { 'Compacting context...' }
             'compaction_done'  { 'Context compacted' }

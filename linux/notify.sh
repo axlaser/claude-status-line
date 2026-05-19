@@ -6,6 +6,11 @@ EVENT="${1:-}"
 VALUE="${2:-}"
 [[ -z "$EVENT" ]] && exit 0
 
+STDIN=""
+if [[ "$EVENT" == "permission" ]] && ! [ -t 0 ]; then
+    STDIN=$(cat)
+fi
+
 CONFIG_PATH="$HOME/.claude/notify-config.json"
 LOG_PATH="$HOME/.claude/statusline-debug.log"
 
@@ -64,7 +69,25 @@ if [[ "$VISUAL" == true ]]; then
         log_msg "notify-send not found, skipping visual"
     else
         case "$EVENT" in
-            permission)       MSG="Waiting for permission" ;;
+            permission)
+                MSG="Waiting for permission"
+                if [[ -n "$STDIN" ]] && command -v jq &>/dev/null; then
+                    _tool=$(printf '%s' "$STDIN" | jq -r '.tool_name // empty' 2>/dev/null)
+                    if [[ -n "$_tool" ]]; then
+                        _detail=""
+                        case "$_tool" in
+                            Bash)  _detail=$(printf '%s' "$STDIN" | jq -r '.tool_input.command // empty' 2>/dev/null) ;;
+                            Edit|Write|Read) _detail=$(printf '%s' "$STDIN" | jq -r '.tool_input.file_path // empty' 2>/dev/null) ;;
+                        esac
+                        if [[ -n "$_detail" ]]; then
+                            _detail="${_detail:0:80}"
+                            MSG="${_tool}: ${_detail}"
+                        else
+                            MSG="${_tool}"
+                        fi
+                    fi
+                fi
+                ;;
             stop)             MSG="Task complete" ;;
             compaction_start) MSG="Compacting context..." ;;
             compaction_done)  MSG="Context compacted" ;;
