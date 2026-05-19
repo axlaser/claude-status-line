@@ -42,7 +42,6 @@ if ($soundEnabled) {
         'rate_limit'       { [System.Media.SystemSounds]::Hand.Play() }
         'context_high'     { [System.Media.SystemSounds]::Hand.Play() }
     }
-    Start-Sleep -Milliseconds 300
     Write-Log "sound dispatched"
 }
 
@@ -64,7 +63,12 @@ if ($visualEnabled) {
         if ($msg) {
             try {
                 Import-Module BurntToast -ErrorAction SilentlyContinue
-                New-BurntToastNotification -Text "Claude Code", $msg -ErrorAction SilentlyContinue
+                $iconPath = "$env:USERPROFILE\.claude\claude-icon.png"
+                if (Test-Path $iconPath) {
+                    New-BurntToastNotification -Text "Claude Code", $msg -AppLogo $iconPath -ErrorAction SilentlyContinue
+                } else {
+                    New-BurntToastNotification -Text "Claude Code", $msg -ErrorAction SilentlyContinue
+                }
                 Write-Log "visual dispatched: $msg"
             } catch {
                 Write-Log "visual failed: $_"

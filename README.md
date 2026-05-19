@@ -31,7 +31,7 @@ showing context usage, git state, costs, rate limits, and more — all inside a 
 | **tokens** | Cumulative session breakdown — `in` (fresh input), `cache↑` (cache writes), `cache↓` (cache reads), `out` (output) |
 | **cost** | Session cost in USD, message count, and wall-clock duration |
 | **limits** | 5-hour and 7-day rate limit usage with burn-rate arrows (`⇡` over pace / `⇣` under pace) and time until reset |
-| **notifications** | Optional sound alerts — distinct tones for permission requests and task completion (enable during install) |
+| **notifications** | Sound alerts and native OS toast popups for permission requests, task completion, context compaction, rate limit warnings, and context window warnings (enable during install) |
 
 All rows are dynamic — empty rows are automatically hidden.
 
@@ -285,21 +285,61 @@ Both scripts write debug logs to help troubleshoot issues:
 | macOS / Linux | `~/.claude/statusline-debug.log` |
 | Windows | `%USERPROFILE%\.claude\statusline-debug.log` |
 
-### Sound Notifications
+### Notifications
 
-The installer can optionally configure sound hooks that play:
-- A short alert tone when Claude shows a permission dialog
-- A softer completion tone when Claude finishes responding
+The installer can configure both **sound** and **visual** (native OS toast) notifications. Each channel is independently toggleable per event type.
 
-Notifications use platform-native sounds — no additional software needed:
+#### Events
 
-| Platform | Permission sound | Completion sound | Player |
-|----------|-----------------|------------------|--------|
-| macOS | Tink | Glass | `afplay` |
-| Linux | freedesktop bell (or terminal bell) | freedesktop complete (or terminal bell) | `paplay` / `aplay` |
-| Windows | System Exclamation | System Asterisk | Built-in (`SystemSounds`) |
+| Event | Trigger |
+|-------|---------|
+| Permission request | Claude shows a permission dialog |
+| Task complete | Claude finishes responding |
+| Compaction start | Context compaction begins |
+| Compaction done | Context compaction completes |
+| Context high | Context window usage >= 70% (configurable) |
+| Rate limit | Rate limit usage >= 80% (configurable) |
 
-To enable after initial install, re-run the installer and answer **y** to the notification prompt. To disable, run the uninstaller — it removes notification hooks while preserving your other settings.
+#### Sound
+
+Platform-native sounds — no additional software needed:
+
+| Platform | Permission / Compaction start | Complete / Compaction done | Warning (rate limit / context) | Player |
+|----------|-------------------------------|----------------------------|-------------------------------|--------|
+| macOS | Tink | Glass | Sosumi | `afplay` |
+| Linux | freedesktop bell | freedesktop complete | freedesktop dialog-warning | `paplay` / `aplay` |
+| Windows | System Exclamation | System Asterisk | System Hand | Built-in (`SystemSounds`) |
+
+#### Visual (toast notifications)
+
+| Platform | Tool | Install |
+|----------|------|---------|
+| macOS | [terminal-notifier](https://github.com/julienXX/terminal-notifier) | `brew install terminal-notifier` |
+| Linux | notify-send | `sudo apt install libnotify-bin` (or equivalent for your distro) |
+| Windows | [BurntToast](https://github.com/Windos/BurntToast) | `Install-Module -Name BurntToast -Scope CurrentUser` |
+
+The installer offers to install these automatically. If the visual tool is missing, sound notifications still work — visual silently degrades.
+
+Toast notifications display the Claude icon ([source](https://commons.wikimedia.org/wiki/File:Claude_AI_symbol.svg), public domain). The installer copies it to `~/.claude/claude-icon.png` automatically.
+
+#### Configuration
+
+Notification settings are stored in `~/.claude/notify-config.json`:
+
+```json
+{
+  "permission":        { "sound": true, "visual": true },
+  "stop":              { "sound": true, "visual": true },
+  "rate_limit":        { "sound": true, "visual": true, "threshold": 80 },
+  "context_high":      { "sound": false, "visual": true, "threshold": 70 },
+  "compaction_start":  { "sound": true, "visual": true },
+  "compaction_done":   { "sound": true, "visual": true }
+}
+```
+
+Edit this file directly to toggle individual channels or adjust thresholds. The installer creates it with defaults on first run.
+
+To enable after initial install, re-run the installer and answer **y** to the notification prompts. To disable, run the uninstaller — it removes notification hooks while preserving your other settings.
 
 ---
 
@@ -352,6 +392,19 @@ Rate limit data is only available for Claude.ai Pro and Max subscribers. API use
 - Linux: ensure PulseAudio/PipeWire is running (`paplay` requires it) or ALSA is available (`aplay`)
 - Windows: verify `%USERPROFILE%\.claude\notify.ps1` exists, test with `powershell -File ~\.claude\notify.ps1 permission`
 - Restart Claude Code after installation — hooks are loaded at startup
+
+</details>
+
+<details>
+<summary><strong>Visual toast notifications not appearing</strong></summary>
+
+**macOS:** terminal-notifier posts notifications under its own bundle ID, which macOS may silence by default. Go to **System Settings > Notifications > terminal-notifier** and enable **Allow Notifications**. If terminal-notifier doesn't appear in the list, run `terminal-notifier -title "Test" -message "Hello"` once to register it, then check again.
+
+**Linux:** Ensure your desktop environment supports notifications (GNOME, KDE, XFCE, etc.). Test with `notify-send "Test" "Hello"`. Wayland compositors may require additional configuration.
+
+**Windows:** BurntToast requires the Windows notification center. Test with `New-BurntToastNotification -Text "Test", "Hello"`. If notifications are suppressed, check **Settings > System > Notifications** and ensure notifications are enabled for PowerShell.
+
+**All platforms:** Set `STATUSLINE_DEBUG=1` and check `~/.claude/statusline-debug.log` for `notify:` entries to confirm the script is running and whether the visual tool was found.
 
 </details>
 

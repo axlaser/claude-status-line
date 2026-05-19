@@ -48,12 +48,12 @@ play_sound() {
 
 if [[ "$SOUND" == true ]]; then
     case "$EVENT" in
-        permission)       play_sound "bell.oga" ;;
-        stop)             play_sound "complete.oga" ;;
-        compaction_start) play_sound "bell.oga" ;;
-        compaction_done)  play_sound "complete.oga" ;;
-        rate_limit)       play_sound "dialog-warning.oga" ;;
-        context_high)     play_sound "dialog-warning.oga" ;;
+        permission)       play_sound "bell.oga" & ;;
+        stop)             play_sound "complete.oga" & ;;
+        compaction_start) play_sound "bell.oga" & ;;
+        compaction_done)  play_sound "complete.oga" & ;;
+        rate_limit)       play_sound "dialog-warning.oga" & ;;
+        context_high)     play_sound "dialog-warning.oga" & ;;
     esac
     log_msg "sound dispatched"
 fi
@@ -73,7 +73,12 @@ if [[ "$VISUAL" == true ]]; then
             *)                MSG="" ;;
         esac
         if [[ -n "$MSG" ]]; then
-            notify-send "Claude Code" "$MSG" --urgency=normal 2>/dev/null
+            ICON="$HOME/.claude/claude-icon.png"
+            if [[ -f "$ICON" ]]; then
+                notify-send "Claude Code" "$MSG" --urgency=normal --icon="$ICON" 2>/dev/null
+            else
+                notify-send "Claude Code" "$MSG" --urgency=normal 2>/dev/null
+            fi
             log_msg "visual dispatched: $MSG"
         fi
     fi

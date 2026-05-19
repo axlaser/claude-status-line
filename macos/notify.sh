@@ -34,12 +34,12 @@ fi
 # --- Sound dispatch ---
 if [[ "$SOUND" == true ]]; then
     case "$EVENT" in
-        permission)       afplay /System/Library/Sounds/Tink.aiff 2>/dev/null ;;
-        stop)             afplay /System/Library/Sounds/Glass.aiff 2>/dev/null ;;
-        compaction_start) afplay /System/Library/Sounds/Tink.aiff 2>/dev/null ;;
-        compaction_done)  afplay /System/Library/Sounds/Glass.aiff 2>/dev/null ;;
-        rate_limit)       afplay /System/Library/Sounds/Sosumi.aiff 2>/dev/null ;;
-        context_high)     afplay /System/Library/Sounds/Sosumi.aiff 2>/dev/null ;;
+        permission)       afplay /System/Library/Sounds/Tink.aiff 2>/dev/null & ;;
+        stop)             afplay /System/Library/Sounds/Glass.aiff 2>/dev/null & ;;
+        compaction_start) afplay /System/Library/Sounds/Tink.aiff 2>/dev/null & ;;
+        compaction_done)  afplay /System/Library/Sounds/Glass.aiff 2>/dev/null & ;;
+        rate_limit)       afplay /System/Library/Sounds/Sosumi.aiff 2>/dev/null & ;;
+        context_high)     afplay /System/Library/Sounds/Sosumi.aiff 2>/dev/null & ;;
     esac
     log_msg "sound dispatched"
 fi
@@ -59,7 +59,12 @@ if [[ "$VISUAL" == true ]]; then
             *)                MSG="" ;;
         esac
         if [[ -n "$MSG" ]]; then
-            terminal-notifier -title "Claude Code" -message "$MSG" 2>/dev/null
+            ICON="$HOME/.claude/claude-icon.png"
+            if [[ -f "$ICON" ]]; then
+                terminal-notifier -title "Claude Code" -message "$MSG" -appIcon "$ICON" -contentImage "$ICON" 2>/dev/null
+            else
+                terminal-notifier -title "Claude Code" -message "$MSG" 2>/dev/null
+            fi
             log_msg "visual dispatched: $MSG"
         fi
     fi

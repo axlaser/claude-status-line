@@ -276,6 +276,15 @@ fi
 chmod +x "$NOTIFY_PATH"
 info "$NOTIFY_PATH ($(human_size $(file_bytes "$NOTIFY_PATH")))"
 
+# --- Install notification icon ---
+ICON_PATH="$CLAUDE_DIR/claude-icon.png"
+if [[ -n "$SCRIPT_DIR" && -f "$SCRIPT_DIR/../assets/claude-icon.png" ]]; then
+    cp "$SCRIPT_DIR/../assets/claude-icon.png" "$ICON_PATH" 2>/dev/null && ok "Icon installed" || true
+else
+    tmp=$(mktemp "$CLAUDE_DIR/icon.XXXXXX")
+    curl -fsSL "${REPO%/linux}/assets/claude-icon.png" -o "$tmp" 2>/dev/null && mv "$tmp" "$ICON_PATH" && ok "Icon downloaded" || { rm -f "$tmp"; true; }
+fi
+
 # --- Create notification config ---
 echo ""
 step "Notification configuration"

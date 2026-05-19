@@ -315,6 +315,16 @@ if ($localNotify -and (Test-Path $localNotify)) {
 }
 Info "$notifyPath ($(HumanSize (Get-Item $notifyPath).Length))"
 
+# --- Install notification icon ---
+$iconPath = "$claudeDir\claude-icon.png"
+$localIcon = if ($myPath) { Join-Path (Split-Path -Parent $myPath) "..\assets\claude-icon.png" } else { $null }
+if ($localIcon -and (Test-Path $localIcon)) {
+    try { Copy-Item $localIcon -Destination $iconPath -Force -ErrorAction Stop; Ok "Icon installed" } catch {}
+} else {
+    $iconRepo = $repo -replace '/windows$', ''
+    try { Invoke-WebRequest -Uri "$iconRepo/assets/claude-icon.png" -OutFile $iconPath -UseBasicParsing -ErrorAction Stop; Ok "Icon downloaded" } catch {}
+}
+
 # --- Create notification config ---
 Write-Host ""
 Step "Notification configuration"
