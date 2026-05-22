@@ -267,4 +267,3 @@ Write-Host ""
 Write-Host "  ${GRAY}$([string][char]0x2501 * 43)${RESET}"
 Write-Host "  ${GREEN}${BOLD}Done!${RESET} Restart Claude Code to use the default status bar."
 Write-Host ""
-exit 0

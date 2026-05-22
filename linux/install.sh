@@ -34,7 +34,7 @@ human_size() {
 # --- Bash version check ---
 if (( BASH_VERSINFO[0] < 4 )); then
     err "bash 4+ required (found $BASH_VERSION). Upgrade via your package manager."
-    exit 1
+    return 1 2>/dev/null || exit 1
 fi
 
 # --- Header ---
@@ -116,16 +116,16 @@ else
     if [[ -n "$PKG_MGR" ]]; then
         read -rp "  ${YELLOW}${BOLD} ?${RESET} Install jq via ${PKG_MGR}? (${GREEN}y${RESET}/${RED}n${RESET}) " answer </dev/tty
         if [[ "$answer" =~ ^[Yy]$ ]]; then
-            install_jq "$PKG_MGR" || { err "Failed to install jq via $PKG_MGR"; exit 1; }
+            install_jq "$PKG_MGR" || { err "Failed to install jq via $PKG_MGR"; return 1 2>/dev/null || exit 1; }
             ok "jq installed"
         else
             err "Please install jq manually: https://jqlang.github.io/jq/download/"
-            exit 1
+            return 1 2>/dev/null || exit 1
         fi
     else
         err "No supported package manager found"
         info "Install jq manually: https://jqlang.github.io/jq/download/"
-        exit 1
+        return 1 2>/dev/null || exit 1
     fi
 fi
 echo ""
@@ -183,11 +183,11 @@ if [[ -n "${BASH_SOURCE[0]}" && -f "${BASH_SOURCE[0]}" ]]; then
 fi
 if [[ -n "$SCRIPT_DIR" && -f "$SCRIPT_DIR/statusline.sh" ]]; then
     tmp=$(mktemp "$CLAUDE_DIR/statusline.XXXXXX")
-    cp "$SCRIPT_DIR/statusline.sh" "$tmp" && mv "$tmp" "$SCRIPT_PATH" || { rm -f "$tmp"; exit 1; }
+    cp "$SCRIPT_DIR/statusline.sh" "$tmp" && mv "$tmp" "$SCRIPT_PATH" || { rm -f "$tmp"; return 1 2>/dev/null || exit 1; }
     ok "Copied from local repo"
 else
     tmp=$(mktemp "$CLAUDE_DIR/statusline.XXXXXX")
-    curl -fsSL "$REPO/statusline.sh" -o "$tmp" && mv "$tmp" "$SCRIPT_PATH" || { rm -f "$tmp"; exit 1; }
+    curl -fsSL "$REPO/statusline.sh" -o "$tmp" && mv "$tmp" "$SCRIPT_PATH" || { rm -f "$tmp"; return 1 2>/dev/null || exit 1; }
     ok "Downloaded from GitHub"
 fi
 chmod +x "$SCRIPT_PATH"
@@ -216,7 +216,7 @@ if [[ -f "$SETTINGS_PATH" ]]; then
     else
         rm -f "$tmp"
         err "Failed to update settings.json (jq error)"
-        exit 1
+        return 1 2>/dev/null || exit 1
     fi
 else
     tmp=$(mktemp "$SETTINGS_PATH.XXXXXX")
@@ -226,7 +226,7 @@ else
     else
         rm -f "$tmp"
         err "Failed to create settings.json (jq error)"
-        exit 1
+        return 1 2>/dev/null || exit 1
     fi
 fi
 info "$SETTINGS_PATH"
@@ -236,11 +236,11 @@ echo ""
 step "Installing git-refresh hook"
 if [[ -n "$SCRIPT_DIR" && -f "$SCRIPT_DIR/git-refresh.sh" ]]; then
     tmp=$(mktemp "$CLAUDE_DIR/git-refresh.XXXXXX")
-    cp "$SCRIPT_DIR/git-refresh.sh" "$tmp" && mv "$tmp" "$GIT_REFRESH_PATH" || { rm -f "$tmp"; exit 1; }
+    cp "$SCRIPT_DIR/git-refresh.sh" "$tmp" && mv "$tmp" "$GIT_REFRESH_PATH" || { rm -f "$tmp"; return 1 2>/dev/null || exit 1; }
     ok "Copied from local repo"
 else
     tmp=$(mktemp "$CLAUDE_DIR/git-refresh.XXXXXX")
-    curl -fsSL "$REPO/git-refresh.sh" -o "$tmp" && mv "$tmp" "$GIT_REFRESH_PATH" || { rm -f "$tmp"; exit 1; }
+    curl -fsSL "$REPO/git-refresh.sh" -o "$tmp" && mv "$tmp" "$GIT_REFRESH_PATH" || { rm -f "$tmp"; return 1 2>/dev/null || exit 1; }
     ok "Downloaded from GitHub"
 fi
 chmod +x "$GIT_REFRESH_PATH"
@@ -276,11 +276,11 @@ echo ""
 step "Installing notification script"
 if [[ -n "$SCRIPT_DIR" && -f "$SCRIPT_DIR/notify.sh" ]]; then
     tmp=$(mktemp "$CLAUDE_DIR/notify.XXXXXX")
-    cp "$SCRIPT_DIR/notify.sh" "$tmp" && mv "$tmp" "$NOTIFY_PATH" || { rm -f "$tmp"; exit 1; }
+    cp "$SCRIPT_DIR/notify.sh" "$tmp" && mv "$tmp" "$NOTIFY_PATH" || { rm -f "$tmp"; return 1 2>/dev/null || exit 1; }
     ok "Copied from local repo"
 else
     tmp=$(mktemp "$CLAUDE_DIR/notify.XXXXXX")
-    curl -fsSL "$REPO/notify.sh" -o "$tmp" && mv "$tmp" "$NOTIFY_PATH" || { rm -f "$tmp"; exit 1; }
+    curl -fsSL "$REPO/notify.sh" -o "$tmp" && mv "$tmp" "$NOTIFY_PATH" || { rm -f "$tmp"; return 1 2>/dev/null || exit 1; }
     ok "Downloaded from GitHub"
 fi
 chmod +x "$NOTIFY_PATH"
@@ -417,4 +417,3 @@ echo ""
 printf "  ${GRAY}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}\n"
 printf "  ${GREEN}${BOLD}Done!${RESET} Restart Claude Code to activate.\n"
 echo ""
-exit 0

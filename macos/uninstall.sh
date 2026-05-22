@@ -189,4 +189,3 @@ echo ""
 printf "  ${GRAY}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}\n"
 printf "  ${GREEN}${BOLD}Done!${RESET} Restart Claude Code to use the default status bar.\n"
 echo ""
-exit 0

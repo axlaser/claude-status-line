@@ -1,6 +1,6 @@
 # Claude Code Status Line -- Installer for Windows
 # PowerShell 5.1+ required -- checked at runtime because `#Requires` directives aren't honored via `irm | iex`.
-if ($PSVersionTable.PSVersion -lt [Version]'5.1') { Write-Host "  PowerShell 5.1+ required (current: $($PSVersionTable.PSVersion))" -ForegroundColor Red; exit 1 }
+if ($PSVersionTable.PSVersion -lt [Version]'5.1') { Write-Host "  PowerShell 5.1+ required (current: $($PSVersionTable.PSVersion))" -ForegroundColor Red; return }
 
 $repo = "https://raw.githubusercontent.com/axlaser/claude-status-line/master/windows"
 $claudeDir = "$env:USERPROFILE\.claude"
@@ -137,7 +137,7 @@ if ($localScript -and (Test-Path $localScript)) {
     } catch {
         Err "Copy failed (file may be locked by Claude Code): $_"
         Err "Close Claude Code and try again."
-        exit 1
+        return
     }
 } else {
     try {
@@ -146,7 +146,7 @@ if ($localScript -and (Test-Path $localScript)) {
     } catch {
         Err "Download failed: $_"
         Err "Run the installer from a local clone instead."
-        exit 1
+        return
     }
 }
 Info "$scriptPath ($(HumanSize (Get-Item $scriptPath).Length))"
@@ -164,12 +164,12 @@ if (Test-Path $settingsPath) {
         $existing = Get-Content $settingsPath -Raw -Encoding UTF8 | ConvertFrom-Json
     } catch {
         Err "settings.json could not be parsed: $_"
-        exit 1
+        return
     }
 
     if ($null -eq $existing -or $existing -isnot [PSCustomObject]) {
         Err "settings.json could not be parsed as a JSON object. Please check the file manually."
-        exit 1
+        return
     }
 
     if ($existing.statusLine) {
@@ -208,7 +208,7 @@ if ($localGitRefresh -and (Test-Path $localGitRefresh)) {
     } catch {
         Err "Copy failed (file may be locked by Claude Code): $_"
         Err "Close Claude Code and try again."
-        exit 1
+        return
     }
 } else {
     try {
@@ -217,7 +217,7 @@ if ($localGitRefresh -and (Test-Path $localGitRefresh)) {
     } catch {
         Err "Download failed: $_"
         Err "Run the installer from a local clone instead."
-        exit 1
+        return
     }
 }
 Info "$gitRefreshPath ($(HumanSize (Get-Item $gitRefreshPath).Length))"
@@ -231,7 +231,7 @@ try {
     $existing = Get-Content $settingsPath -Raw -Encoding UTF8 | ConvertFrom-Json
 } catch {
     Err "settings.json could not be parsed: $_"
-    exit 1
+    return
 }
 
 $hasRefreshHook = $false
@@ -301,7 +301,7 @@ if ($localNotify -and (Test-Path $localNotify)) {
     } catch {
         Err "Copy failed (file may be locked by Claude Code): $_"
         Err "Close Claude Code and try again."
-        exit 1
+        return
     }
 } else {
     try {
@@ -310,7 +310,7 @@ if ($localNotify -and (Test-Path $localNotify)) {
     } catch {
         Err "Download failed: $_"
         Err "Run the installer from a local clone instead."
-        exit 1
+        return
     }
 }
 Info "$notifyPath ($(HumanSize (Get-Item $notifyPath).Length))"
@@ -361,7 +361,7 @@ try {
     $existing = Get-Content $settingsPath -Raw -Encoding UTF8 | ConvertFrom-Json
 } catch {
     Err "settings.json could not be parsed: $_"
-    exit 1
+    return
 }
 if ($existing.hooks) {
     foreach ($eventName in @('PermissionRequest', 'Stop', 'PreCompact', 'PostCompact')) {
@@ -499,4 +499,3 @@ Write-Host ""
 Write-Host "  ${GRAY}$([string][char]0x2501 * 43)${RESET}"
 Write-Host "  ${GREEN}${BOLD}Done!${RESET} Restart Claude Code to activate."
 Write-Host ""
-exit 0
