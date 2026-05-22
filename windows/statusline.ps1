@@ -241,7 +241,7 @@ try {
                     if ($short) { $branch = $short }
                 }
             }
-            if ($branch -and $LASTEXITCODE -eq 0) {
+            if ($branch) {
                 $diffStat = & git --no-optional-locks -C $gitCwd diff --shortstat HEAD 2>$null
                 $insertions = 0; $deletions = 0
                 if ($diffStat -and $diffStat.Trim() -ne '') {

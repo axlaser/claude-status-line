@@ -111,6 +111,8 @@ if (Test-Path $iconPath) {
 }
 
 # --- Remove git-refresh script ---
+Write-Host ""
+Step "Removing git-refresh script"
 if (Test-Path $gitRefreshPath) {
     $sz = HumanSize (Get-Item $gitRefreshPath).Length
     Remove-Item $gitRefreshPath -Force -ErrorAction SilentlyContinue

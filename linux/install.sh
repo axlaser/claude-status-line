@@ -205,9 +205,8 @@ if [[ -f "$SETTINGS_PATH" ]]; then
         read -rp "  ${YELLOW}${BOLD} ?${RESET} Existing statusLine config found. Overwrite? (${GREEN}y${RESET}/${RED}n${RESET}) " answer </dev/tty
         if [[ ! "$answer" =~ ^[Yy]$ ]]; then
             warn "Skipped settings update"
-            info "Script was installed but not configured"
+            info "Continuing with hook and notification setup..."
             echo ""
-            exit 0
         fi
     fi
     tmp=$(mktemp "$SETTINGS_PATH.XXXXXX")
@@ -326,9 +325,11 @@ step "Sound notifications"
 info "Plays a sound when Claude needs attention."
 ENABLE_SOUND=""
 ENABLE_VISUAL=""
+_notify_exists=false
 if [[ -f "$SETTINGS_PATH" ]] && jq -e '
   (.hooks.PermissionRequest // []) + (.hooks.Stop // []) + (.hooks.PreCompact // []) + (.hooks.PostCompact // []) | any(any(.hooks[]?; .command? | contains("notify.sh")))
 ' "$SETTINGS_PATH" &>/dev/null; then
+    _notify_exists=true
     ok "Already configured"
 else
     echo ""
@@ -374,7 +375,7 @@ if [[ "$_config_was_new" == true ]] && { [[ -n "$ENABLE_SOUND" ]] || [[ -n "$ENA
 fi
 
 # Register hooks for PermissionRequest, Stop, PreCompact, PostCompact
-if [[ "$ENABLE_SOUND" =~ ^[Yy]$ ]] || [[ "$ENABLE_VISUAL" =~ ^[Yy]$ ]]; then
+if [[ "$ENABLE_SOUND" =~ ^[Yy]$ ]] || [[ "$ENABLE_VISUAL" =~ ^[Yy]$ ]] || [[ "$_notify_exists" == true ]]; then
     tmp=$(mktemp "$SETTINGS_PATH.XXXXXX")
     if jq '
       .hooks = (.hooks // {}) |

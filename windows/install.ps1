@@ -177,9 +177,8 @@ if (Test-Path $settingsPath) {
         $answer = Read-Host "  ${YELLOW}${BOLD} ?${RESET} Existing statusLine config found. Overwrite? (${GREEN}y${RESET}/${RED}n${RESET})"
         if ($answer -notmatch '^[Yy]$') {
             Warn "Skipped settings update"
-            Info "Script was installed but not configured"
+            Info "Continuing with hook and notification setup..."
             Write-Host ""
-            exit 0
         }
     }
 
@@ -434,65 +433,65 @@ if ($hasNotifyHooks) {
             }
         }
     }
+}
 
-    # Register hooks
-    if ($enableSound -match '^[Yy]$' -or $enableVisual -match '^[Yy]$') {
-        $notifyCmd = "powershell -NoProfile -File `"$notifyPath`""
+# Register hooks — runs on fresh install (user said Y) or re-install (refreshes missing events)
+if ($enableSound -match '^[Yy]$' -or $enableVisual -match '^[Yy]$' -or $hasNotifyHooks) {
+    $notifyCmd = "powershell -NoProfile -File `"$notifyPath`""
 
-        if (-not $existing.hooks) {
-            $existing | Add-Member -NotePropertyName 'hooks' -NotePropertyValue ([PSCustomObject]@{}) -Force
-        }
+    if (-not $existing.hooks) {
+        $existing | Add-Member -NotePropertyName 'hooks' -NotePropertyValue ([PSCustomObject]@{}) -Force
+    }
 
-        $hookPairs = @(
-            @('PermissionRequest', [PSCustomObject]@{ hooks = @([PSCustomObject]@{ type = 'command'; command = "$notifyCmd permission"; async = $true }) }),
-            @('Stop',              [PSCustomObject]@{ hooks = @([PSCustomObject]@{ type = 'command'; command = "$notifyCmd stop"; async = $true }) }),
-            @('PreCompact',        [PSCustomObject]@{ matcher = '*'; hooks = @([PSCustomObject]@{ type = 'command'; command = "$notifyCmd compaction_start"; async = $true }) }),
-            @('PostCompact',       [PSCustomObject]@{ matcher = '*'; hooks = @([PSCustomObject]@{ type = 'command'; command = "$notifyCmd compaction_done"; async = $true }) })
-        )
+    $hookPairs = @(
+        @('PermissionRequest', [PSCustomObject]@{ hooks = @([PSCustomObject]@{ type = 'command'; command = "$notifyCmd permission"; async = $true }) }),
+        @('Stop',              [PSCustomObject]@{ hooks = @([PSCustomObject]@{ type = 'command'; command = "$notifyCmd stop"; async = $true }) }),
+        @('PreCompact',        [PSCustomObject]@{ matcher = '*'; hooks = @([PSCustomObject]@{ type = 'command'; command = "$notifyCmd compaction_start"; async = $true }) }),
+        @('PostCompact',       [PSCustomObject]@{ matcher = '*'; hooks = @([PSCustomObject]@{ type = 'command'; command = "$notifyCmd compaction_done"; async = $true }) })
+    )
 
-        foreach ($pair in $hookPairs) {
-            $eventName = $pair[0]
-            $newEntry = $pair[1]
-            $kept = [System.Collections.ArrayList]::new()
-            $eventHooks = $existing.hooks.$eventName
-            if ($eventHooks) {
-                foreach ($entry in $eventHooks) {
-                    $hasNotify = $false
-                    if ($entry.hooks) {
-                        foreach ($h in $entry.hooks) {
-                            if ($h.command -and $h.command.Contains('notify.ps1')) {
-                                $hasNotify = $true
-                                break
-                            }
+    foreach ($pair in $hookPairs) {
+        $eventName = $pair[0]
+        $newEntry = $pair[1]
+        $kept = [System.Collections.ArrayList]::new()
+        $eventHooks = $existing.hooks.$eventName
+        if ($eventHooks) {
+            foreach ($entry in $eventHooks) {
+                $hasNotify = $false
+                if ($entry.hooks) {
+                    foreach ($h in $entry.hooks) {
+                        if ($h.command -and $h.command.Contains('notify.ps1')) {
+                            $hasNotify = $true
+                            break
                         }
                     }
-                    if (-not $hasNotify) { [void]$kept.Add($entry) }
                 }
-            }
-            [void]$kept.Add($newEntry)
-            $existing.hooks | Add-Member -NotePropertyName $eventName -NotePropertyValue @($kept) -Force
-        }
-
-        $utf8NoBom = New-Object System.Text.UTF8Encoding $false
-        $tmpPath = "$settingsPath.tmp"
-        [System.IO.File]::WriteAllText($tmpPath, (Format-Json ($existing | ConvertTo-Json -Depth 10)), $utf8NoBom)
-        Move-Item $tmpPath $settingsPath -Force
-        Ok "Notification hooks enabled (PermissionRequest, Stop, PreCompact, PostCompact)"
-
-        # Verification toast
-        if ($enableVisual -match '^[Yy]$') {
-            $hasBT = $null -ne (Get-Module -ListAvailable -Name BurntToast -ErrorAction SilentlyContinue)
-            if ($hasBT) {
-                try {
-                    Import-Module BurntToast -ErrorAction SilentlyContinue
-                    New-BurntToastNotification -Text "Claude Status Line", "Notifications enabled!" -ErrorAction SilentlyContinue
-                    Ok "Test notification sent"
-                } catch {}
+                if (-not $hasNotify) { [void]$kept.Add($entry) }
             }
         }
-    } else {
-        Info "Skipped - run the installer again to enable later"
+        [void]$kept.Add($newEntry)
+        $existing.hooks | Add-Member -NotePropertyName $eventName -NotePropertyValue @($kept) -Force
     }
+
+    $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+    $tmpPath = "$settingsPath.tmp"
+    [System.IO.File]::WriteAllText($tmpPath, (Format-Json ($existing | ConvertTo-Json -Depth 10)), $utf8NoBom)
+    Move-Item $tmpPath $settingsPath -Force
+    Ok "Notification hooks enabled (PermissionRequest, Stop, PreCompact, PostCompact)"
+
+    # Verification toast
+    if ($enableVisual -match '^[Yy]$') {
+        $hasBT = $null -ne (Get-Module -ListAvailable -Name BurntToast -ErrorAction SilentlyContinue)
+        if ($hasBT) {
+            try {
+                Import-Module BurntToast -ErrorAction SilentlyContinue
+                New-BurntToastNotification -Text "Claude Status Line", "Notifications enabled!" -ErrorAction SilentlyContinue
+                Ok "Test notification sent"
+            } catch {}
+        }
+    }
+} elseif (-not $hasNotifyHooks) {
+    Info "Skipped - run the installer again to enable later"
 }
 
 # --- Done ---

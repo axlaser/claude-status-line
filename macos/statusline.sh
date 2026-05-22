@@ -108,7 +108,7 @@ if [[ -n "$J_TRANSCRIPT_PATH" ]]; then
     [[ -d "$_oc_sdir" ]] && _oc_smt=$(stat -f %m "$_oc_sdir" 2>/dev/null)
 fi
 # @parity:cache OUTPUT_BUCKET=5
-_oc_key=$(printf '%s' "${raw}|${_oc_tmt}|${_oc_gmt}|${_oc_smt}|$(( _oc_now / 5 ))" | cksum)
+_oc_key=$(printf '%s' "${raw}|${_oc_tmt}|${_oc_gmt}|${_oc_smt}|$(( _oc_now / 5 ))" | shasum -a 256 | cut -d' ' -f1)
 
 if [[ -n "$J_SESSION_ID" && -f "$_oc_path" ]]; then
     IFS= read -r _oc_cached_key < "$_oc_path"
@@ -309,7 +309,7 @@ if [[ -f "$git_index" ]]; then
                     read -r ahead behind <<< "$ab_count"
                 fi
                 stash=$(git --no-optional-locks -C "$git_cwd" stash list 2>/dev/null | wc -l)
-                stash="${stash##* }"
+                stash=$(( stash + 0 ))
             fi
         fi
         printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s' "$git_index_mt" "$branch" "$insertions" "$deletions" "$untracked" "$ahead" "$behind" "$stash" > "$git_cache_path" 2>/dev/null
@@ -727,7 +727,6 @@ fi
 # Two sections separated by heavy divider; thin ┼ between rows within a section.
 # @parity:constant LABEL_W=7
 LABEL_W=7
-row_sep="  ${GRAY}·${RESET}  "
 
 model_row="$model_part"
 [[ -n "$effort_part" ]] && model_row+="${row_sep}${effort_part}"

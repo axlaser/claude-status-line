@@ -96,6 +96,8 @@ if [[ -f "$ICON_PATH" ]]; then
 fi
 
 # --- Remove git-refresh script ---
+echo ""
+step "Removing git-refresh script"
 if [[ -f "$GIT_REFRESH_PATH" ]]; then
     _sz=$(human_size $(file_bytes "$GIT_REFRESH_PATH"))
     rm -f "$GIT_REFRESH_PATH"
