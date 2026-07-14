@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Removes statusline.sh and strips the statusLine entry from settings.json.
-set -e
+# No `set -e`: this script can be sourced (see CLAUDE.md), and errexit would
+# leak into the caller's shell and persist after return. Every step below
+# already degrades with warn-and-continue semantics.
 
 CLAUDE_DIR="$HOME/.claude"
 SCRIPT_PATH="$CLAUDE_DIR/statusline.sh"

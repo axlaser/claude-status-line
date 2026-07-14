@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 # Refresh statusline git cache after file-modifying tool uses.
 # Called by Claude Code PostToolUse hook with event JSON on stdin.
 try {

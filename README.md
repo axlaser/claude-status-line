@@ -562,7 +562,7 @@ Check `~/.claude/statusline-debug.log` for `READ/PARSE FAILED` or `UNHANDLED` en
 
 Claude Code pipes a JSON object to the script's stdin on each update. The JSON contains session data — model info, context window usage, cost, rate limits, transcript path, and more. The script parses this data, optionally reads the conversation transcript for additional metrics (message count, token breakdown, idle/working state), and outputs ANSI-colored text that Claude Code renders as the status bar.
 
-Git status is fetched fresh on every refresh for real-time accuracy. Transcript data is cached by file mtime to keep refresh times fast even in large repositories.
+Git status is cached for up to 5 seconds and invalidated as soon as `.git/index` changes (or immediately by the git-refresh hook after file-modifying tools), so it stays effectively real-time without re-running git on every refresh. Transcript data is cached by file mtime to keep refresh times fast even in large repositories.
 
 ---
 

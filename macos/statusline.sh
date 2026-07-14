@@ -38,15 +38,11 @@ raw=$(cat)
 log_msg "stdin bytes=${#raw}"
 log_msg "stdin head: ${raw:0:400}"
 
-if ! printf '%s' "$raw" | jq -e '.' &>/dev/null; then
-    log_msg "READ/PARSE FAILED"
-    printf '%s' "${RED}[statusline: bad JSON]${RESET}"
-    exit 0
-fi
-log_msg "json parse: OK"
-
 # @parity:json-extract-begin
-mapfile -t _jf < <(printf '%s' "$raw" | jq -r '[
+# Single jq pass: the in-filter type check replaces the old standalone
+# validity probe (one process spawn per refresh instead of two). Parse
+# errors and non-object input both yield zero output lines.
+mapfile -t _jf < <(printf '%s' "$raw" | jq -r 'if type != "object" then error("not a JSON object") else [
     (.session_id // ""),
     (.workspace.current_dir // ""),
     (.cwd // ""),
@@ -69,7 +65,13 @@ mapfile -t _jf < <(printf '%s' "$raw" | jq -r '[
     (.agent.name // ""),
     (.context_window.current_usage.input_tokens // ""),
     (.context_window.current_usage.output_tokens // "")
-] | .[]')
+] | .[] end' 2>/dev/null)
+if (( ${#_jf[@]} == 0 )); then
+    log_msg "READ/PARSE FAILED"
+    printf '%s' "${RED}[statusline: bad JSON]${RESET}"
+    exit 0
+fi
+log_msg "json parse: OK"
 J_SESSION_ID="${_jf[0]}"
 J_CWD="${_jf[1]}"
 J_CWD_FALLBACK="${_jf[2]}"
@@ -111,10 +113,13 @@ fi
 _oc_key=$(printf '%s' "${raw}|${_oc_tmt}|${_oc_gmt}|${_oc_smt}|$(( _oc_now / 5 ))" | shasum -a 256 | cut -d' ' -f1)
 
 if [[ -n "$J_SESSION_ID" && -f "$_oc_path" ]]; then
-    IFS= read -r _oc_cached_key < "$_oc_path"
+    # Command group so a redirect-open failure (git-refresh hook may delete the
+    # file between -f and read) is silenced; a trailing 2>/dev/null on the bare
+    # read does not cover the redirect itself.
+    _oc_cached_key=""
+    { IFS= read -r _oc_cached_key < "$_oc_path"; } 2>/dev/null
     if [[ "$_oc_cached_key" == "$_oc_key" ]]; then
-        sed 1d "$_oc_path"
-        exit 0
+        tail -n +2 "$_oc_path" 2>/dev/null && exit 0
     fi
 fi
 
@@ -140,10 +145,26 @@ sa_ctx_for_model() {
 }
 
 shopt -s extglob
-get_vis() {
+get_vis() {  # visible terminal cells: ANSI stripped; CJK/emoji count as 2
     local s="$1"
     s="${s//$'\033'\[*([0-9;])m/}"
-    printf '%d' "${#s}"
+    if [[ "$s" != *[![:ascii:]]* ]]; then
+        printf '%d' "${#s}"
+        return
+    fi
+    local n=${#s} w=0 i cp
+    for ((i = 0; i < n; i++)); do
+        printf -v cp '%d' "'${s:i:1}" 2>/dev/null || cp=0
+        if (( (cp >= 0x1100 && cp <= 0x115F) || (cp >= 0x2E80 && cp <= 0xA4CF) ||
+              (cp >= 0xAC00 && cp <= 0xD7A3) || (cp >= 0xF900 && cp <= 0xFAFF) ||
+              (cp >= 0xFE30 && cp <= 0xFE4F) || (cp >= 0xFF00 && cp <= 0xFF60) ||
+              (cp >= 0xFFE0 && cp <= 0xFFE6) || cp >= 0x1F000 )); then
+            w=$((w + 2))
+        else
+            w=$((w + 1))
+        fi
+    done
+    printf '%d' "$w"
 }
 
 repeat_char() {  # multi-byte safe char repeat
@@ -182,6 +203,7 @@ else
 fi
 
 ctx_size="$J_CTX_SIZE"
+[[ "$ctx_size" =~ ^[0-9]+$ ]] || ctx_size=""
 used_pct="$J_USED_PCT"
 
 ctx_label=""
@@ -279,7 +301,15 @@ if [[ -f "$git_index" ]]; then
     git_use_cache=false
 
     if [[ -f "$git_cache_path" ]]; then
-        IFS=$'\x1f' read -r gc_mt gc_branch gc_ins gc_del gc_unt gc_ahead gc_behind gc_stash < "$git_cache_path"
+        gc_mt=""
+        { IFS=$'\x1f' read -r gc_mt gc_branch gc_ins gc_del gc_unt gc_ahead gc_behind gc_stash < "$git_cache_path"; } 2>/dev/null
+        # Validate numerics so a torn/corrupt cache write can't reach arithmetic.
+        [[ "$gc_ins" =~ ^[0-9]+$ ]] || gc_ins=0
+        [[ "$gc_del" =~ ^[0-9]+$ ]] || gc_del=0
+        [[ "$gc_unt" =~ ^[0-9]+$ ]] || gc_unt=0
+        [[ "$gc_ahead" =~ ^[0-9]+$ ]] || gc_ahead=0
+        [[ "$gc_behind" =~ ^[0-9]+$ ]] || gc_behind=0
+        [[ "$gc_stash" =~ ^[0-9]+$ ]] || gc_stash=0
         if [[ "$gc_mt" == "$git_index_mt" ]]; then
             gc_file_age=$(( _oc_now - $(stat -f %m "$git_cache_path" 2>/dev/null || echo 0) ))
 # @parity:cache GIT_TTL=5

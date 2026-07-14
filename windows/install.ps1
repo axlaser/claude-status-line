@@ -1,4 +1,4 @@
-# Claude Code Status Line -- Installer for Windows
+﻿# Claude Code Status Line -- Installer for Windows
 # PowerShell 5.1+ required -- checked at runtime because `#Requires` directives aren't honored via `irm | iex`.
 if ($PSVersionTable.PSVersion -lt [Version]'5.1') { Write-Host "  PowerShell 5.1+ required (current: $($PSVersionTable.PSVersion))" -ForegroundColor Red; return }
 
@@ -172,28 +172,44 @@ if (Test-Path $settingsPath) {
         return
     }
 
+    $skipStatusLine = $false
     if ($existing.statusLine) {
         Write-Host ""
         $answer = Read-Host "  ${YELLOW}${BOLD} ?${RESET} Existing statusLine config found. Overwrite? (${GREEN}y${RESET}/${RED}n${RESET})"
         if ($answer -notmatch '^[Yy]$') {
+            $skipStatusLine = $true
             Warn "Skipped settings update"
             Info "Continuing with hook and notification setup..."
             Write-Host ""
         }
     }
 
-    $existing | Add-Member -NotePropertyName 'statusLine' -NotePropertyValue $newEntry -Force
-    $utf8NoBom = New-Object System.Text.UTF8Encoding $false
-    $tmpPath = "$settingsPath.tmp"
-    [System.IO.File]::WriteAllText($tmpPath, (Format-Json ($existing | ConvertTo-Json -Depth 10)), $utf8NoBom)
-    Move-Item $tmpPath $settingsPath -Force
-    Ok "Updated settings.json"
+    if (-not $skipStatusLine) {
+        $existing | Add-Member -NotePropertyName 'statusLine' -NotePropertyValue $newEntry -Force
+        try {
+            $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+            $tmpPath = "$settingsPath.tmp"
+            [System.IO.File]::WriteAllText($tmpPath, (Format-Json ($existing | ConvertTo-Json -Depth 10)), $utf8NoBom)
+            Move-Item $tmpPath $settingsPath -Force
+            Ok "Updated settings.json"
+        } catch {
+            Remove-Item $tmpPath -Force -ErrorAction SilentlyContinue
+            Err "Failed to update settings.json (file may be locked): $_"
+            return
+        }
+    }
 } else {
-    $utf8NoBom = New-Object System.Text.UTF8Encoding $false
-    $tmpPath = "$settingsPath.tmp"
-    [System.IO.File]::WriteAllText($tmpPath, (Format-Json ([PSCustomObject]@{ statusLine = $newEntry } | ConvertTo-Json -Depth 10)), $utf8NoBom)
-    Move-Item $tmpPath $settingsPath -Force
-    Ok "Created settings.json"
+    try {
+        $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+        $tmpPath = "$settingsPath.tmp"
+        [System.IO.File]::WriteAllText($tmpPath, (Format-Json ([PSCustomObject]@{ statusLine = $newEntry } | ConvertTo-Json -Depth 10)), $utf8NoBom)
+        Move-Item $tmpPath $settingsPath -Force
+        Ok "Created settings.json"
+    } catch {
+        Remove-Item $tmpPath -Force -ErrorAction SilentlyContinue
+        Err "Failed to create settings.json (file may be locked): $_"
+        return
+    }
 }
 Info $settingsPath
 
@@ -283,11 +299,16 @@ if ($hasRefreshHook) {
     [void]$kept.Add($hookEntry)
     $existing.hooks | Add-Member -NotePropertyName 'PostToolUse' -NotePropertyValue @($kept) -Force
 
-    $utf8NoBom = New-Object System.Text.UTF8Encoding $false
-    $tmpPath = "$settingsPath.tmp"
-    [System.IO.File]::WriteAllText($tmpPath, (Format-Json ($existing | ConvertTo-Json -Depth 10)), $utf8NoBom)
-    Move-Item $tmpPath $settingsPath -Force
-    Ok "PostToolUse hook enabled"
+    try {
+        $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+        $tmpPath = "$settingsPath.tmp"
+        [System.IO.File]::WriteAllText($tmpPath, (Format-Json ($existing | ConvertTo-Json -Depth 10)), $utf8NoBom)
+        Move-Item $tmpPath $settingsPath -Force
+        Ok "PostToolUse hook enabled"
+    } catch {
+        Remove-Item $tmpPath -Force -ErrorAction SilentlyContinue
+        Warn "Failed to configure hook: $_"
+    }
 }
 
 # --- Install notification script ---
@@ -473,11 +494,16 @@ if ($enableSound -match '^[Yy]$' -or $enableVisual -match '^[Yy]$' -or $hasNotif
         $existing.hooks | Add-Member -NotePropertyName $eventName -NotePropertyValue @($kept) -Force
     }
 
-    $utf8NoBom = New-Object System.Text.UTF8Encoding $false
-    $tmpPath = "$settingsPath.tmp"
-    [System.IO.File]::WriteAllText($tmpPath, (Format-Json ($existing | ConvertTo-Json -Depth 10)), $utf8NoBom)
-    Move-Item $tmpPath $settingsPath -Force
-    Ok "Notification hooks enabled (PermissionRequest, Stop, PreCompact, PostCompact)"
+    try {
+        $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+        $tmpPath = "$settingsPath.tmp"
+        [System.IO.File]::WriteAllText($tmpPath, (Format-Json ($existing | ConvertTo-Json -Depth 10)), $utf8NoBom)
+        Move-Item $tmpPath $settingsPath -Force
+        Ok "Notification hooks enabled (PermissionRequest, Stop, PreCompact, PostCompact)"
+    } catch {
+        Remove-Item $tmpPath -Force -ErrorAction SilentlyContinue
+        Warn "Failed to configure hooks: $_"
+    }
 
     # Verification toast
     if ($enableVisual -match '^[Yy]$') {

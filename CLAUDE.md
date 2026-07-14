@@ -26,7 +26,7 @@ Claude Code pipes a JSON object to stdin on each refresh. Key top-level fields:
 
 `session_id`, `workspace.current_dir`, `cwd`, `model.display_name`, `context_window.context_window_size`, `context_window.used_percentage`, `context_window.total_input_tokens`, `effort.level`, `cost.total_cost_usd`, `transcript_path`, `rate_limits.five_hour.*`, `rate_limits.seven_day.*`, `agent.name`, `context_window.current_usage.*`
 
-See the `# --- Extract all JSON fields in one pass ---` block in `macos/statusline.sh` for the full field list.
+See the `# @parity:json-extract-begin` / `# @parity:json-extract-end` block in `macos/statusline.sh` for the full field list.
 
 ### Dependencies
 
@@ -35,6 +35,10 @@ See the `# --- Extract all JSON fields in one pass ---` block in `macos/statusli
 - macOS/Linux installers offer to install `jq` via the detected package manager
 
 ## Development
+
+### Branching
+
+Two-tier flow: create feature branches as `dev-<feature>` (e.g. `dev-notifications`), PR them into `dev`, and periodically release `dev` into `master` via a release PR. The repo-local `pr` and `sync` skills pick the right base/source automatically from this model.
 
 ### Testing
 

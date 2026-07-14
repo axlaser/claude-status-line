@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 param([string]$Event, [string]$Value)
 if (-not $Event) { exit 0 }
 
