@@ -62,7 +62,7 @@ git fetch origin <base> && git status --short && git log --oneline origin/<base>
 Handle these conditions before going further:
 
 - **No commits ahead?** If `origin/<base>..HEAD` is empty, there's nothing to merge — tell the user and stop.
-- **Uncommitted changes?** Warn that they won't be in the PR; suggest running the `commit` skill first (it never runs `git commit` directly — SSH signing means the user has to paste it themselves).
+- **Uncommitted changes?** Warn that they won't be in the PR; suggest running the `commit` skill first to commit them.
 - **Existing PR for this branch?**
   ```bash
   gh pr list --head "$(git branch --show-current)" --json number,title,url,state --jq '.[]'

@@ -4,8 +4,8 @@ description: >
   Fetch the latest upstream branch and merge it into the current branch, in
   the claude-status-line repo — feature branches sync from `dev`, and `dev`
   itself syncs from `master`. Stages the merge, walks through any conflicts
-  interactively, then hands off the final commit for the user to run (SSH
-  commit signing means Claude can't create it). Use whenever the user says
+  interactively, then creates the signed merge commit directly. Use whenever
+  the user says
   "sync", "pull dev", "pull master", "update branch", "merge dev", "merge
   master", "get latest", or anything about bringing upstream changes into
   their working branch — even if they don't say the word "skill".
@@ -13,7 +13,7 @@ description: >
 
 # /sync — Merge Upstream into Current Branch
 
-Fetch the latest upstream branch from origin and merge it into the current branch, walking through any conflicts one file at a time. Because this repo has SSH commit signing enabled and Claude cannot access the signing key (same constraint as the `commit` skill), Claude stages the entire merge and hands the final `git commit` to the user to run themselves.
+Fetch the latest upstream branch from origin and merge it into the current branch, walking through any conflicts one file at a time. The merge is staged first (`--no-commit`) so its result can be verified before it's recorded; Claude then creates the signed merge commit directly (this repo's SSH signing key is passphrase-less, so `git commit` signs without a prompt — same as the `commit` skill).
 
 ## Branch model
 
@@ -57,7 +57,7 @@ If this is empty, tell the user "Already up to date with `<source>` — nothing 
 git merge origin/<source> --no-commit
 ```
 
-`--no-commit` is the key difference from a normal sync: it stages the merge (or surfaces conflicts) without creating the merge commit, so Claude never touches the signing key. Everything through "ready to commit" happens here; only the final commit is left for the user.
+`--no-commit` stages the merge (or surfaces conflicts) without creating the merge commit, so the staged result can be verified (Step 5) before it's recorded. Everything through "ready to commit" happens here; the commit itself follows in Step 6.
 
 ## Step 4 — Handle the result
 
@@ -86,7 +86,7 @@ Per file:
   - **Claude resolves** — read both sides, edit to a clean merge preserving both contributions, remove conflict markers, `git add` it, and explain what was kept
   - **Let me handle it** — skip; the user resolves manually
 
-`git checkout --ours`/`--theirs` and `git add` don't touch the signing key, so Claude runs these directly.
+`git checkout --ours`/`--theirs` and `git add` just stage the resolution, so Claude runs these directly.
 
 **Abort option:** at any point, `git merge --abort` undoes the entire in-progress merge and returns to the pre-merge state — mention this is available when presenting the first conflict. Confirm before running it.
 
@@ -100,19 +100,25 @@ If anything is still unresolved, tell the user which files need attention — th
 
 **Cross-platform / rule check:** if the merge touched `macos/`, `linux/`, or `windows/` scripts, remind the user to eyeball the merged result against CLAUDE.md's Cross-Platform Parity and Silent Degradation rules before committing — a merge can silently reconcile two working versions into a broken one.
 
-## Step 6 — Hand off the final commit
+## Step 6 — Create the merge commit
 
-Everything is staged; only the commit itself needs the user, since it requires the SSH signing key:
+With everything staged and verified, create the merge commit directly (`--no-edit` accepts the default merge message; SSH signing is automatic). Pass a short timeout so a stray signing prompt can't hang the session:
 
 ```bash
 git commit --no-edit
 ```
 
-Present this as a single-line, paste-safe command (no heredoc needed — it's accepting the default merge message). Tell the user: once they run it, the branch is synced with `<source>`.
+Then confirm the branch is synced with `<source>` and the signature is good:
+
+```bash
+git log --show-signature -1 --oneline
+```
+
+If the commit fails (a signing passphrase prompt, a pre-commit hook), surface the error and hand the user the single-line `git commit --no-edit` to run themselves.
 
 ## Step 7 — Offer to push
 
-Once the user confirms the commit ran (`git log -1` will show a merge commit with `origin/<source>` as one parent), and if the branch tracks a remote, ask via AskUserQuestion:
+Once the merge commit is created (`git log -1` shows a merge commit with `origin/<source>` as one parent), and if the branch tracks a remote, ask via AskUserQuestion:
 - **Push now** — `git push`
 - **Skip** — push later
 
@@ -129,5 +135,5 @@ Once the user confirms the commit ran (`git log -1` will show a merge commit wit
 | Already up to date | Nothing to merge — stop |
 | 3+ conflicting files | Offer bulk resolve vs. per-file walk-through |
 | User wants to bail mid-merge | `git merge --abort`, confirm first |
-| Some files left unresolved | List them; user finishes `git add` + the commit, or aborts |
+| Some files left unresolved | List them; user finishes resolving + `git add`, then you commit, or they abort |
 | Merge touches multiple platforms | Remind to check cross-platform parity before committing |
