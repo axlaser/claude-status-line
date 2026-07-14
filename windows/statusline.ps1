@@ -73,8 +73,59 @@ function Format-Tokens($n) {  # 1234567 -> "1.2M"; "0" for empty
     return "$([int]$v)"
 }
 
-function Get-SubagentCtxSize([string]$model) {
-    if ($model -match '\[1m\]' -or $model -match '-1m') { return 1000000 }
+function Get-NormalizedModelId([string]$id) {  # strip trailing -YYYYMMDD date suffix
+    if (-not $id) { return '' }
+    return ($id -replace '-\d{8}$', '')
+}
+
+function Get-PrettyModelName([string]$id) {  # claude-sonnet-5 -> "Sonnet 5"; unknown -> cleaned id
+    $clean = (Get-NormalizedModelId $id) -replace '^claude-', ''
+    if ($clean -match '^(fable|opus|sonnet|haiku)-(\d+(?:-\d+)*)') {
+        $fam = $Matches[1]
+        $ver = $Matches[2] -replace '-', '.'
+        return ($fam.Substring(0,1).ToUpper() + $fam.Substring(1) + ' ' + $ver)
+    }
+    return $clean
+}
+
+# @parity:seed-table-begin
+# Known model->window seeds; keys are normalized ids (date suffix stripped,
+# claude- prefix tolerated). Unlisted ids fall through to the resolver tiers.
+$ModelWindowSeeds = @{
+    'fable-5'    = 1000000
+    'opus-4-8'   = 1000000
+    'opus-4-7'   = 1000000
+    'opus-4-6'   = 1000000
+    'sonnet-5'   = 1000000
+    'sonnet-4-6' = 1000000
+    'haiku-4-5'  = 200000
+    'sonnet-4-5' = 200000
+    'opus-4-5'   = 200000
+}
+# @parity:seed-table-end
+
+function Get-SubagentCtxSize([string]$model) {  # tiered: learned map -> seed table -> 1m marker -> 200K default
+    $norm = Get-NormalizedModelId $model
+    if ($ModelWindowsMap) {
+        $prop = $ModelWindowsMap.PSObject.Properties[$norm]
+        if ($prop) {
+            $learned = 0L
+            if ([long]::TryParse("$($prop.Value)", [ref]$learned) -and $learned -gt 0) {
+                Write-Log "sa ctx: $norm -> $learned (learned)"
+                return $learned
+            }
+        }
+    }
+    $seedKey = $norm -replace '^claude-', ''
+    if ($ModelWindowSeeds.ContainsKey($seedKey)) {
+        Write-Log "sa ctx: $norm -> $($ModelWindowSeeds[$seedKey]) (seed)"
+        return $ModelWindowSeeds[$seedKey]
+    }
+    if ($norm -match '\[1m\]' -or $norm -match '-1m') {
+        Write-Log "sa ctx: $norm -> 1000000 (marker)"
+        return 1000000
+    }
+    Write-Log "sa ctx: $norm -> 200000 (default)"
     return 200000
 }
 
@@ -101,6 +152,7 @@ $sevenRes         = Get-Val $json @('rate_limits','seven_day','resets_at')
 $agentName        = Get-Val $json @('agent','name')
 $agentIn          = Get-Val $json @('context_window','current_usage','input_tokens') 0
 $agentOut         = Get-Val $json @('context_window','current_usage','output_tokens') 0
+$modelId          = Get-Val $json @('model','id')
 # @parity:json-extract-end
 
 # --- Output cache: skip re-render when all inputs are unchanged ---
@@ -205,6 +257,47 @@ if ($ctxSize) {
     $tokenSuffix = " ${GRAY}$([char]0x00B7)${RESET} ${WHITE}${usedLbl}${RESET}${GRAY}/${ctxLabel}${RESET}"
 }
 $ctxBarPart = "${bar} ${barColor}${barPctInt}%${RESET}${tokenSuffix}"
+# --- 2c. Learned model->window map ---
+# Persist the main session's model->window pair so subagent rows can resolve
+# real denominators later. Multi-writer file: atomic temp+Move-Item, skip when
+# the entry already matches (no mtime churn). All failures are silent.
+$ModelWindowsPath = "$env:USERPROFILE\.claude\statusline-model-windows.json"
+$ModelWindowsMap = $null
+if (Test-Path -LiteralPath $ModelWindowsPath -ErrorAction SilentlyContinue) {
+    try {
+        $mwParsed = Get-Content -LiteralPath $ModelWindowsPath -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+        if ($mwParsed -is [PSCustomObject]) { $ModelWindowsMap = $mwParsed }
+    } catch { Write-Log ("model-windows read failed: " + $_.Exception.Message) }
+}
+$mwWin = 0L
+if ($modelId -and $null -ne $ctxSize -and [long]::TryParse("$ctxSize", [ref]$mwWin) -and $mwWin -gt 0) {
+    $mwTmp = $null
+    try {
+        $mwKey = Get-NormalizedModelId $modelId
+        $mwCur = $null
+        if ($ModelWindowsMap) {
+            $mwProp = $ModelWindowsMap.PSObject.Properties[$mwKey]
+            if ($mwProp) {
+                $mwCurParsed = 0L
+                if ([long]::TryParse("$($mwProp.Value)", [ref]$mwCurParsed)) { $mwCur = $mwCurParsed }
+            }
+        }
+        if ($mwKey -and $mwCur -ne $mwWin) {
+            if (-not $ModelWindowsMap) { $ModelWindowsMap = New-Object PSObject }
+            $ModelWindowsMap | Add-Member -NotePropertyName $mwKey -NotePropertyValue $mwWin -Force
+            $mwDir = Split-Path -Parent $ModelWindowsPath
+            if (-not (Test-Path -LiteralPath $mwDir)) { New-Item -ItemType Directory -Path $mwDir -Force -ErrorAction Stop | Out-Null }
+            $mwTmp = Join-Path $mwDir ('statusline-model-windows.json.' + [System.IO.Path]::GetRandomFileName())
+            [System.IO.File]::WriteAllText($mwTmp, ($ModelWindowsMap | ConvertTo-Json -Compress), (New-Object System.Text.UTF8Encoding $false))
+            Move-Item -LiteralPath $mwTmp -Destination $ModelWindowsPath -Force
+            $mwTmp = $null
+            Write-Log "model-windows: learned $mwKey=$mwWin"
+        }
+    } catch {
+        Write-Log ("model-windows write failed: " + $_.Exception.Message)
+        if ($mwTmp) { try { Remove-Item -LiteralPath $mwTmp -Force -ErrorAction SilentlyContinue } catch {} }
+    }
+}
 # --- 3. Reasoning effort ---
 $effortPart  = ''
 if ($effortLevel) {

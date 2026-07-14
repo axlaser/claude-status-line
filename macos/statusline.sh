@@ -64,7 +64,8 @@ mapfile -t _jf < <(printf '%s' "$raw" | jq -r 'if type != "object" then error("n
     (.rate_limits.seven_day.resets_at // ""),
     (.agent.name // ""),
     (.context_window.current_usage.input_tokens // ""),
-    (.context_window.current_usage.output_tokens // "")
+    (.context_window.current_usage.output_tokens // ""),
+    (.model.id // "")
 ] | .[] end' 2>/dev/null)
 if (( ${#_jf[@]} == 0 )); then
     log_msg "READ/PARSE FAILED"
@@ -94,6 +95,7 @@ J_RATE_7D_RESETS="${_jf[18]}"
 J_AGENT_NAME="${_jf[19]}"
 J_AGENT_IN="${_jf[20]}"
 J_AGENT_OUT="${_jf[21]}"
+J_MODEL_ID="${_jf[22]}"
 # @parity:json-extract-end
 
 # --- Idle-state fast path ---
@@ -137,11 +139,61 @@ format_tokens() {  # 1234567 -> "1.2M"
     fi
 }
 
-sa_ctx_for_model() {
-    case "$1" in
-        *\[1m\]*|*-1m*) echo 1000000 ;;
-        *)              echo 200000  ;;
+normalize_model_id() {  # strip trailing -YYYYMMDD date suffix
+    local id="$1"
+    [[ "$id" =~ -[0-9]{8}$ ]] && id="${id%-*}"
+    printf '%s' "$id"
+}
+
+prettify_model_id() {  # claude-sonnet-5 -> "Sonnet 5"; unknown -> cleaned id
+    local id
+    id=$(normalize_model_id "$1")
+    id="${id#claude-}"
+    if [[ "$id" =~ ^(fable|opus|sonnet|haiku)-([0-9]+(-[0-9]+)*) ]]; then
+        local fam="${BASH_REMATCH[1]}" ver="${BASH_REMATCH[2]//-/.}"
+        printf '%s %s' "${fam^}" "$ver"
+    else
+        printf '%s' "$id"
+    fi
+}
+
+# @parity:seed-table-begin
+# Known model->window seeds; keys are normalized ids (date suffix stripped,
+# claude- prefix tolerated). Unlisted ids fall through to the resolver tiers.
+seed_window_for_model() {  # normalized model id -> window size or ""
+    case "${1#claude-}" in
+        fable-5|opus-4-8|opus-4-7|opus-4-6|sonnet-5|sonnet-4-6) echo 1000000 ;;
+        haiku-4-5|sonnet-4-5|opus-4-5)                          echo 200000  ;;
+        *)                                                      echo ""      ;;
     esac
+}
+# @parity:seed-table-end
+
+sa_ctx_for_model() {  # tiered: learned map -> seed table -> 1m marker -> 200K default
+    local norm win
+    norm=$(normalize_model_id "$1")
+    if [[ -n "$MODEL_WINDOWS_JSON" ]]; then
+        win=$(printf '%s' "$MODEL_WINDOWS_JSON" | jq -r --arg m "$norm" '.[$m] // empty' 2>/dev/null)
+        if [[ "$win" =~ ^[0-9]+$ ]]; then
+            log_msg "sa ctx: ${norm} -> ${win} (learned)"
+            echo "$win"
+            return
+        fi
+    fi
+    win=$(seed_window_for_model "$norm")
+    if [[ -n "$win" ]]; then
+        log_msg "sa ctx: ${norm} -> ${win} (seed)"
+        echo "$win"
+        return
+    fi
+    case "$norm" in
+        *\[1m\]*|*-1m*)
+            log_msg "sa ctx: ${norm} -> 1000000 (marker)"
+            echo 1000000
+            return ;;
+    esac
+    log_msg "sa ctx: ${norm} -> 200000 (default)"
+    echo 200000
 }
 
 shopt -s extglob
@@ -265,6 +317,36 @@ if [[ -n "$ctx_size" ]]; then
 fi
 
 ctx_bar_part="${bar} ${bar_color}${bar_pct_int}%${RESET}${token_suffix}"
+
+# --- 2c. Learned model->window map ---
+# Persist the main session's model->window pair so subagent rows can resolve
+# real denominators later. Multi-writer file: atomic mktemp+mv, skip when the
+# entry already matches (no mtime churn). All failures are silent.
+MODEL_WINDOWS_PATH="$HOME/.claude/statusline-model-windows.json"
+MODEL_WINDOWS_JSON=""
+if [[ -f "$MODEL_WINDOWS_PATH" ]]; then
+    MODEL_WINDOWS_JSON=$(jq -c 'if type == "object" then . else empty end' "$MODEL_WINDOWS_PATH" 2>/dev/null)
+fi
+if [[ -n "$J_MODEL_ID" && -n "$ctx_size" ]]; then
+    _mw_key=$(normalize_model_id "$J_MODEL_ID")
+    _mw_cur=""
+    [[ -n "$MODEL_WINDOWS_JSON" ]] && _mw_cur=$(printf '%s' "$MODEL_WINDOWS_JSON" | jq -r --arg m "$_mw_key" '.[$m] // empty' 2>/dev/null)
+    if [[ -n "$_mw_key" && "$_mw_cur" != "$ctx_size" ]]; then
+        _mw_base="$MODEL_WINDOWS_JSON"
+        [[ -z "$_mw_base" ]] && _mw_base="{}"
+        _mw_merged=$(printf '%s' "$_mw_base" | jq -c --arg m "$_mw_key" --argjson w "$ctx_size" '. + {($m): $w}' 2>/dev/null)
+        if [[ -n "$_mw_merged" ]]; then
+            mkdir -p "${MODEL_WINDOWS_PATH%/*}" 2>/dev/null
+            _mw_tmp=$(mktemp "${MODEL_WINDOWS_PATH}.XXXXXX" 2>/dev/null) || _mw_tmp=""
+            if [[ -n "$_mw_tmp" ]] && printf '%s\n' "$_mw_merged" > "$_mw_tmp" 2>/dev/null && mv -f "$_mw_tmp" "$MODEL_WINDOWS_PATH" 2>/dev/null; then
+                MODEL_WINDOWS_JSON="$_mw_merged"
+                log_msg "model-windows: learned ${_mw_key}=${ctx_size}"
+            else
+                [[ -n "$_mw_tmp" ]] && rm -f "$_mw_tmp" 2>/dev/null
+            fi
+        fi
+    fi
+fi
 
 # --- 3. Reasoning effort ---
 effort_level="$J_EFFORT_LEVEL"
