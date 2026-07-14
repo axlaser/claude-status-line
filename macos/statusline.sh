@@ -111,16 +111,26 @@ if [[ -n "$J_TRANSCRIPT_PATH" ]]; then
     _oc_sdir="$(dirname "$J_TRANSCRIPT_PATH")/$(basename "$J_TRANSCRIPT_PATH" .jsonl)/subagents"
     [[ -d "$_oc_sdir" ]] && _oc_smt=$(stat -f %m "$_oc_sdir" 2>/dev/null)
 fi
-# Feed state + learned-map mtimes join the key so subagent tier switches and
-# learned window changes invalidate the render cache.
+# Feed content+freshness and the learned-map mtime join the key so subagent
+# tier switches and learned window changes invalidate the render cache. The
+# handler rewrites the feed file every tick, so keying on its mtime would
+# defeat the output cache; mtime feeds only the freshness flag.
 _oc_feed="${TMPDIR:-/tmp}/statusline-tasks-${J_SESSION_ID//[^a-zA-Z0-9_-]/}.json"
+# @parity:cache FEED_TTL=10
+FEED_TTL=10
 _oc_fmt=""
 [[ -f "$_oc_feed" ]] && _oc_fmt=$(stat -f %m "$_oc_feed" 2>/dev/null)
+_oc_ffresh=0
+_oc_fjson=""
+if [[ "$_oc_fmt" =~ ^[0-9]+$ ]] && (( _oc_now - _oc_fmt <= FEED_TTL )); then
+    _oc_ffresh=1
+    _oc_fjson=$(cat "$_oc_feed" 2>/dev/null)
+fi
 MODEL_WINDOWS_PATH="$HOME/.claude/statusline-model-windows.json"
 _oc_mwmt=""
 [[ -f "$MODEL_WINDOWS_PATH" ]] && _oc_mwmt=$(stat -f %m "$MODEL_WINDOWS_PATH" 2>/dev/null)
 # @parity:cache OUTPUT_BUCKET=5
-_oc_key=$(printf '%s' "${raw}|${_oc_tmt}|${_oc_gmt}|${_oc_smt}|${_oc_fmt}|${_oc_mwmt}|$(( _oc_now / 5 ))" | shasum -a 256 | cut -d' ' -f1)
+_oc_key=$(printf '%s' "${raw}|${_oc_tmt}|${_oc_gmt}|${_oc_smt}|${_oc_ffresh}|${_oc_fjson}|${_oc_mwmt}|$(( _oc_now / 5 ))" | shasum -a 256 | cut -d' ' -f1)
 
 if [[ -n "$J_SESSION_ID" && -f "$_oc_path" ]]; then
     # Command group so a redirect-open failure (git-refresh hook may delete the
@@ -145,6 +155,24 @@ format_tokens() {  # 1234567 -> "1.2M"
     else
         printf '%d' "$n"
     fi
+}
+
+pct_color_for() {  # context percentage -> threshold color
+    local pct=${1:-0}
+# @parity:threshold CONTEXT_CRIT=85
+# @parity:threshold CONTEXT_WARN=60
+    if   (( pct >= 85 )); then printf '%s' "$RED"
+    elif (( pct >= 60 )); then printf '%s' "$YELLOW"
+    else                       printf '%s' "$GREEN"
+    fi
+}
+
+render_bar() {  # pct color -> filled/empty bar over bar_width cells
+    local pct=${1:-0} color=$2 filled
+    (( pct < 0 )) && pct=0
+    (( pct > 100 )) && pct=100
+    filled=$(( (bar_width * pct + 50) / 100 ))
+    printf '%s' "${color}$(repeat_char "█" "$filled")${RESET}${BAR_EMPTY}$(repeat_char "░" "$((bar_width - filled))")${RESET}"
 }
 
 normalize_model_id() {  # strip trailing -YYYYMMDD date suffix
@@ -178,15 +206,13 @@ seed_window_for_model() {  # normalized model id -> window size or ""
 # @parity:seed-table-end
 
 sa_ctx_for_model() {  # tiered: learned map -> seed table -> 1m marker -> 200K default
-    local norm win
+    local norm win=""
     norm=$(normalize_model_id "$1")
-    if [[ -n "$MODEL_WINDOWS_JSON" ]]; then
-        win=$(printf '%s' "$MODEL_WINDOWS_JSON" | jq -r --arg m "$norm" '.[$m] // empty' 2>/dev/null)
-        if [[ "$win" =~ ^[0-9]+$ ]]; then
-            log_msg "sa ctx: ${norm} -> ${win} (learned)"
-            echo "$win"
-            return
-        fi
+    [[ -n "$norm" ]] && win="${MODEL_WINDOWS_MAP[$norm]:-}"
+    if [[ "$win" =~ ^[0-9]+$ ]]; then
+        log_msg "sa ctx: ${norm} -> ${win} (learned)"
+        echo "$win"
+        return
     fi
     win=$(seed_window_for_model "$norm")
     if [[ -n "$win" ]]; then
@@ -280,12 +306,7 @@ pct_int=""
 pct_color="$WHITE"
 if [[ -n "$used_pct" ]]; then
     pct_int=$(printf '%.0f' "$used_pct" 2>/dev/null)
-# @parity:threshold CONTEXT_CRIT=85
-# @parity:threshold CONTEXT_WARN=60
-    if (( pct_int >= 85 )); then   pct_color="$RED"
-    elif (( pct_int >= 60 )); then pct_color="$YELLOW"
-    else                           pct_color="$GREEN"
-    fi
+    pct_color=$(pct_color_for "$pct_int")
 fi
 
 model_part="${MAGENTA}${model_short}${RESET}"
@@ -302,14 +323,7 @@ bar_pct_clamped="${bar_used_pct%.*}"
 [[ -z "$bar_pct_clamped" ]] && bar_pct_clamped=0
 (( bar_pct_clamped < 0 )) && bar_pct_clamped=0
 (( bar_pct_clamped > 100 )) && bar_pct_clamped=100
-filled=$(( (bar_width * bar_pct_clamped + 50) / 100 ))
-(( filled > bar_width )) && filled=$bar_width
-(( filled < 0 )) && filled=0
-empty_count=$((bar_width - filled))
-
-filled_chars=$(repeat_char "█" "$filled")
-empty_chars=$(repeat_char "░" "$empty_count")
-bar="${bar_color}${filled_chars}${RESET}${BAR_EMPTY}${empty_chars}${RESET}"
+bar=$(render_bar "$bar_pct_clamped" "$bar_color")
 
 token_suffix=""
 if [[ -n "$ctx_size" ]]; then
@@ -330,16 +344,20 @@ ctx_bar_part="${bar} ${bar_color}${bar_pct_int}%${RESET}${token_suffix}"
 # Persist the main session's model->window pair so subagent rows can resolve
 # real denominators later. Multi-writer file: atomic mktemp+mv, skip when the
 # entry already matches (no mtime churn). All failures are silent.
-MODEL_WINDOWS_PATH="$HOME/.claude/statusline-model-windows.json"
 MODEL_WINDOWS_JSON=""
 if [[ -f "$MODEL_WINDOWS_PATH" ]]; then
     MODEL_WINDOWS_JSON=$(jq -c 'if type == "object" then . else empty end' "$MODEL_WINDOWS_PATH" 2>/dev/null)
 fi
+# One parse into an associative array so per-subagent lookups don't fork jq.
+declare -A MODEL_WINDOWS_MAP=()
+if [[ -n "$MODEL_WINDOWS_JSON" ]]; then
+    while IFS=$'\t' read -r _mw_k _mw_v; do
+        [[ -n "$_mw_k" ]] && MODEL_WINDOWS_MAP["$_mw_k"]="$_mw_v"
+    done < <(printf '%s' "$MODEL_WINDOWS_JSON" | jq -r 'to_entries[] | "\(.key)\t\(.value)"' 2>/dev/null)
+fi
 if [[ -n "$J_MODEL_ID" && -n "$ctx_size" ]]; then
     _mw_key=$(normalize_model_id "$J_MODEL_ID")
-    _mw_cur=""
-    [[ -n "$MODEL_WINDOWS_JSON" ]] && _mw_cur=$(printf '%s' "$MODEL_WINDOWS_JSON" | jq -r --arg m "$_mw_key" '.[$m] // empty' 2>/dev/null)
-    if [[ -n "$_mw_key" && "$_mw_cur" != "$ctx_size" ]]; then
+    if [[ -n "$_mw_key" && "${MODEL_WINDOWS_MAP[$_mw_key]:-}" != "$ctx_size" ]]; then
         _mw_base="$MODEL_WINDOWS_JSON"
         [[ -z "$_mw_base" ]] && _mw_base="{}"
         _mw_merged=$(printf '%s' "$_mw_base" | jq -c --arg m "$_mw_key" --argjson w "$ctx_size" '. + {($m): $w}' 2>/dev/null)
@@ -348,6 +366,7 @@ if [[ -n "$J_MODEL_ID" && -n "$ctx_size" ]]; then
             _mw_tmp=$(mktemp "${MODEL_WINDOWS_PATH}.XXXXXX" 2>/dev/null) || _mw_tmp=""
             if [[ -n "$_mw_tmp" ]] && printf '%s\n' "$_mw_merged" > "$_mw_tmp" 2>/dev/null && mv -f "$_mw_tmp" "$MODEL_WINDOWS_PATH" 2>/dev/null; then
                 MODEL_WINDOWS_JSON="$_mw_merged"
+                MODEL_WINDOWS_MAP["$_mw_key"]="$ctx_size"
                 log_msg "model-windows: learned ${_mw_key}=${ctx_size}"
             else
                 [[ -n "$_mw_tmp" ]] && rm -f "$_mw_tmp" 2>/dev/null
@@ -765,8 +784,7 @@ fi
 # transcript parsing. Tiers are never merged. A done signal (feed: non-active
 # status or task gone; fallback: terminal stop_reason) stamps done_ts into the
 # per-agent session cache; the row lingers green for DONE_LINGER seconds.
-# @parity:cache FEED_TTL=10
-FEED_TTL=10
+# FEED_TTL is defined with the output-cache key inputs above.
 # @parity:threshold DONE_LINGER=30
 DONE_LINGER=30
 
@@ -782,19 +800,13 @@ build_sa_row() {  # used ctx_size model_id agent_type state(working|done) -> app
     [[ "$sa_used" =~ ^[0-9]+$ ]] || sa_used=0
     { [[ "$sa_ctx_size" =~ ^[0-9]+$ ]] && (( sa_ctx_size > 0 )); } || sa_ctx_size=200000
 
-    # Bar/pct clamp at 100%; the token label keeps the raw used value (R14).
+    # Bar/pct clamp at 100%; the token label keeps the raw used value.
     local sa_pct_int=$(( sa_used * 100 / sa_ctx_size ))
     (( sa_pct_int < 0 )) && sa_pct_int=0
     (( sa_pct_int > 100 )) && sa_pct_int=100
-    local sa_color
-    if   (( sa_pct_int >= 85 )); then sa_color="$RED"
-    elif (( sa_pct_int >= 60 )); then sa_color="$YELLOW"
-    else                              sa_color="$GREEN"
-    fi
-    local sa_filled=$(( (bar_width * sa_pct_int + 50) / 100 ))
-    (( sa_filled > bar_width )) && sa_filled=$bar_width
-    (( sa_filled < 0 )) && sa_filled=0
-    local sa_bar="${sa_color}$(repeat_char "█" "$sa_filled")${RESET}${BAR_EMPTY}$(repeat_char "░" "$((bar_width - sa_filled))")${RESET}"
+    local sa_color sa_bar
+    sa_color=$(pct_color_for "$sa_pct_int")
+    sa_bar=$(render_bar "$sa_pct_int" "$sa_color")
 
     local sa_used_lbl sa_ctx_k sa_ctx_lbl
     sa_used_lbl=$(format_tokens "$sa_used")
@@ -821,8 +833,10 @@ sa_now=$(date +%s)
 sa_sid_safe="${session_id//[^a-zA-Z0-9_-]/}"
 feed_tier=false
 
-if [[ -n "$sa_sid_safe" && "$_oc_fmt" =~ ^[0-9]+$ ]] && (( sa_now - _oc_fmt <= FEED_TTL )); then
-    feed_ok=$(jq -r 'if type == "object" and ((.tasks // []) | type == "array") then "ok" else empty end' "$_oc_feed" 2>/dev/null)
+if [[ -n "$sa_sid_safe" && "$_oc_ffresh" == "1" ]]; then
+    # Parse the same content the output-cache key hashed, so the render always
+    # matches its key even if the handler rewrote the file mid-refresh.
+    feed_ok=$(printf '%s' "$_oc_fjson" | jq -r 'if type == "object" and ((.tasks // []) | type == "array") then "ok" else empty end' 2>/dev/null)
     if [[ "$feed_ok" == "ok" ]]; then
         feed_tier=true
         declare -a feed_candidates=()
@@ -832,7 +846,7 @@ if [[ -n "$sa_sid_safe" && "$_oc_fmt" =~ ^[0-9]+$ ]] && (( sa_now - _oc_fmt <= F
             ft_id_safe="${ft_id//[^a-zA-Z0-9_-]/}"
             [[ -n "$ft_id_safe" ]] && feed_seen_ids+="${ft_id_safe}"$'\n'
             [[ "$ft_tok" =~ ^[0-9]+$ ]] || ft_tok=0
-            # Task window when present, else U3's resolver (absent model -> 200K).
+            # Task window when present, else the tiered resolver (absent model -> 200K).
             if [[ "$ft_win" =~ ^[0-9]+$ ]] && (( ft_win > 0 )); then
                 ft_ctx="$ft_win"
             else
@@ -855,7 +869,7 @@ if [[ -n "$sa_sid_safe" && "$_oc_fmt" =~ ^[0-9]+$ ]] && (( sa_now - _oc_fmt <= F
             [[ -n "$ft_cache" ]] && printf '%s|%s|%s|%s|%s|%s' "$ft_tok" "$ft_ctx" "$ft_model" "$ft_type" "$ft_done" "$ft_start" > "$ft_cache" 2>/dev/null
             [[ "$ft_state" == "done" ]] && (( sa_now - ft_done > DONE_LINGER )) && continue
             feed_candidates+=("${ft_start}"$'\x1f'"${ft_id}"$'\x1f'"${ft_tok}"$'\x1f'"${ft_ctx}"$'\x1f'"${ft_model}"$'\x1f'"${ft_type}"$'\x1f'"${ft_state}")
-        done < <(jq -r '(.tasks // [])[] | select(type == "object") | [((.id // "") | tostring), ((.type // .name // "") | tostring), ((.status // "") | tostring), ((.model // "") | tostring), ((.contextWindowSize // "") | tostring), ((.tokenCount // 0) | tostring), ((.startTime // "") | tostring)] | join("\u001f")' "$_oc_feed" 2>/dev/null)
+        done < <(printf '%s' "$_oc_fjson" | jq -r '(.tasks // [])[] | select(type == "object") | [((.id // "") | tostring), ((.type // .name // "") | tostring), ((.status // "") | tostring), ((.model // "") | tostring), ((.contextWindowSize // "") | tostring), ((.tokenCount // 0) | tostring), ((.startTime // "") | tostring)] | join("\u001f")' 2>/dev/null)
 
         # A cached task id missing from a fresh feed is a done signal: stamp
         # done_ts on first observation, linger, then drop the cache entry.
@@ -923,7 +937,7 @@ if [[ "$feed_tier" != true && -n "$session_id" && -n "$transcript_path" ]]; then
 
             if [[ "$sa_use_cache" != true ]]; then
                 # No assistant message yet -> zeros and no model id; the row
-                # renders without the model segment for this refresh (R4).
+                # renders without the model segment for this refresh.
                 sa_sr=""; sa_in=0; sa_cw=0; sa_cr=0; sa_model=""
                 sa_last=$(jq -c 'select(.type == "assistant")' "$sa_file" 2>/dev/null | tail -1)
                 if [[ -n "$sa_last" ]]; then
@@ -945,7 +959,7 @@ if [[ "$feed_tier" != true && -n "$session_id" && -n "$transcript_path" ]]; then
             [[ "$sa_cw" =~ ^[0-9]+$ ]] || sa_cw=0
             [[ "$sa_cr" =~ ^[0-9]+$ ]] || sa_cr=0
 
-            # R10: any terminal stop reason is a done signal; tool_use/pause_turn
+            # Any terminal stop reason is a done signal; tool_use/pause_turn
             # (and no assistant message yet) mean working.
             case "$sa_sr" in
                 end_turn|max_tokens|refusal|model_context_window_exceeded|stop_sequence) sa_state="done" ;;
