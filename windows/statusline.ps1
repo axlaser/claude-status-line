@@ -672,8 +672,11 @@ if ($agentName) {
 # FEED_TTL is defined with the output-cache key inputs above.
 # @parity:threshold DONE_LINGER=30
 $DONE_LINGER = 30
-# Feed statuses that mean "working" — single place to adjust.
-$SaActiveStatuses = @('running', 'pending', 'in_progress', 'active')
+# Feed statuses that mean "done" — single place to adjust.
+# Deny-list polarity: an unknown status means "working" (fail open to visible),
+# matching the fallback tier's terminal-stop-reason check; a completed task
+# that leaves the feed is still caught by the disappeared-task done signal.
+$SaTerminalStatuses = @('completed', 'complete', 'done', 'finished', 'failed', 'cancelled', 'canceled', 'killed', 'stopped', 'error')
 # Transcript stop reasons that mean "done" — single place to adjust.
 $SaTerminalStopReasons = @('end_turn', 'max_tokens', 'refusal', 'model_context_window_exceeded', 'stop_sequence')
 
@@ -734,7 +737,7 @@ if ($_ocFfresh -eq 1 -and $_ocFjson) {
                 }
                 $ftCache = if ($ftIdSafe) { Join-Path $env:TEMP "statusline-sa-$_ocSafeId-task-$ftIdSafe.txt" } else { $null }
                 $ftDone = ''
-                if ($SaActiveStatuses -contains $ftStatus.ToLowerInvariant()) {
+                if ($SaTerminalStatuses -notcontains $ftStatus.ToLowerInvariant()) {
                     $ftState = 'working'
                 } else {
                     $ftState = 'done'

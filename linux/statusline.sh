@@ -124,7 +124,10 @@ _oc_ffresh=0
 _oc_fjson=""
 if [[ "$_oc_fmt" =~ ^[0-9]+$ ]] && (( _oc_now - _oc_fmt <= FEED_TTL )); then
     _oc_ffresh=1
-    _oc_fjson=$(cat "$_oc_feed" 2>/dev/null)
+    # Handler writes compact single-line JSON; the builtin read avoids a cat
+    # fork on this every-tick path. Command group silences a redirect-open
+    # failure if the file vanishes between the stat and the read.
+    { IFS= read -r _oc_fjson < "$_oc_feed"; } 2>/dev/null
 fi
 MODEL_WINDOWS_PATH="$HOME/.claude/statusline-model-windows.json"
 _oc_mwmt=""
@@ -786,10 +789,14 @@ fi
 # @parity:threshold DONE_LINGER=30
 DONE_LINGER=30
 
-sa_status_is_active() {  # feed statuses that mean "working" — single place to adjust
+sa_status_is_active() {  # feed statuses that mean "done" — single place to adjust
+    # Deny-list polarity: an unknown status means "working" (fail open to
+    # visible), matching the fallback tier's terminal-stop-reason check; a
+    # genuinely completed task that leaves the feed is still caught by the
+    # disappeared-task done signal below.
     case "${1,,}" in
-        running|pending|in_progress|active) return 0 ;;
-        *)                                  return 1 ;;
+        completed|complete|done|finished|failed|cancelled|canceled|killed|stopped|error) return 1 ;;
+        *)                                                                               return 0 ;;
     esac
 }
 
