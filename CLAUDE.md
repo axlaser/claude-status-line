@@ -5,13 +5,14 @@ Cross-platform custom status line for Claude Code. Claude Code pipes JSON to std
 ## Project Structure
 
 ```
-macos/       statusline.sh, install.sh, uninstall.sh, notify.sh, git-refresh.sh
-linux/       statusline.sh, install.sh, uninstall.sh, notify.sh, git-refresh.sh
-windows/     statusline.ps1, install.ps1, uninstall.ps1, notify.ps1, git-refresh.ps1
+macos/       statusline.sh, install.sh, uninstall.sh, notify.sh, git-refresh.sh, subagent-statusline.sh
+linux/       statusline.sh, install.sh, uninstall.sh, notify.sh, git-refresh.sh, subagent-statusline.sh
+windows/     statusline.ps1, install.ps1, uninstall.ps1, notify.ps1, git-refresh.ps1, subagent-statusline.ps1
 ```
 
 - `notify.*` -- sound notification handler, triggered by hooks on permission requests and task completion
 - `git-refresh.*` -- cache invalidation hook registered as PostToolUse, clears stale git status after file-modifying tools
+- `subagent-statusline.*` -- subagentStatusLine handler, tees Claude Code's per-task feed to a session state file for the status line to read; prints nothing so the default agent panel stays intact
 
 ## Architecture
 
@@ -27,6 +28,10 @@ Claude Code pipes a JSON object to stdin on each refresh. Key top-level fields:
 `session_id`, `workspace.current_dir`, `cwd`, `model.display_name`, `context_window.context_window_size`, `context_window.used_percentage`, `context_window.total_input_tokens`, `effort.level`, `cost.total_cost_usd`, `transcript_path`, `rate_limits.five_hour.*`, `rate_limits.seven_day.*`, `agent.name`, `context_window.current_usage.*`
 
 See the `# @parity:json-extract-begin` / `# @parity:json-extract-end` block in `macos/statusline.sh` for the full field list.
+
+### Subagent Tasks Feed
+
+Second input contract beside the stdin JSON: Claude Code's `subagentStatusLine` feature pipes `{session_id, tasks: [...]}` (per-task model, context window size, status, token count) to `subagent-statusline.*` on each refresh tick. The handler prints nothing and tees the payload to `statusline-tasks-<session-id>.json` in the OS temp dir (`$TMPDIR`, `%TEMP%` on Windows); the status line reads it when fresh. Per-task `model` / `contextWindowSize` require Claude Code >= v2.1.205 -- without feed data, the status line falls back to parsing subagent transcripts, resolving context windows via the learned map (`~/.claude/statusline-model-windows.json`, written from each main session's model -> window pair), then a seed table, then a 200K default.
 
 ### Dependencies
 

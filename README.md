@@ -25,9 +25,8 @@ showing context usage, git state, costs, rate limits, and more — all inside a 
 | Row | What it shows |
 |-----|---------------|
 | **repo** | Working directory (shortened relative to `$HOME`) and git branch with `↑ahead` / `↓behind` remote tracking, `+insertions` / `-deletions` / `~untracked`, and `⊟stash` count |
-| **agent** | Agent name with compact context % and in/out tokens (when running with `--agent` flag) |
-| **model** | Active model (e.g. `Opus 4.7`), reasoning effort level, and ready/working indicator with live output token counter |
-| **context** | Color-coded progress bar with percentage and token count (green < 60%, yellow < 85%, red 85%+) |
+| **agent** | Agent name with compact context % and in/out tokens (when running with `--agent` flag); each active subagent also gets its own `agent` row with context bar, `used/window` tokens, model, agent type, and `○ working` / `✓ done` status |
+| **model** | Active model (e.g. `Opus 4.7`), reasoning effort level, ready/working indicator with live output token counter, and a color-coded context bar with percentage and token count (green < 60%, yellow < 85%, red 85%+) |
 | **tokens** | Cumulative session breakdown — `in` (fresh input), `cache↑` (cache writes), `cache↓` (cache reads), `out` (output) |
 | **cost** | Session cost in USD, message count, and wall-clock duration |
 | **limits** | 5-hour and 7-day rate limit usage with burn-rate arrows (`⇡` over pace / `⇣` under pace) and time until reset |
@@ -51,6 +50,9 @@ The model row shows a real-time status — `● ready` when idle, or `○ workin
 ### Compact agent view
 When running with `--agent`, the agent row shows context usage as a percentage and cumulative in/out tokens in a compact inline format — all the essentials without taking up extra rows.
 
+### Per-subagent context tracking
+Every active subagent gets its own row — context bar, `used/window` tokens, model, agent type, and live status (`○ working` while active, `✓ done` for 30 seconds after completion, then the row disappears). Percentages are measured against each subagent's **real** context window — fed live by Claude Code or learned per model — so a 1M-window subagent isn't judged against a 200K bar.
+
 ### Never miss a prompt
 Sound alerts and native OS toast notifications fire on permission requests, task completion, context compaction, and rate limit warnings. Each event and channel (sound vs. visual) is independently toggleable — get pinged when Claude needs you, stay quiet when it doesn't.
 
@@ -58,7 +60,7 @@ Sound alerts and native OS toast notifications fire on permission requests, task
 
 ## Installation
 
-> **Note:** The installer will ask before overwriting any existing `statusLine` configuration.
+> **Note:** The installer will ask before overwriting any existing `statusLine` or `subagentStatusLine` configuration.
 > Restart Claude Code after installing or updating.
 
 ---
@@ -97,8 +99,9 @@ curl -fsSL https://raw.githubusercontent.com/axlaser/claude-status-line/master/m
    curl -fsSL https://raw.githubusercontent.com/axlaser/claude-status-line/master/macos/statusline.sh -o ~/.claude/statusline.sh
    curl -fsSL https://raw.githubusercontent.com/axlaser/claude-status-line/master/macos/notify.sh -o ~/.claude/notify.sh
    curl -fsSL https://raw.githubusercontent.com/axlaser/claude-status-line/master/macos/git-refresh.sh -o ~/.claude/git-refresh.sh
+   curl -fsSL https://raw.githubusercontent.com/axlaser/claude-status-line/master/macos/subagent-statusline.sh -o ~/.claude/subagent-statusline.sh
    curl -fsSL https://raw.githubusercontent.com/axlaser/claude-status-line/master/assets/claude-icon.png -o ~/.claude/claude-icon.png
-   chmod +x ~/.claude/statusline.sh ~/.claude/notify.sh ~/.claude/git-refresh.sh
+   chmod +x ~/.claude/statusline.sh ~/.claude/notify.sh ~/.claude/git-refresh.sh ~/.claude/subagent-statusline.sh
    ```
 
 3. **Install terminal-notifier** (optional — for visual toast notifications):
@@ -125,6 +128,10 @@ curl -fsSL https://raw.githubusercontent.com/axlaser/claude-status-line/master/m
        "type": "command",
        "command": "~/.claude/statusline.sh",
        "refreshInterval": 1
+     },
+     "subagentStatusLine": {
+       "type": "command",
+       "command": "~/.claude/subagent-statusline.sh"
      },
      "hooks": {
        "PostToolUse": [
@@ -201,8 +208,9 @@ curl -fsSL https://raw.githubusercontent.com/axlaser/claude-status-line/master/l
    curl -fsSL https://raw.githubusercontent.com/axlaser/claude-status-line/master/linux/statusline.sh -o ~/.claude/statusline.sh
    curl -fsSL https://raw.githubusercontent.com/axlaser/claude-status-line/master/linux/notify.sh -o ~/.claude/notify.sh
    curl -fsSL https://raw.githubusercontent.com/axlaser/claude-status-line/master/linux/git-refresh.sh -o ~/.claude/git-refresh.sh
+   curl -fsSL https://raw.githubusercontent.com/axlaser/claude-status-line/master/linux/subagent-statusline.sh -o ~/.claude/subagent-statusline.sh
    curl -fsSL https://raw.githubusercontent.com/axlaser/claude-status-line/master/assets/claude-icon.png -o ~/.claude/claude-icon.png
-   chmod +x ~/.claude/statusline.sh ~/.claude/notify.sh ~/.claude/git-refresh.sh
+   chmod +x ~/.claude/statusline.sh ~/.claude/notify.sh ~/.claude/git-refresh.sh ~/.claude/subagent-statusline.sh
    ```
 
 3. **Install libnotify** (optional — for visual toast notifications):
@@ -231,6 +239,10 @@ curl -fsSL https://raw.githubusercontent.com/axlaser/claude-status-line/master/l
        "type": "command",
        "command": "~/.claude/statusline.sh",
        "refreshInterval": 1
+     },
+     "subagentStatusLine": {
+       "type": "command",
+       "command": "~/.claude/subagent-statusline.sh"
      },
      "hooks": {
        "PostToolUse": [
@@ -299,6 +311,7 @@ irm https://raw.githubusercontent.com/axlaser/claude-status-line/master/windows/
    Invoke-WebRequest -Uri "https://raw.githubusercontent.com/axlaser/claude-status-line/master/windows/statusline.ps1" -OutFile "$env:USERPROFILE\.claude\statusline.ps1"
    Invoke-WebRequest -Uri "https://raw.githubusercontent.com/axlaser/claude-status-line/master/windows/notify.ps1" -OutFile "$env:USERPROFILE\.claude\notify.ps1"
    Invoke-WebRequest -Uri "https://raw.githubusercontent.com/axlaser/claude-status-line/master/windows/git-refresh.ps1" -OutFile "$env:USERPROFILE\.claude\git-refresh.ps1"
+   Invoke-WebRequest -Uri "https://raw.githubusercontent.com/axlaser/claude-status-line/master/windows/subagent-statusline.ps1" -OutFile "$env:USERPROFILE\.claude\subagent-statusline.ps1"
    Invoke-WebRequest -Uri "https://raw.githubusercontent.com/axlaser/claude-status-line/master/assets/claude-icon.png" -OutFile "$env:USERPROFILE\.claude\claude-icon.png"
    ```
 
@@ -329,6 +342,10 @@ irm https://raw.githubusercontent.com/axlaser/claude-status-line/master/windows/
        "type": "command",
        "command": "powershell -NoProfile -File C:/Users/YOUR_USERNAME/.claude/statusline.ps1",
        "refreshInterval": 2
+     },
+     "subagentStatusLine": {
+       "type": "command",
+       "command": "powershell -NoProfile -File C:/Users/YOUR_USERNAME/.claude/subagent-statusline.ps1"
      },
      "hooks": {
        "PostToolUse": [
@@ -563,6 +580,10 @@ Check `~/.claude/statusline-debug.log` for `READ/PARSE FAILED` or `UNHANDLED` en
 Claude Code pipes a JSON object to the script's stdin on each update. The JSON contains session data — model info, context window usage, cost, rate limits, transcript path, and more. The script parses this data, optionally reads the conversation transcript for additional metrics (message count, token breakdown, idle/working state), and outputs ANSI-colored text that Claude Code renders as the status bar.
 
 Git status is cached for up to 5 seconds and invalidated as soon as `.git/index` changes (or immediately by the git-refresh hook after file-modifying tools), so it stays effectively real-time without re-running git on every refresh. Transcript data is cached by file mtime to keep refresh times fast even in large repositories.
+
+Subagent rows are fed by Claude Code's `subagentStatusLine` feature. The installer registers a small handler (`subagent-statusline.sh` / `.ps1`, installed to `~/.claude/`) that receives the live tasks payload — each subagent's model, context window size, status, and token count — and tees it to a session-scoped state file in the OS temp directory (`statusline-tasks-<session-id>.json`). The handler prints nothing, so Claude Code's own agent panel keeps its default rendering. Per-task `model` and `contextWindowSize` require Claude Code >= v2.1.205; on older versions (or before the feed delivers data), the status line falls back to parsing subagent transcripts.
+
+On the transcript fallback path, each subagent's context window is resolved through a learned map, then a seed table, then a 200K default. The status line records each main session's model → window pair to `~/.claude/statusline-model-windows.json`, so it learns real, plan-accurate context windows automatically — new models are picked up without any repo update. The seed table covers current documented models (1M for Fable 5, Opus 4.6+, Sonnet 5, and Sonnet 4.6; 200K for Haiku 4.5, Sonnet 4.5, and Opus 4.5). The uninstaller removes the handler registration, the handler script, and the learned map.
 
 ---
 
