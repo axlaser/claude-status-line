@@ -78,25 +78,47 @@ function Get-SubagentCtxSize([string]$model) {
     return 200000
 }
 
+# @parity:json-extract-begin
+$sessionId        = Get-Val $json @('session_id')
+$cwdRaw           = Get-Val $json @('workspace','current_dir')
+$cwdFallback      = Get-Val $json @('cwd')
+$modelDisplay     = Get-Val $json @('model','display_name')
+$ctxSize          = Get-Val $json @('context_window','context_window_size')
+$usedPct          = Get-Val $json @('context_window','used_percentage')
+$totalInputTokens = Get-Val $json @('context_window','total_input_tokens')
+$effortLevel      = Get-Val $json @('effort','level')
+$gitCwd           = Get-Val $json @('workspace','current_dir')
+$totalCost        = Get-Val $json @('cost','total_cost_usd')
+$totalCostLegacy  = Get-Val $json @('total_cost_usd')
+$durationMs       = Get-Val $json @('cost','total_duration_ms')
+$durationMsL1     = Get-Val $json @('total_duration_ms')
+$durationMsL2     = Get-Val $json @('duration_ms')
+$transcriptPath   = Get-Val $json @('transcript_path')
+$fivePct          = Get-Val $json @('rate_limits','five_hour','used_percentage')
+$fiveRes          = Get-Val $json @('rate_limits','five_hour','resets_at')
+$sevenPct         = Get-Val $json @('rate_limits','seven_day','used_percentage')
+$sevenRes         = Get-Val $json @('rate_limits','seven_day','resets_at')
+$agentName        = Get-Val $json @('agent','name')
+$agentIn          = Get-Val $json @('context_window','current_usage','input_tokens') 0
+$agentOut         = Get-Val $json @('context_window','current_usage','output_tokens') 0
+# @parity:json-extract-end
+
 # --- Output cache: skip re-render when all inputs are unchanged ---
-$_ocSessionId = Get-Val $json @('session_id')
-$_ocSafeId = if ($_ocSessionId) { $_ocSessionId -replace '[^a-zA-Z0-9_-]', '' } else { $null }
+$_ocSafeId = if ($sessionId) { $sessionId -replace '[^a-zA-Z0-9_-]', '' } else { $null }
 $_ocPath = if ($_ocSafeId) { Join-Path $env:TEMP "statusline-oc-$_ocSafeId.txt" } else { $null }
 $_ocTmt = ''
-$_ocTranscriptPath = Get-Val $json @('transcript_path')
-if ($_ocTranscriptPath -and (Test-Path -LiteralPath $_ocTranscriptPath -ErrorAction SilentlyContinue)) {
-    $_ocTmt = (Get-Item -LiteralPath $_ocTranscriptPath).LastWriteTimeUtc.Ticks
+if ($transcriptPath -and (Test-Path -LiteralPath $transcriptPath -ErrorAction SilentlyContinue)) {
+    $_ocTmt = (Get-Item -LiteralPath $transcriptPath).LastWriteTimeUtc.Ticks
 }
 $_ocGmt = ''
-$_ocGitCwd = Get-Val $json @('workspace','current_dir')
-if (-not $_ocGitCwd) { $_ocGitCwd = (Get-Location).Path }
+$_ocGitCwd = if ($gitCwd) { $gitCwd } else { (Get-Location).Path }
 $_ocGidx = Join-Path $_ocGitCwd '.git\index'
 if (Test-Path -LiteralPath $_ocGidx -ErrorAction SilentlyContinue) {
     $_ocGmt = (Get-Item -LiteralPath $_ocGidx -Force).LastWriteTimeUtc.Ticks
 }
 $_ocSmt = ''
-if ($_ocTranscriptPath) {
-    $_ocSdir = Join-Path (Split-Path -Parent $_ocTranscriptPath) (Join-Path ([System.IO.Path]::GetFileNameWithoutExtension($_ocTranscriptPath)) 'subagents')
+if ($transcriptPath) {
+    $_ocSdir = Join-Path (Split-Path -Parent $transcriptPath) (Join-Path ([System.IO.Path]::GetFileNameWithoutExtension($transcriptPath)) 'subagents')
     if (Test-Path -LiteralPath $_ocSdir -ErrorAction SilentlyContinue) {
         $_ocSmt = (Get-Item -LiteralPath $_ocSdir -Force).LastWriteTimeUtc.Ticks
     }
@@ -120,11 +142,9 @@ if ($_ocPath -and (Test-Path -LiteralPath $_ocPath -ErrorAction SilentlyContinue
     }
 }
 
-# @parity:json-extract-begin
 # --- 1. CWD ---
-$sessionId = Get-Val $json @('session_id')
-$cwd = Get-Val $json @('workspace','current_dir')
-if (-not $cwd) { $cwd = Get-Val $json @('cwd') }
+$cwd = $cwdRaw
+if (-not $cwd) { $cwd = $cwdFallback }
 if (-not $cwd) { $cwd = (Get-Location).Path }
 $userHome = $env:USERPROFILE
 if ($cwd -and $userHome -and ($cwd -eq $userHome -or $cwd.StartsWith("$userHome\", [System.StringComparison]::OrdinalIgnoreCase) -or $cwd.StartsWith("$userHome/", [System.StringComparison]::OrdinalIgnoreCase))) {
@@ -138,7 +158,6 @@ if ($cwd -and $userHome -and ($cwd -eq $userHome -or $cwd.StartsWith("$userHome\
 }
 $cwdPart = "${CYAN}${cwd}${RESET}"
 # --- 2. Model + Context window % ---
-$modelDisplay = Get-Val $json @('model','display_name')
 # Strip "Claude " prefix; cap at 24 chars so "Opus 4.7 (1M context)" still fits.
 $modelShort = $modelDisplay
 if ($modelShort) {
@@ -147,8 +166,6 @@ if ($modelShort) {
 } else {
     $modelShort = 'unknown'
 }
-$ctxSize     = Get-Val $json @('context_window','context_window_size')
-$usedPct     = Get-Val $json @('context_window','used_percentage')
 $ctxLabel = ''
 if ($ctxSize) {
     $ctxK = [int]($ctxSize / 1000)
@@ -182,7 +199,6 @@ $tokenSuffix = ''
 if ($ctxSize) {
     # Prefer total_input_tokens (full precision); used_percentage is integer-rounded, so on a
     # 1M window "25%" maps to exactly 250000 and the display jumps in 10K steps.
-    $totalInputTokens = Get-Val $json @('context_window','total_input_tokens')
     $usedTokens = if ($null -ne $totalInputTokens) { [long]$totalInputTokens } else { [long][Math]::Truncate([double]$ctxSize * $barPctTrunc / 100) }
     $usedLbl = Format-Tokens $usedTokens
     if (-not $usedLbl) { $usedLbl = '0' }
@@ -190,7 +206,6 @@ if ($ctxSize) {
 }
 $ctxBarPart = "${bar} ${barColor}${barPctInt}%${RESET}${tokenSuffix}"
 # --- 3. Reasoning effort ---
-$effortLevel = Get-Val $json @('effort','level')
 $effortPart  = ''
 if ($effortLevel) {
     $effortColor = switch ($effortLevel) {
@@ -206,7 +221,6 @@ if ($effortLevel) {
 # --- 4. Git status ---
 $gitPart = ''
 try {
-    $gitCwd = Get-Val $json @('workspace','current_dir')
     if (-not $gitCwd) { $gitCwd = (Get-Location).Path }
     $gitIndex = Join-Path $gitCwd '.git\index'
     if (Test-Path -LiteralPath $gitIndex) {
@@ -279,17 +293,15 @@ try {
 # Fallbacks to legacy top-level keys — Claude Code JSON schema has shifted between versions.
 $costPart = ''
 $durationPart = ''
-$totalCost = Get-Val $json @('cost','total_cost_usd')
-if ($null -eq $totalCost) { $totalCost = Get-Val $json @('total_cost_usd') }
+if ($null -eq $totalCost) { $totalCost = $totalCostLegacy }
 if ($null -ne $totalCost) {
     $costFmt  = '${0:F4}' -f [double]$totalCost
     # @parity:threshold COST_WARN=0.50
     $costColor = if ([double]$totalCost -gt 0.50) { $YELLOW } else { $GREEN }
     $costPart = "${costColor}${costFmt}${RESET}"
 }
-$durationMs = Get-Val $json @('cost','total_duration_ms')
-if ($null -eq $durationMs) { $durationMs = Get-Val $json @('total_duration_ms') }
-if ($null -eq $durationMs) { $durationMs = Get-Val $json @('duration_ms') }
+if ($null -eq $durationMs) { $durationMs = $durationMsL1 }
+if ($null -eq $durationMs) { $durationMs = $durationMsL2 }
 if ($null -ne $durationMs) {
     $secs = [int][Math]::Floor([double]$durationMs / 1000)
     $dStr = if ($secs -ge 3600) {
@@ -313,7 +325,6 @@ $deltaIn         = [long]0
 $deltaCacheWrite = [long]0
 $deltaCacheRead  = [long]0
 $deltaOut        = [long]0
-$transcriptPath = Get-Val $json @('transcript_path')
 if ($transcriptPath -and (Test-Path -LiteralPath $transcriptPath -ErrorAction SilentlyContinue)) {
     try {
         # Per-session cache keyed on transcript mtime — only re-parse when it changes.
@@ -357,48 +368,38 @@ if ($transcriptPath -and (Test-Path -LiteralPath $transcriptPath -ErrorAction Si
             }
         }
         if (-not $useCache) {
-            $rawTranscript = Get-Content -LiteralPath $transcriptPath -Raw -ErrorAction SilentlyContinue
-            if ($rawTranscript) {
-                $lines = $rawTranscript -split "(`r`n|`n)" | Where-Object { $_.Trim() -ne '' }
-                # Real user messages = user-type lines that are NOT synthetic. Filter with
-                # AND per-line; summing independent counters over-subtracts when markers
-                # like `<command-name>` co-occur with `"toolUseResult"` on the same line.
-                $msgCount = ($lines | Where-Object {
-                    $_ -match '"type"\s*:\s*"user"' -and
-                    $_ -notmatch '"toolUseResult"' -and
-                    $_ -notmatch '"isMeta"\s*:\s*true' -and
-                    $_ -notmatch '<command-name>' -and
-                    $_ -notmatch '<local-command-stdout>'
-                }).Count
-                # Idle vs working: latest REAL message decides. Skip synthetic user entries
-                # (isMeta, slash-command invocations/output). Track tool results to distinguish
-                # permission prompts (idle) from completed tool calls (working).
-                for ($i = $lines.Count - 1; $i -ge 0; $i--) {
-                    $ln = $lines[$i]
-                    if ($ln -match '"isMeta"\s*:\s*true') { continue }
-                    if ($ln -match '<command-name>') { continue }
-                    if ($ln -match '<local-command-') { continue }
-                    if ($ln -match '"toolUseResult"') { continue }
+            if ($transcriptSz -gt 0) {
+                # Single streaming pass (parity with the one-pass awk on macOS/Linux):
+                # counts real user messages, sums token buckets, and tracks the LAST
+                # non-synthetic user/assistant line for the idle-vs-working verdict --
+                # without materializing the whole transcript in memory.
+                $msgCount = 0
+                foreach ($ln in [System.IO.File]::ReadLines($transcriptPath)) {
+                    if ([string]::IsNullOrWhiteSpace($ln)) { continue }
                     if ($ln -match '"type"\s*:\s*"assistant"') {
-                        $claudeIsIdle = ($ln -match '"stop_reason"\s*:\s*"end_turn"')
-                        break
-                    }
-                    if ($ln -match '"type"\s*:\s*"user"') {
-                        if ($ln -match 'Request interrupted by user') {
-                            $claudeIsIdle = $true
-                        } else {
-                            $claudeIsIdle = $false
+                        # Cumulative tokens by usage bucket across every assistant turn.
+                        if ($ln -match '"input_tokens"\s*:\s*(\d+)')                { $sessionInTokens         += [long]$Matches[1] }
+                        if ($ln -match '"cache_creation_input_tokens"\s*:\s*(\d+)') { $sessionCacheWriteTokens += [long]$Matches[1] }
+                        if ($ln -match '"cache_read_input_tokens"\s*:\s*(\d+)')    { $sessionCacheReadTokens  += [long]$Matches[1] }
+                        if ($ln -match '"output_tokens"\s*:\s*(\d+)')              { $sessionOutTokens        += [long]$Matches[1] }
+                        # Idle vs working: latest REAL entry decides; synthetic lines don't vote.
+                        if ($ln -notmatch '"isMeta"\s*:\s*true' -and $ln -notmatch '<command-name>' -and
+                            $ln -notmatch '<local-command-' -and $ln -notmatch '"toolUseResult"') {
+                            $claudeIsIdle = ($ln -match '"stop_reason"\s*:\s*"end_turn"')
                         }
-                        break
+                    } elseif ($ln -match '"type"\s*:\s*"user"') {
+                        # Real user messages = user-type lines that are NOT synthetic. Filter with
+                        # AND per-line; summing independent counters over-subtracts when markers
+                        # like `<command-name>` co-occur with `"toolUseResult"` on the same line.
+                        if ($ln -notmatch '"toolUseResult"' -and $ln -notmatch '"isMeta"\s*:\s*true' -and
+                            $ln -notmatch '<command-name>' -and $ln -notmatch '<local-command-stdout>') {
+                            $msgCount++
+                        }
+                        if ($ln -notmatch '"isMeta"\s*:\s*true' -and $ln -notmatch '<command-name>' -and
+                            $ln -notmatch '<local-command-' -and $ln -notmatch '"toolUseResult"') {
+                            $claudeIsIdle = if ($ln -match 'Request interrupted by user') { $true } else { $false }
+                        }
                     }
-                }
-                # Cumulative tokens by usage bucket across every assistant turn.
-                foreach ($ln in $lines) {
-                    if ($ln -notmatch '"type"\s*:\s*"assistant"') { continue }
-                    if ($ln -match '"input_tokens"\s*:\s*(\d+)')                { $sessionInTokens         += [long]$Matches[1] }
-                    if ($ln -match '"cache_creation_input_tokens"\s*:\s*(\d+)') { $sessionCacheWriteTokens += [long]$Matches[1] }
-                    if ($ln -match '"cache_read_input_tokens"\s*:\s*(\d+)')    { $sessionCacheReadTokens  += [long]$Matches[1] }
-                    if ($ln -match '"output_tokens"\s*:\s*(\d+)')              { $sessionOutTokens        += [long]$Matches[1] }
                 }
                 # workingStartOutTokens: -1 when idle; otherwise preserve any prior baseline or set it now.
                 $deltaIn         = [Math]::Max(0, $sessionInTokens - $prevIn)
@@ -515,10 +516,6 @@ function Format-Window([string]$label, $pctVal, $resetsAt, [int]$windowSecs) {
     return "${DIM}${label}${RESET} ${pctColor}${pct}%${RESET}${burnPart}${resetPart}"
 }
 $ratePart = ''
-$fivePct  = Get-Val $json @('rate_limits','five_hour','used_percentage')
-$fiveRes  = Get-Val $json @('rate_limits','five_hour','resets_at')
-$sevenPct = Get-Val $json @('rate_limits','seven_day','used_percentage')
-$sevenRes = Get-Val $json @('rate_limits','seven_day','resets_at')
 if ($null -ne $fivePct -or $null -ne $sevenPct) {
     $parts5d = @()
     $part5 = Format-Window '5h' $fivePct $fiveRes 18000
@@ -529,7 +526,6 @@ if ($null -ne $fivePct -or $null -ne $sevenPct) {
 }
 # --- 7. Agent / subagent status (--agent startup mode only) ---
 $agentPart = ''
-$agentName = Get-Val $json @('agent','name')
 if ($agentName) {
     $agentPart = "${BLUE}${BOLD}${agentName}${RESET}"
     $agentCompact = ''
@@ -537,9 +533,6 @@ if ($agentName) {
     if ($null -ne $pctInt) {
         $agentCompact = "${pctColor}${pctInt}%${RESET}${sep}"
     }
-    $agentIn  = Get-Val $json @('context_window','current_usage','input_tokens') 0
-    $agentOut = Get-Val $json @('context_window','current_usage','output_tokens') 0
-# @parity:json-extract-end
     $inFmt  = Format-Tokens $agentIn
     $outFmt = Format-Tokens $agentOut
     if (-not $inFmt)  { $inFmt  = '0' }
@@ -644,9 +637,28 @@ $BoxT_R  = [char]0x252B
 $BoxRowH = [char]0x2500
 # Visible width — strip ANSI escapes so color codes don't count.
 $ansiPattern = "$ESC\[[0-9;]*[a-zA-Z]"
-function Get-Vis([string]$s) {
+function Get-Vis([string]$s) {  # visible terminal cells: ANSI stripped; CJK/emoji count as 2
     if (-not $s) { return 0 }
-    return ($s -replace $ansiPattern, '').Length
+    $t = $s -replace $ansiPattern, ''
+    $isAscii = $true
+    foreach ($c in $t.ToCharArray()) { if ([int]$c -gt 127) { $isAscii = $false; break } }
+    if ($isAscii) { return $t.Length }
+    $w = 0
+    $i = 0
+    while ($i -lt $t.Length) {
+        $cp = [int]$t[$i]
+        if ([char]::IsHighSurrogate($t[$i]) -and ($i + 1) -lt $t.Length -and [char]::IsLowSurrogate($t[$i + 1])) {
+            $cp = [char]::ConvertToUtf32($t[$i], $t[$i + 1])
+            $i += 2
+        } else {
+            $i++
+        }
+        if (($cp -ge 0x1100 -and $cp -le 0x115F) -or ($cp -ge 0x2E80 -and $cp -le 0xA4CF) -or
+            ($cp -ge 0xAC00 -and $cp -le 0xD7A3) -or ($cp -ge 0xF900 -and $cp -le 0xFAFF) -or
+            ($cp -ge 0xFE30 -and $cp -le 0xFE4F) -or ($cp -ge 0xFF00 -and $cp -le 0xFF60) -or
+            ($cp -ge 0xFFE0 -and $cp -le 0xFFE6) -or $cp -ge 0x1F000) { $w += 2 } else { $w++ }
+    }
+    return $w
 }
 # @parity:constant LABEL_W=7
 $LABEL_W = 7  # longest label: "context"
@@ -748,12 +760,12 @@ if ($_ocSafeId) {
     if ($null -ne $fivePct)  { $_fp = [int][Math]::Floor([double]$fivePct);  if ($_fp -gt $_rateMax) { $_rateMax = $_fp } }
     if ($null -ne $sevenPct) { $_sp = [int][Math]::Floor([double]$sevenPct); if ($_sp -gt $_rateMax) { $_rateMax = $_sp } }
 
-    $_rateResetsNow = Get-Val $json @('rate_limits','five_hour','resets_at') ''
+    $_rateResetsNow = if ($null -ne $fiveRes) { $fiveRes } else { '' }
     if ($null -ne $sevenPct -and $null -ne $fivePct) {
         $_sp2 = [int][Math]::Floor([double]$sevenPct); $_fp2 = [int][Math]::Floor([double]$fivePct)
-        if ($_sp2 -gt $_fp2) { $_rateResetsNow = Get-Val $json @('rate_limits','seven_day','resets_at') '' }
+        if ($_sp2 -gt $_fp2) { $_rateResetsNow = if ($null -ne $sevenRes) { $sevenRes } else { '' } }
     }
-    if ($null -eq $fivePct -and $null -ne $sevenPct) { $_rateResetsNow = Get-Val $json @('rate_limits','seven_day','resets_at') '' }
+    if ($null -eq $fivePct -and $null -ne $sevenPct) { $_rateResetsNow = if ($null -ne $sevenRes) { $sevenRes } else { '' } }
 
     $_nsChanged = $false
     $notifyScript = "$env:USERPROFILE\.claude\notify.ps1"

@@ -38,15 +38,11 @@ raw=$(cat)
 log_msg "stdin bytes=${#raw}"
 log_msg "stdin head: ${raw:0:400}"
 
-if ! printf '%s' "$raw" | jq -e 'type == "object"' &>/dev/null; then
-    log_msg "READ/PARSE FAILED"
-    printf '%s' "${RED}[statusline: bad JSON]${RESET}"
-    exit 0
-fi
-log_msg "json parse: OK"
-
 # @parity:json-extract-begin
-mapfile -t _jf < <(printf '%s' "$raw" | jq -r '[
+# Single jq pass: the in-filter type check replaces the old standalone
+# validity probe (one process spawn per refresh instead of two). Parse
+# errors and non-object input both yield zero output lines.
+mapfile -t _jf < <(printf '%s' "$raw" | jq -r 'if type != "object" then error("not a JSON object") else [
     (.session_id // ""),
     (.workspace.current_dir // ""),
     (.cwd // ""),
@@ -69,7 +65,13 @@ mapfile -t _jf < <(printf '%s' "$raw" | jq -r '[
     (.agent.name // ""),
     (.context_window.current_usage.input_tokens // ""),
     (.context_window.current_usage.output_tokens // "")
-] | .[]' 2>/dev/null)
+] | .[] end' 2>/dev/null)
+if (( ${#_jf[@]} == 0 )); then
+    log_msg "READ/PARSE FAILED"
+    printf '%s' "${RED}[statusline: bad JSON]${RESET}"
+    exit 0
+fi
+log_msg "json parse: OK"
 J_SESSION_ID="${_jf[0]}"
 J_CWD="${_jf[1]}"
 J_CWD_FALLBACK="${_jf[2]}"
@@ -143,10 +145,26 @@ sa_ctx_for_model() {
 }
 
 shopt -s extglob
-get_vis() {
+get_vis() {  # visible terminal cells: ANSI stripped; CJK/emoji count as 2
     local s="$1"
     s="${s//$'\033'\[*([0-9;])m/}"
-    printf '%d' "${#s}"
+    if [[ "$s" != *[![:ascii:]]* ]]; then
+        printf '%d' "${#s}"
+        return
+    fi
+    local n=${#s} w=0 i cp
+    for ((i = 0; i < n; i++)); do
+        printf -v cp '%d' "'${s:i:1}" 2>/dev/null || cp=0
+        if (( (cp >= 0x1100 && cp <= 0x115F) || (cp >= 0x2E80 && cp <= 0xA4CF) ||
+              (cp >= 0xAC00 && cp <= 0xD7A3) || (cp >= 0xF900 && cp <= 0xFAFF) ||
+              (cp >= 0xFE30 && cp <= 0xFE4F) || (cp >= 0xFF00 && cp <= 0xFF60) ||
+              (cp >= 0xFFE0 && cp <= 0xFFE6) || cp >= 0x1F000 )); then
+            w=$((w + 2))
+        else
+            w=$((w + 1))
+        fi
+    done
+    printf '%d' "$w"
 }
 
 repeat_char() {  # multi-byte safe char repeat

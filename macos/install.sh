@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Installs statusline.sh into ~/.claude and registers it in settings.json.
-set -e
+# No `set -e`: this script can be sourced (see CLAUDE.md), and errexit would
+# leak into the caller's shell and persist after return. Failures are handled
+# explicitly at each critical step instead.
 
 REPO="https://raw.githubusercontent.com/axlaser/claude-status-line/master/macos"
 CLAUDE_DIR="$HOME/.claude"
@@ -129,7 +131,7 @@ echo ""
 
 # --- Install the script ---
 step "Installing status line script"
-mkdir -p "$CLAUDE_DIR"
+mkdir -p "$CLAUDE_DIR" || { err "Cannot create $CLAUDE_DIR"; return 1 2>/dev/null || exit 1; }
 SCRIPT_DIR=""
 if [[ -n "${BASH_SOURCE[0]}" && -f "${BASH_SOURCE[0]}" ]]; then
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -143,7 +145,7 @@ else
     curl -fsSL "$REPO/statusline.sh" -o "$tmp" && mv "$tmp" "$SCRIPT_PATH" || { rm -f "$tmp"; return 1 2>/dev/null || exit 1; }
     ok "Downloaded from GitHub"
 fi
-chmod +x "$SCRIPT_PATH"
+chmod +x "$SCRIPT_PATH" || warn "Could not mark $SCRIPT_PATH executable"
 info "$SCRIPT_PATH ($(human_size $(file_bytes "$SCRIPT_PATH")))"
 echo ""
 
@@ -199,7 +201,7 @@ else
     curl -fsSL "$REPO/git-refresh.sh" -o "$tmp" && mv "$tmp" "$GIT_REFRESH_PATH" || { rm -f "$tmp"; return 1 2>/dev/null || exit 1; }
     ok "Downloaded from GitHub"
 fi
-chmod +x "$GIT_REFRESH_PATH"
+chmod +x "$GIT_REFRESH_PATH" || warn "Could not mark $GIT_REFRESH_PATH executable"
 info "$GIT_REFRESH_PATH ($(human_size $(file_bytes "$GIT_REFRESH_PATH")))"
 
 # --- Register PostToolUse hook for git refresh ---
@@ -239,7 +241,7 @@ else
     curl -fsSL "$REPO/notify.sh" -o "$tmp" && mv "$tmp" "$NOTIFY_PATH" || { rm -f "$tmp"; return 1 2>/dev/null || exit 1; }
     ok "Downloaded from GitHub"
 fi
-chmod +x "$NOTIFY_PATH"
+chmod +x "$NOTIFY_PATH" || warn "Could not mark $NOTIFY_PATH executable"
 info "$NOTIFY_PATH ($(human_size $(file_bytes "$NOTIFY_PATH")))"
 
 # --- Install notification icon ---
