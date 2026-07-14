@@ -19,6 +19,7 @@ Analyze the current repo's full diff and produce a professional commit message w
 - **Detect the shell environment.** Check the platform and choose paste-safe syntax (see Step 5).
 - **Output goes in the chat, not to a file.**
 - **Paste-safe commands.** Terminal copy-paste breaks long single-line commands and multi-line strings. Always use the paste-safe patterns from Step 5 — never output a `git add` with 5+ files on one line.
+- **Sensitive-content check is blocking.** Don't present the final commands until the user has acknowledged any flagged secret, credential, or unexpected file.
 
 ## Step 1 -- Gather the diff
 
@@ -42,7 +43,16 @@ This gives you: staged/unstaged/untracked files, the full diffs, a file-level su
 
 Read the diff and identify what changed, why, and the scope.
 
-- **Secrets check**: if `.env`, credentials, API keys, tokens, or private keys appear in the diff, warn the user prominently before presenting any commit commands. List the suspect files so they can review.
+**Sensitive-content check (blocking).** Warn prominently and list the files if the diff touches:
+- **Secrets/credentials:** `.env` files, API keys, tokens, passwords, `BEGIN ... PRIVATE KEY` blocks, or anything matching `*_SECRET` / `*_KEY` / bearer tokens.
+- **Hardcoded local paths:** an absolute path baked into a script (e.g. `/Users/<name>/...`, `C:\Users\<name>\...`) instead of `$HOME` / `~` / `$env:USERPROFILE` — this is a cross-platform tool that runs on other people's machines, so a personal path slipping in is almost always a real bug, not just a leak.
+- **Debug/log artifacts:** a `statusline-debug.log` path or other runtime output that shouldn't be tracked.
+
+**Repo rule compliance.** Cross-check the diff against this project's CLAUDE.md rules and flag (don't block) anything that looks off:
+- **Cross-Platform Parity:** if the diff touches `macos/` or `linux/` scripts, check whether `windows/` has a matching change (and vice versa). A platform-only fix can be intentional — just surface it.
+- **No `exit` in install/uninstall scripts:** flag any new `exit` call added to `install.*`/`uninstall.*` (Windows scripts run via `irm | iex`, so `exit` would kill the user's shell session).
+- **Silent Degradation:** flag any new `stderr` output, or a `statusline.*`/`notify.*`/`git-refresh.*` code path that could skip its final `exit 0`.
+
 - **Large single-file diffs** (>500 lines): summarize at the file level using `--stat` rather than line-by-line.
 - **Binary files**: note their paths in the analysis but don't attempt to describe content changes.
 
@@ -81,7 +91,8 @@ Before printing the final commands, check your own work:
 
 1. **Count the summary line** -- confirm it is 72 characters or fewer. If not, rewrite and recount.
 2. **Cross-check file coverage** -- every file from `git status` should appear in the body or be explicitly noted as excluded (e.g., binary, untracked infrastructure). Don't silently drop files.
-3. **Confirm no secrets** -- re-scan for `.env`, key files, credentials in the staging list. Warn if found.
+3. **Confirm no secrets or stray local paths** -- re-scan for `.env`, key files, credentials, and hardcoded personal paths in the staging list. Warn if found.
+4. **Confirm rule compliance** -- re-check the cross-platform-parity, no-`exit`, and silent-degradation flags from Step 2. Surface anything still outstanding.
 
 ## Step 5 -- Output the commands
 
