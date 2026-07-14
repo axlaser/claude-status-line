@@ -152,23 +152,27 @@ step "Configuring Claude Code settings"
 STATUSLINE_ENTRY='{"statusLine":{"type":"command","command":"~/.claude/statusline.sh","refreshInterval":1}}'
 
 if [[ -f "$SETTINGS_PATH" ]]; then
+    _skip_statusline=false
     if jq -e '.statusLine' "$SETTINGS_PATH" &>/dev/null; then
         echo ""
         read -rp "  ${YELLOW}${BOLD} ?${RESET} Existing statusLine config found. Overwrite? (${GREEN}y${RESET}/${RED}n${RESET}) " answer </dev/tty
         if [[ ! "$answer" =~ ^[Yy]$ ]]; then
+            _skip_statusline=true
             warn "Skipped settings update"
             info "Continuing with hook and notification setup..."
             echo ""
         fi
     fi
-    tmp=$(mktemp "$SETTINGS_PATH.XXXXXX")
-    if jq --argjson entry "$STATUSLINE_ENTRY" '. + $entry' "$SETTINGS_PATH" > "$tmp"; then
-        mv "$tmp" "$SETTINGS_PATH"
-        ok "Updated settings.json"
-    else
-        rm -f "$tmp"
-        err "Failed to update settings.json (jq error)"
-        return 1 2>/dev/null || exit 1
+    if [[ "$_skip_statusline" != true ]]; then
+        tmp=$(mktemp "$SETTINGS_PATH.XXXXXX")
+        if jq --argjson entry "$STATUSLINE_ENTRY" '. + $entry' "$SETTINGS_PATH" > "$tmp"; then
+            mv "$tmp" "$SETTINGS_PATH"
+            ok "Updated settings.json"
+        else
+            rm -f "$tmp"
+            err "Failed to update settings.json (jq error)"
+            return 1 2>/dev/null || exit 1
+        fi
     fi
 else
     tmp=$(mktemp "$SETTINGS_PATH.XXXXXX")

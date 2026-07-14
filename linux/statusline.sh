@@ -38,7 +38,7 @@ raw=$(cat)
 log_msg "stdin bytes=${#raw}"
 log_msg "stdin head: ${raw:0:400}"
 
-if ! printf '%s' "$raw" | jq -e '.' &>/dev/null; then
+if ! printf '%s' "$raw" | jq -e 'type == "object"' &>/dev/null; then
     log_msg "READ/PARSE FAILED"
     printf '%s' "${RED}[statusline: bad JSON]${RESET}"
     exit 0
@@ -69,7 +69,7 @@ mapfile -t _jf < <(printf '%s' "$raw" | jq -r '[
     (.agent.name // ""),
     (.context_window.current_usage.input_tokens // ""),
     (.context_window.current_usage.output_tokens // "")
-] | .[]')
+] | .[]' 2>/dev/null)
 J_SESSION_ID="${_jf[0]}"
 J_CWD="${_jf[1]}"
 J_CWD_FALLBACK="${_jf[2]}"
@@ -111,10 +111,13 @@ fi
 _oc_key=$(printf '%s' "${raw}|${_oc_tmt}|${_oc_gmt}|${_oc_smt}|$(( _oc_now / 5 ))" | sha256sum | cut -d' ' -f1)
 
 if [[ -n "$J_SESSION_ID" && -f "$_oc_path" ]]; then
-    IFS= read -r _oc_cached_key < "$_oc_path"
+    # Command group so a redirect-open failure (git-refresh hook may delete the
+    # file between -f and read) is silenced; a trailing 2>/dev/null on the bare
+    # read does not cover the redirect itself.
+    _oc_cached_key=""
+    { IFS= read -r _oc_cached_key < "$_oc_path"; } 2>/dev/null
     if [[ "$_oc_cached_key" == "$_oc_key" ]]; then
-        sed 1d "$_oc_path"
-        exit 0
+        tail -n +2 "$_oc_path" 2>/dev/null && exit 0
     fi
 fi
 
@@ -182,6 +185,7 @@ else
 fi
 
 ctx_size="$J_CTX_SIZE"
+[[ "$ctx_size" =~ ^[0-9]+$ ]] || ctx_size=""
 used_pct="$J_USED_PCT"
 
 ctx_label=""
@@ -277,7 +281,15 @@ if [[ -f "$git_index" ]]; then
     git_use_cache=false
 
     if [[ -f "$git_cache_path" ]]; then
-        IFS=$'\x1f' read -r gc_mt gc_branch gc_ins gc_del gc_unt gc_ahead gc_behind gc_stash < "$git_cache_path"
+        gc_mt=""
+        { IFS=$'\x1f' read -r gc_mt gc_branch gc_ins gc_del gc_unt gc_ahead gc_behind gc_stash < "$git_cache_path"; } 2>/dev/null
+        # Validate numerics so a torn/corrupt cache write can't reach arithmetic.
+        [[ "$gc_ins" =~ ^[0-9]+$ ]] || gc_ins=0
+        [[ "$gc_del" =~ ^[0-9]+$ ]] || gc_del=0
+        [[ "$gc_unt" =~ ^[0-9]+$ ]] || gc_unt=0
+        [[ "$gc_ahead" =~ ^[0-9]+$ ]] || gc_ahead=0
+        [[ "$gc_behind" =~ ^[0-9]+$ ]] || gc_behind=0
+        [[ "$gc_stash" =~ ^[0-9]+$ ]] || gc_stash=0
         if [[ "$gc_mt" == "$git_index_mt" ]]; then
             gc_file_age=$(( _oc_now - $(stat -c %Y "$git_cache_path" 2>/dev/null || echo 0) ))
             # @parity:cache GIT_TTL=5

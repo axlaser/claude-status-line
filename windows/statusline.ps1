@@ -183,7 +183,7 @@ if ($ctxSize) {
     # Prefer total_input_tokens (full precision); used_percentage is integer-rounded, so on a
     # 1M window "25%" maps to exactly 250000 and the display jumps in 10K steps.
     $totalInputTokens = Get-Val $json @('context_window','total_input_tokens')
-    $usedTokens = if ($null -ne $totalInputTokens) { [long]$totalInputTokens } else { [int]([double]$ctxSize * $pctClamped / 100) }
+    $usedTokens = if ($null -ne $totalInputTokens) { [long]$totalInputTokens } else { [long][Math]::Truncate([double]$ctxSize * $barPctTrunc / 100) }
     $usedLbl = Format-Tokens $usedTokens
     if (-not $usedLbl) { $usedLbl = '0' }
     $tokenSuffix = " ${GRAY}$([char]0x00B7)${RESET} ${WHITE}${usedLbl}${RESET}${GRAY}/${ctxLabel}${RESET}"
@@ -484,13 +484,18 @@ function Format-Duration([int]$secs) {
 }
 function Format-Window([string]$label, $pctVal, $resetsAt, [int]$windowSecs) {
     if ($null -eq $pctVal) { return $null }
-    $pct = [int][Math]::Round([double]$pctVal)
+    # TryParse guards mirror the bash regex checks: a non-numeric value from
+    # JSON schema drift must skip the fragment, not throw into the trap.
+    $pctD = 0.0
+    if (-not [double]::TryParse("$pctVal", [ref]$pctD)) { return $null }
+    $pct = [int][Math]::Round($pctD)
     $pctColor = if ($pct -ge 80) { $RED } elseif ($pct -ge 50) { $YELLOW } else { $GREEN }
     $burnPart = ''
     $resetPart = ''
-    if ($null -ne $resetsAt) {
-        $now = [int][DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
-        $remaining = [int]$resetsAt - $now
+    $resetsD = 0.0
+    if ($null -ne $resetsAt -and [double]::TryParse("$resetsAt", [ref]$resetsD)) {
+        $now = [long][DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+        $remaining = [long][Math]::Truncate($resetsD) - $now
         if ($remaining -gt 0 -and $remaining -le $windowSecs) {
             # Compare actual pct against linear-pace expectation; +delta = over pace, -delta = under.
             $expectedPct = [int][Math]::Truncate(($windowSecs - $remaining) * 100 / $windowSecs)

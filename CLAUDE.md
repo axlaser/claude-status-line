@@ -26,7 +26,7 @@ Claude Code pipes a JSON object to stdin on each refresh. Key top-level fields:
 
 `session_id`, `workspace.current_dir`, `cwd`, `model.display_name`, `context_window.context_window_size`, `context_window.used_percentage`, `context_window.total_input_tokens`, `effort.level`, `cost.total_cost_usd`, `transcript_path`, `rate_limits.five_hour.*`, `rate_limits.seven_day.*`, `agent.name`, `context_window.current_usage.*`
 
-See the `# --- Extract all JSON fields in one pass ---` block in `macos/statusline.sh` for the full field list.
+See the `# @parity:json-extract-begin` / `# @parity:json-extract-end` block in `macos/statusline.sh` for the full field list.
 
 ### Dependencies
 
