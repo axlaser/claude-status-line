@@ -175,9 +175,21 @@ if ($transcriptPath) {
         $_ocSmt = (Get-Item -LiteralPath $_ocSdir -Force).LastWriteTimeUtc.Ticks
     }
 }
+# Feed state + learned-map mtimes join the key so subagent tier switches and
+# learned window changes invalidate the render cache.
+$_ocFeed = if ($_ocSafeId) { Join-Path $env:TEMP "statusline-tasks-$_ocSafeId.json" } else { $null }
+$_ocFmt = ''
+if ($_ocFeed -and (Test-Path -LiteralPath $_ocFeed -ErrorAction SilentlyContinue)) {
+    $_ocFmt = (Get-Item -LiteralPath $_ocFeed -Force).LastWriteTimeUtc.Ticks
+}
+$_ocMwPath = "$env:USERPROFILE\.claude\statusline-model-windows.json"
+$_ocMwmt = ''
+if (Test-Path -LiteralPath $_ocMwPath -ErrorAction SilentlyContinue) {
+    $_ocMwmt = (Get-Item -LiteralPath $_ocMwPath -Force).LastWriteTimeUtc.Ticks
+}
 # @parity:cache OUTPUT_BUCKET=5
 $_ocNowBucket = [int]([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() / 5)
-$_ocKeyInput = "${raw}|${_ocTmt}|${_ocGmt}|${_ocSmt}|${_ocNowBucket}"
+$_ocKeyInput = "${raw}|${_ocTmt}|${_ocGmt}|${_ocSmt}|${_ocFmt}|${_ocMwmt}|${_ocNowBucket}"
 $_ocKey = [BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($_ocKeyInput))).Replace('-','')
 
 if ($_ocPath -and (Test-Path -LiteralPath $_ocPath -ErrorAction SilentlyContinue)) {
@@ -634,51 +646,191 @@ if ($agentName) {
     $agentPart += "${sep}${agentCompact}"
 }
 # --- 7b. Subagent context ---
-# One row per ACTIVE subagent (last assistant stop_reason != "end_turn").
-# Transcripts: <project>/<sessionId>/subagents/agent-*.jsonl + sibling .meta.json.
+# One row per Task-tool subagent. Rows come from ONE tier per refresh: the
+# tasks-feed state file when fresh (age within FEED_TTL), else per-agent
+# transcript parsing. Tiers are never merged. A done signal (feed: non-active
+# status or task gone; fallback: terminal stop_reason) stamps done_ts into the
+# per-agent session cache; the row lingers green for DONE_LINGER seconds.
+# @parity:cache FEED_TTL=10
+$FEED_TTL = 10
+# @parity:threshold DONE_LINGER=30
+$DONE_LINGER = 30
+# Feed statuses that mean "working" — single place to adjust.
+$SaActiveStatuses = @('running', 'pending', 'in_progress', 'active')
+# R10: transcript stop reasons that mean "done" — single place to adjust.
+$SaTerminalStopReasons = @('end_turn', 'max_tokens', 'refusal', 'model_context_window_exceeded', 'stop_sequence')
+
+function Build-SubagentRow($used, $ctxSize, $model, $type, $state) {
+    $u = 0L
+    if (-not [long]::TryParse("$used", [ref]$u) -or $u -lt 0) { $u = 0L }
+    $w = 0L
+    if (-not [long]::TryParse("$ctxSize", [ref]$w) -or $w -le 0) { $w = 200000L }
+    # Bar/pct clamp at 100%; the token label keeps the raw used value (R14).
+    $saPctInt = [int][Math]::Truncate(($u * 100.0) / $w)
+    if ($saPctInt -lt 0) { $saPctInt = 0 }
+    if ($saPctInt -gt 100) { $saPctInt = 100 }
+    $saColor = if ($saPctInt -ge 85) { $RED } elseif ($saPctInt -ge 60) { $YELLOW } else { $GREEN }
+    $saFilled = [int][Math]::Truncate(($barWidth * $saPctInt + 50) / 100)
+    if ($saFilled -lt 0) { $saFilled = 0 } elseif ($saFilled -gt $barWidth) { $saFilled = $barWidth }
+    $saEmpty = $barWidth - $saFilled
+    $saFilledChars = if ($saFilled -gt 0) { [string]([char]0x2588) * $saFilled } else { '' }
+    $saEmptyChars  = if ($saEmpty  -gt 0) { [string]([char]0x2591) * $saEmpty  } else { '' }
+    $saBar = "${saColor}${saFilledChars}${RESET}${BAR_EMPTY}${saEmptyChars}${RESET}"
+    $saUsedLbl = Format-Tokens $u
+    if (-not $saUsedLbl) { $saUsedLbl = '0' }
+    $saCtxK = [math]::Floor($w / 1000)
+    $saCtxLbl = if ($saCtxK -ge 1000) { "$([math]::Floor($saCtxK / 1000))M" } else { "${saCtxK}K" }
+    # Compact single-space separators — same segment style as the context bar.
+    $saSep = " ${GRAY}$([char]0x00B7)${RESET} "
+    $row = "${saBar} ${saColor}${saPctInt}%${RESET}${saSep}${WHITE}${saUsedLbl}${RESET}${GRAY}/${saCtxLbl}${RESET}"
+    if ($model) { $row += "${saSep}${MAGENTA}$(Get-PrettyModelName $model)${RESET}" }
+    if ($type)  { $row += "${saSep}${BLUE}${type}${RESET}" }
+    if ($state -eq 'done') { $row += "${saSep}${GREEN}$([char]0x2713) done${RESET}" }
+    else                   { $row += "${saSep}${YELLOW}$([char]0x25CB) working${RESET}" }
+    return $row
+}
+
 $subagentRows = @()
-if ($sessionId -and $transcriptPath) {
+$saNow = [long][DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+$feedTier = $false
+$feedPath = if ($_ocSafeId) { Join-Path $env:TEMP "statusline-tasks-$_ocSafeId.json" } else { $null }
+if ($feedPath -and (Test-Path -LiteralPath $feedPath -ErrorAction SilentlyContinue)) {
+    try {
+        $feedAge = ([DateTimeOffset]::UtcNow - [DateTimeOffset](Get-Item -LiteralPath $feedPath -Force).LastWriteTimeUtc).TotalSeconds
+        if ($feedAge -le $FEED_TTL) {
+            $feedJson = Get-Content -LiteralPath $feedPath -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+            if ($feedJson -is [PSCustomObject] -and ($null -eq $feedJson.tasks -or $feedJson.tasks -is [array])) {
+                $feedTier = $true
+                $feedTasks = if ($null -ne $feedJson.tasks) { @($feedJson.tasks) } else { @() }
+                $feedSeen = @{}
+                $feedCandidates = @()
+                foreach ($t in $feedTasks) {
+                    if ($null -eq $t -or $t -isnot [PSCustomObject]) { continue }
+                    $ftId     = if ($null -ne $t.id) { "$($t.id)" } else { '' }
+                    $ftType   = if ($t.type) { "$($t.type)" } elseif ($t.name) { "$($t.name)" } else { '' }
+                    $ftStatus = if ($null -ne $t.status) { "$($t.status)" } else { '' }
+                    $ftModel  = if ($null -ne $t.model) { "$($t.model)" } else { '' }
+                    $ftStart  = if ($null -ne $t.startTime) { "$($t.startTime)" } else { '' }
+                    if (-not ($ftId -or $ftType -or $ftStatus -or $ftModel)) { continue }
+                    $ftIdSafe = $ftId -replace '[^a-zA-Z0-9_-]', ''
+                    if ($ftIdSafe) { $feedSeen[$ftIdSafe] = $true }
+                    $ftTok = 0L
+                    if (-not [long]::TryParse("$($t.tokenCount)", [ref]$ftTok) -or $ftTok -lt 0) { $ftTok = 0L }
+                    # Task window when present, else U3's resolver (absent model -> 200K).
+                    $ftCtx = 0L
+                    if (-not [long]::TryParse("$($t.contextWindowSize)", [ref]$ftCtx) -or $ftCtx -le 0) {
+                        $ftCtx = Get-SubagentCtxSize $ftModel
+                    }
+                    $ftCache = if ($ftIdSafe) { Join-Path $env:TEMP "statusline-sa-$_ocSafeId-task-$ftIdSafe.txt" } else { $null }
+                    $ftDone = ''
+                    if ($SaActiveStatuses -contains $ftStatus.ToLowerInvariant()) {
+                        $ftState = 'working'
+                    } else {
+                        $ftState = 'done'
+                        if ($ftCache -and (Test-Path -LiteralPath $ftCache -ErrorAction SilentlyContinue)) {
+                            $fcRaw = Get-Content -LiteralPath $ftCache -Raw -ErrorAction SilentlyContinue
+                            if ($fcRaw) {
+                                $fcParts = $fcRaw.TrimEnd() -split '\|'
+                                $fcPrev = 0L
+                                if ($fcParts.Count -ge 5 -and [long]::TryParse($fcParts[4], [ref]$fcPrev) -and $fcPrev -gt 0) { $ftDone = "$fcPrev" }
+                            }
+                        }
+                        if (-not $ftDone) { $ftDone = "$saNow" }
+                    }
+                    if ($ftCache) {
+                        try { [System.IO.File]::WriteAllText($ftCache, "$ftTok|$ftCtx|$ftModel|$ftType|$ftDone|$ftStart", (New-Object System.Text.UTF8Encoding $false)) } catch {}
+                    }
+                    if ($ftState -eq 'done' -and ($saNow - [long]$ftDone) -gt $DONE_LINGER) { continue }
+                    $feedCandidates += @{ start = $ftStart; id = $ftId; used = $ftTok; ctx = $ftCtx; model = $ftModel; type = $ftType; state = $ftState }
+                }
+                # A cached task id missing from a fresh feed is a done signal: stamp
+                # done_ts on first observation, linger, then drop the cache entry.
+                $taskCachePrefix = "statusline-sa-$_ocSafeId-task-"
+                foreach ($cf in @(Get-ChildItem -Path (Join-Path $env:TEMP "$taskCachePrefix*.txt") -ErrorAction SilentlyContinue)) {
+                    if ($cf.BaseName.Length -le $taskCachePrefix.Length) { continue }
+                    $cfId = $cf.BaseName.Substring($taskCachePrefix.Length)
+                    if ($feedSeen.ContainsKey($cfId)) { continue }
+                    $fcRaw = Get-Content -LiteralPath $cf.FullName -Raw -ErrorAction SilentlyContinue
+                    if (-not $fcRaw) { continue }
+                    $fcParts = $fcRaw.TrimEnd() -split '\|'
+                    if ($fcParts.Count -lt 6) { continue }
+                    $fcDone = 0L
+                    if (-not [long]::TryParse($fcParts[4], [ref]$fcDone) -or $fcDone -le 0) {
+                        $fcDone = $saNow
+                        try { [System.IO.File]::WriteAllText($cf.FullName, "$($fcParts[0])|$($fcParts[1])|$($fcParts[2])|$($fcParts[3])|$fcDone|$($fcParts[5])", (New-Object System.Text.UTF8Encoding $false)) } catch {}
+                    }
+                    if (($saNow - $fcDone) -gt $DONE_LINGER) {
+                        try { Remove-Item -LiteralPath $cf.FullName -Force -ErrorAction SilentlyContinue } catch {}
+                        continue
+                    }
+                    $feedCandidates += @{ start = "$($fcParts[5])"; id = $cfId; used = $fcParts[0]; ctx = $fcParts[1]; model = $fcParts[2]; type = $fcParts[3]; state = 'done' }
+                }
+                Write-Log "subagents: feed tier, $($feedCandidates.Count) row(s)"
+                # Deterministic order: startTime (ISO string sort), tiebreak id.
+                foreach ($c in ($feedCandidates | Sort-Object -Property @{ Expression = { "$($_.start)" } }, @{ Expression = { "$($_.id)" } })) {
+                    $subagentRows += @{ s = 1; label = 'agent'; content = (Build-SubagentRow $c.used $c.ctx $c.model $c.type $c.state) }
+                }
+            }
+        }
+    } catch {
+        Write-Log ("feed tier FAILED, falling back: " + $_.Exception.Message)
+        $feedTier = $false
+        $subagentRows = @()
+    }
+}
+
+# Fallback tier: per-agent transcripts under
+# <project>/<sessionId>/subagents/agent-*.jsonl (+ sibling .meta.json).
+if (-not $feedTier -and $sessionId -and $transcriptPath) {
     $projectDir   = Split-Path -Parent $transcriptPath
     $sessionBase  = [System.IO.Path]::GetFileNameWithoutExtension($transcriptPath)
     $subagentsDir = Join-Path $projectDir (Join-Path $sessionBase 'subagents')
     if (Test-Path -LiteralPath $subagentsDir) {
+        Write-Log "subagents: fallback tier (feed absent/stale)"
         $saFiles = Get-ChildItem -LiteralPath $subagentsDir -Filter 'agent-*.jsonl' -ErrorAction SilentlyContinue |
                    Sort-Object Name
         foreach ($sa in $saFiles) {
             try {
-                $saAge = ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds()) - ([DateTimeOffset]$sa.LastWriteTimeUtc).ToUnixTimeSeconds()
+                $saAge = $saNow - ([DateTimeOffset]$sa.LastWriteTimeUtc).ToUnixTimeSeconds()
                 if ($saAge -gt 180) { continue }
 
                 $saMt = $sa.LastWriteTimeUtc.Ticks
                 $saCachePath = Join-Path $env:TEMP "statusline-sa-$_ocSafeId-$($sa.BaseName).txt"
                 $saUseCache = $false
+                $saCacheDirty = $false
+                $saDone = ''
+                $saPrevDone = ''
 
                 if (Test-Path -LiteralPath $saCachePath) {
                     $sc = (Get-Content -LiteralPath $saCachePath -Raw -ErrorAction SilentlyContinue).TrimEnd() -split '\|'
+                    if ($sc.Count -ge 8) {
+                        $scDone = 0L
+                        if ([long]::TryParse($sc[7], [ref]$scDone) -and $scDone -gt 0) { $saPrevDone = "$scDone" }
+                    }
                     if ($sc.Count -ge 7 -and $sc[0] -eq "$saMt") {
                         $saSr = $sc[1]; $inTok = [long]$sc[2]; $cwTok = [long]$sc[3]; $crTok = [long]$sc[4]
-                        $saModel = $sc[5]; $agentDisplay = $sc[6]
+                        $saModel = $sc[5]; $agentDisplay = $sc[6]; $saDone = $saPrevDone
                         $saUseCache = $true
                     }
                 }
 
                 if (-not $saUseCache) {
+                    # No assistant message yet -> zeros and no model id; the row
+                    # renders without the model segment for this refresh (R4).
+                    $saSr = ''; $inTok = 0L; $cwTok = 0L; $crTok = 0L; $saModel = ''
                     # Scan from end for the last assistant entry.
                     $saLines    = [System.IO.File]::ReadAllLines($sa.FullName)
                     $lastAssist = $null
                     for ($i = $saLines.Length - 1; $i -ge 0; $i--) {
                         if ($saLines[$i] -match '"type"\s*:\s*"assistant"') { $lastAssist = $saLines[$i]; break }
                     }
-                    if (-not $lastAssist) { continue }
-                    $saSr = ''
-                    if ($lastAssist -match '"stop_reason"\s*:\s*"([^"]*)"') { $saSr = $Matches[1] }
-                    $inTok = 0; $cwTok = 0; $crTok = 0
-                    if ($lastAssist -match '"input_tokens"\s*:\s*(\d+)')                { $inTok = [long]$Matches[1] }
-                    if ($lastAssist -match '"cache_creation_input_tokens"\s*:\s*(\d+)') { $cwTok = [long]$Matches[1] }
-                    if ($lastAssist -match '"cache_read_input_tokens"\s*:\s*(\d+)')    { $crTok = [long]$Matches[1] }
-                    # 200K default; 1M for Opus 4.x [1m] variants.
-                    $saModel = ''
-                    if ($lastAssist -match '"model"\s*:\s*"([^"]+)"') { $saModel = $Matches[1] }
+                    if ($lastAssist) {
+                        if ($lastAssist -match '"stop_reason"\s*:\s*"([^"]*)"') { $saSr = $Matches[1] }
+                        if ($lastAssist -match '"input_tokens"\s*:\s*(\d+)')                { $inTok = [long]$Matches[1] }
+                        if ($lastAssist -match '"cache_creation_input_tokens"\s*:\s*(\d+)') { $cwTok = [long]$Matches[1] }
+                        if ($lastAssist -match '"cache_read_input_tokens"\s*:\s*(\d+)')    { $crTok = [long]$Matches[1] }
+                        if ($lastAssist -match '"model"\s*:\s*"([^"]+)"') { $saModel = $Matches[1] }
+                    }
                     $agentDisplay = $sa.BaseName -replace '^agent-',''
                     $metaPath = Join-Path $sa.Directory.FullName "$($sa.BaseName).meta.json"
                     if (Test-Path -LiteralPath $metaPath) {
@@ -687,32 +839,27 @@ if ($sessionId -and $transcriptPath) {
                             if ($meta.agentType) { $agentDisplay = $meta.agentType }
                         } catch {}
                     }
-                    try { [System.IO.File]::WriteAllText($saCachePath, "$saMt|$saSr|$inTok|$cwTok|$crTok|$saModel|$agentDisplay", (New-Object System.Text.UTF8Encoding $false)) } catch {}
+                    $saDone = $saPrevDone
+                    $saCacheDirty = $true
                 }
 
-                if ($saSr -eq 'end_turn') { continue }
+                # R10: any terminal stop reason is a done signal; tool_use/pause_turn
+                # (and no assistant message yet) mean working.
+                $saState = if ($SaTerminalStopReasons -contains $saSr) { 'done' } else { 'working' }
+                if ($saState -eq 'done') {
+                    if (-not $saDone) { $saDone = "$saNow"; $saCacheDirty = $true }
+                } else {
+                    if ($saDone) { $saCacheDirty = $true }
+                    $saDone = ''
+                }
+                if ($saCacheDirty) {
+                    try { [System.IO.File]::WriteAllText($saCachePath, "$saMt|$saSr|$inTok|$cwTok|$crTok|$saModel|$agentDisplay|$saDone", (New-Object System.Text.UTF8Encoding $false)) } catch {}
+                }
+                if ($saState -eq 'done' -and ($saNow - [long]$saDone) -gt $DONE_LINGER) { continue }
+
                 $saUsed = $inTok + $cwTok + $crTok
                 $saCtxSize = Get-SubagentCtxSize $saModel
-                # Bar + label — mirrors the main context row.
-                $saPctRaw  = [Math]::Max(0.0, [Math]::Min(100.0, ($saUsed / [double]$saCtxSize) * 100))
-                $saPctInt  = [int][Math]::Truncate($saPctRaw)
-                $saColor   = if ($saPctInt -ge 85) { $RED } elseif ($saPctInt -ge 60) { $YELLOW } else { $GREEN }
-                $saPctTrunc = [int][Math]::Truncate($saPctRaw)
-                $saFilled  = [int][Math]::Truncate(($barWidth * $saPctTrunc + 50) / 100)
-                if ($saFilled -lt 0) { $saFilled = 0 } elseif ($saFilled -gt $barWidth) { $saFilled = $barWidth }
-                $saEmpty   = $barWidth - $saFilled
-                $saFilledChars = if ($saFilled -gt 0) { [string]([char]0x2588) * $saFilled } else { '' }
-                $saEmptyChars  = if ($saEmpty  -gt 0) { [string]([char]0x2591) * $saEmpty  } else { '' }
-                $saBar     = "${saColor}${saFilledChars}${RESET}${BAR_EMPTY}${saEmptyChars}${RESET}"
-                $saUsedLbl = Format-Tokens $saUsed
-                if (-not $saUsedLbl) { $saUsedLbl = '0' }
-                $saCtxK    = [math]::Floor($saCtxSize / 1000)
-                $saCtxLbl  = if ($saCtxK -ge 1000) { "$([math]::Floor($saCtxK / 1000))M" }
-                             else { "${saCtxK}K" }
-                $saSep     = "  ${GRAY}$([char]0x00B7)${RESET}  "
-                $saWorking = "${YELLOW}$([char]0x25CB) working${RESET}"
-                $saContent = "${saBar} ${saColor}${saPctInt}%${RESET}${saSep}${WHITE}${saUsedLbl}${RESET}${GRAY}/${saCtxLbl}${RESET}${saSep}${BLUE}${agentDisplay}${RESET}${saSep}${saWorking}"
-                $subagentRows += @{ s = 1; label = 'agent'; content = $saContent }
+                $subagentRows += @{ s = 1; label = 'agent'; content = (Build-SubagentRow $saUsed $saCtxSize $saModel $agentDisplay $saState) }
             } catch {}
         }
     }

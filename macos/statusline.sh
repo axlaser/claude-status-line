@@ -111,8 +111,16 @@ if [[ -n "$J_TRANSCRIPT_PATH" ]]; then
     _oc_sdir="$(dirname "$J_TRANSCRIPT_PATH")/$(basename "$J_TRANSCRIPT_PATH" .jsonl)/subagents"
     [[ -d "$_oc_sdir" ]] && _oc_smt=$(stat -f %m "$_oc_sdir" 2>/dev/null)
 fi
+# Feed state + learned-map mtimes join the key so subagent tier switches and
+# learned window changes invalidate the render cache.
+_oc_feed="${TMPDIR:-/tmp}/statusline-tasks-${J_SESSION_ID//[^a-zA-Z0-9_-]/}.json"
+_oc_fmt=""
+[[ -f "$_oc_feed" ]] && _oc_fmt=$(stat -f %m "$_oc_feed" 2>/dev/null)
+MODEL_WINDOWS_PATH="$HOME/.claude/statusline-model-windows.json"
+_oc_mwmt=""
+[[ -f "$MODEL_WINDOWS_PATH" ]] && _oc_mwmt=$(stat -f %m "$MODEL_WINDOWS_PATH" 2>/dev/null)
 # @parity:cache OUTPUT_BUCKET=5
-_oc_key=$(printf '%s' "${raw}|${_oc_tmt}|${_oc_gmt}|${_oc_smt}|$(( _oc_now / 5 ))" | shasum -a 256 | cut -d' ' -f1)
+_oc_key=$(printf '%s' "${raw}|${_oc_tmt}|${_oc_gmt}|${_oc_smt}|${_oc_fmt}|${_oc_mwmt}|$(( _oc_now / 5 ))" | shasum -a 256 | cut -d' ' -f1)
 
 if [[ -n "$J_SESSION_ID" && -f "$_oc_path" ]]; then
     # Command group so a redirect-open failure (git-refresh hook may delete the
@@ -752,43 +760,176 @@ if [[ -n "$agent_name" ]]; then
 fi
 
 # --- 7b. Subagent context ---
-# One row per active Task-tool subagent (last assistant stop_reason != end_turn).
-# Transcripts: <project>/<sessionId>/subagents/agent-*.jsonl + sibling .meta.json.
+# One row per Task-tool subagent. Rows come from ONE tier per refresh: the
+# tasks-feed state file when fresh (mtime within FEED_TTL), else per-agent
+# transcript parsing. Tiers are never merged. A done signal (feed: non-active
+# status or task gone; fallback: terminal stop_reason) stamps done_ts into the
+# per-agent session cache; the row lingers green for DONE_LINGER seconds.
+# @parity:cache FEED_TTL=10
+FEED_TTL=10
+# @parity:threshold DONE_LINGER=30
+DONE_LINGER=30
+
+sa_status_is_active() {  # feed statuses that mean "working" — single place to adjust
+    case "${1,,}" in
+        running|pending|in_progress|active) return 0 ;;
+        *)                                  return 1 ;;
+    esac
+}
+
+build_sa_row() {  # used ctx_size model_id agent_type state(working|done) -> appends row
+    local sa_used="$1" sa_ctx_size="$2" sa_model="$3" sa_type="$4" sa_state="$5"
+    [[ "$sa_used" =~ ^[0-9]+$ ]] || sa_used=0
+    { [[ "$sa_ctx_size" =~ ^[0-9]+$ ]] && (( sa_ctx_size > 0 )); } || sa_ctx_size=200000
+
+    # Bar/pct clamp at 100%; the token label keeps the raw used value (R14).
+    local sa_pct_int=$(( sa_used * 100 / sa_ctx_size ))
+    (( sa_pct_int < 0 )) && sa_pct_int=0
+    (( sa_pct_int > 100 )) && sa_pct_int=100
+    local sa_color
+    if   (( sa_pct_int >= 85 )); then sa_color="$RED"
+    elif (( sa_pct_int >= 60 )); then sa_color="$YELLOW"
+    else                              sa_color="$GREEN"
+    fi
+    local sa_filled=$(( (bar_width * sa_pct_int + 50) / 100 ))
+    (( sa_filled > bar_width )) && sa_filled=$bar_width
+    (( sa_filled < 0 )) && sa_filled=0
+    local sa_bar="${sa_color}$(repeat_char "█" "$sa_filled")${RESET}${BAR_EMPTY}$(repeat_char "░" "$((bar_width - sa_filled))")${RESET}"
+
+    local sa_used_lbl sa_ctx_k sa_ctx_lbl
+    sa_used_lbl=$(format_tokens "$sa_used")
+    sa_ctx_k=$((sa_ctx_size / 1000))
+    if (( sa_ctx_k >= 1000 )); then sa_ctx_lbl="$((sa_ctx_k / 1000))M"
+    else                            sa_ctx_lbl="${sa_ctx_k}K"
+    fi
+
+    # Compact single-space separators — same segment style as the context bar.
+    local sa_sep=" ${GRAY}·${RESET} "
+    local sa_row="${sa_bar} ${sa_color}${sa_pct_int}%${RESET}${sa_sep}${WHITE}${sa_used_lbl}${RESET}${GRAY}/${sa_ctx_lbl}${RESET}"
+    [[ -n "$sa_model" ]] && sa_row+="${sa_sep}${MAGENTA}$(prettify_model_id "$sa_model")${RESET}"
+    [[ -n "$sa_type" ]] && sa_row+="${sa_sep}${BLUE}${sa_type}${RESET}"
+    if [[ "$sa_state" == "done" ]]; then
+        sa_row+="${sa_sep}${GREEN}✓ done${RESET}"
+    else
+        sa_row+="${sa_sep}${YELLOW}○ working${RESET}"
+    fi
+    subagent_contents+=("$sa_row")
+}
+
 declare -a subagent_contents=()
-if [[ -n "$session_id" && -n "$transcript_path" ]]; then
+sa_now=$(date +%s)
+sa_sid_safe="${session_id//[^a-zA-Z0-9_-]/}"
+feed_tier=false
+
+if [[ -n "$sa_sid_safe" && "$_oc_fmt" =~ ^[0-9]+$ ]] && (( sa_now - _oc_fmt <= FEED_TTL )); then
+    feed_ok=$(jq -r 'if type == "object" and ((.tasks // []) | type == "array") then "ok" else empty end' "$_oc_feed" 2>/dev/null)
+    if [[ "$feed_ok" == "ok" ]]; then
+        feed_tier=true
+        declare -a feed_candidates=()
+        feed_seen_ids=$'\n'
+        while IFS=$'\x1f' read -r ft_id ft_type ft_status ft_model ft_win ft_tok ft_start; do
+            [[ -z "${ft_id}${ft_type}${ft_status}${ft_model}" ]] && continue
+            ft_id_safe="${ft_id//[^a-zA-Z0-9_-]/}"
+            [[ -n "$ft_id_safe" ]] && feed_seen_ids+="${ft_id_safe}"$'\n'
+            [[ "$ft_tok" =~ ^[0-9]+$ ]] || ft_tok=0
+            # Task window when present, else U3's resolver (absent model -> 200K).
+            if [[ "$ft_win" =~ ^[0-9]+$ ]] && (( ft_win > 0 )); then
+                ft_ctx="$ft_win"
+            else
+                ft_ctx=$(sa_ctx_for_model "$ft_model")
+            fi
+            ft_cache=""
+            [[ -n "$ft_id_safe" ]] && ft_cache="${TMPDIR:-/tmp}/statusline-sa-${sa_sid_safe}-task-${ft_id_safe}.txt"
+            ft_done=""
+            if sa_status_is_active "$ft_status"; then
+                ft_state="working"
+            else
+                ft_state="done"
+                ft_prev_done=""
+                if [[ -n "$ft_cache" && -f "$ft_cache" ]]; then
+                    { IFS='|' read -r _fc1 _fc2 _fc3 _fc4 ft_prev_done _fc6 < "$ft_cache"; } 2>/dev/null
+                fi
+                [[ "$ft_prev_done" =~ ^[0-9]+$ ]] && ft_done="$ft_prev_done"
+                [[ -z "$ft_done" ]] && ft_done="$sa_now"
+            fi
+            [[ -n "$ft_cache" ]] && printf '%s|%s|%s|%s|%s|%s' "$ft_tok" "$ft_ctx" "$ft_model" "$ft_type" "$ft_done" "$ft_start" > "$ft_cache" 2>/dev/null
+            [[ "$ft_state" == "done" ]] && (( sa_now - ft_done > DONE_LINGER )) && continue
+            feed_candidates+=("${ft_start}"$'\x1f'"${ft_id}"$'\x1f'"${ft_tok}"$'\x1f'"${ft_ctx}"$'\x1f'"${ft_model}"$'\x1f'"${ft_type}"$'\x1f'"${ft_state}")
+        done < <(jq -r '(.tasks // [])[] | select(type == "object") | [((.id // "") | tostring), ((.type // .name // "") | tostring), ((.status // "") | tostring), ((.model // "") | tostring), ((.contextWindowSize // "") | tostring), ((.tokenCount // 0) | tostring), ((.startTime // "") | tostring)] | join("\u001f")' "$_oc_feed" 2>/dev/null)
+
+        # A cached task id missing from a fresh feed is a done signal: stamp
+        # done_ts on first observation, linger, then drop the cache entry.
+        for fc_file in "${TMPDIR:-/tmp}/statusline-sa-${sa_sid_safe}-task-"*.txt; do
+            [[ -f "$fc_file" ]] || continue
+            fc_id="${fc_file##*-task-}"
+            fc_id="${fc_id%.txt}"
+            [[ "$feed_seen_ids" == *$'\n'"${fc_id}"$'\n'* ]] && continue
+            fc_used=""; fc_win=""; fc_model=""; fc_type=""; fc_done=""; fc_start=""
+            { IFS='|' read -r fc_used fc_win fc_model fc_type fc_done fc_start < "$fc_file"; } 2>/dev/null
+            if [[ ! "$fc_done" =~ ^[0-9]+$ ]]; then
+                fc_done="$sa_now"
+                printf '%s|%s|%s|%s|%s|%s' "$fc_used" "$fc_win" "$fc_model" "$fc_type" "$fc_done" "$fc_start" > "$fc_file" 2>/dev/null
+            fi
+            if (( sa_now - fc_done > DONE_LINGER )); then
+                rm -f "$fc_file" 2>/dev/null
+                continue
+            fi
+            feed_candidates+=("${fc_start}"$'\x1f'"${fc_id}"$'\x1f'"${fc_used}"$'\x1f'"${fc_win}"$'\x1f'"${fc_model}"$'\x1f'"${fc_type}"$'\x1f'"done")
+        done
+
+        log_msg "subagents: feed tier, ${#feed_candidates[@]} row(s)"
+        if (( ${#feed_candidates[@]} > 0 )); then
+            # Deterministic order: startTime (ISO string sort), tiebreak id.
+            while IFS=$'\x1f' read -r fr_start fr_id fr_used fr_ctx fr_model fr_type fr_state; do
+                [[ -z "$fr_state" ]] && continue
+                build_sa_row "$fr_used" "$fr_ctx" "$fr_model" "$fr_type" "$fr_state"
+            done < <(printf '%s\n' "${feed_candidates[@]}" | LC_ALL=C sort)
+        fi
+    fi
+fi
+
+# Fallback tier: per-agent transcripts under
+# <project>/<sessionId>/subagents/agent-*.jsonl (+ sibling .meta.json).
+if [[ "$feed_tier" != true && -n "$session_id" && -n "$transcript_path" ]]; then
     project_dir=$(dirname "$transcript_path")
     session_base=$(basename "$transcript_path" .jsonl)
     subagents_dir="$project_dir/$session_base/subagents"
     if [[ -d "$subagents_dir" ]]; then
+        log_msg "subagents: fallback tier (feed absent/stale)"
         for sa_file in "$subagents_dir"/agent-*.jsonl; do
             [[ -f "$sa_file" ]] || continue
 
             sa_mt=$(stat -f %m "$sa_file" 2>/dev/null || echo 0)
-            sa_age=$(( $(date +%s) - sa_mt ))
+            sa_age=$(( sa_now - sa_mt ))
             (( sa_age > 180 )) && continue
 
             sa_base=$(basename "$sa_file" .jsonl)
-            sa_cache_path="${TMPDIR:-/tmp}/statusline-sa-${session_id//[^a-zA-Z0-9_-]/}-${sa_base}.txt"
+            sa_cache_path="${TMPDIR:-/tmp}/statusline-sa-${sa_sid_safe}-${sa_base}.txt"
             sa_use_cache=false
+            sa_cache_dirty=false
+            sa_done=""
+            sa_prev_done=""
 
             if [[ -f "$sa_cache_path" ]]; then
-                IFS='|' read -r sc_mt sc_sr sc_in sc_cw sc_cr sc_model sc_display < "$sa_cache_path"
+                sc_mt=""; sc_sr=""; sc_in=""; sc_cw=""; sc_cr=""; sc_model=""; sc_display=""; sc_done=""
+                IFS='|' read -r sc_mt sc_sr sc_in sc_cw sc_cr sc_model sc_display sc_done < "$sa_cache_path"
+                [[ "$sc_done" =~ ^[0-9]+$ ]] && sa_prev_done="$sc_done"
                 if [[ "$sc_mt" == "$sa_mt" ]]; then
                     sa_sr="$sc_sr"; sa_in="$sc_in"; sa_cw="$sc_cw"; sa_cr="$sc_cr"
-                    sa_model="$sc_model"; agent_display="$sc_display"
-                    [[ "$sa_in" =~ ^[0-9]+$ ]] || sa_in=0
-                    [[ "$sa_cw" =~ ^[0-9]+$ ]] || sa_cw=0
-                    [[ "$sa_cr" =~ ^[0-9]+$ ]] || sa_cr=0
+                    sa_model="$sc_model"; agent_display="$sc_display"; sa_done="$sa_prev_done"
                     sa_use_cache=true
                 fi
             fi
 
             if [[ "$sa_use_cache" != true ]]; then
+                # No assistant message yet -> zeros and no model id; the row
+                # renders without the model segment for this refresh (R4).
+                sa_sr=""; sa_in=0; sa_cw=0; sa_cr=0; sa_model=""
                 sa_last=$(jq -c 'select(.type == "assistant")' "$sa_file" 2>/dev/null | tail -1)
-                [[ -z "$sa_last" ]] && continue
-                sa_fields=$(printf '%s' "$sa_last" | jq -r '"\(.message.stop_reason // "")|\(.message.usage.input_tokens // 0)|\(.message.usage.cache_creation_input_tokens // 0)|\(.message.usage.cache_read_input_tokens // 0)|\(.message.model // "")"' 2>/dev/null)
-                [[ -z "$sa_fields" ]] && continue
-                IFS='|' read -r sa_sr sa_in sa_cw sa_cr sa_model <<< "$sa_fields"
+                if [[ -n "$sa_last" ]]; then
+                    sa_fields=$(printf '%s' "$sa_last" | jq -r '"\(.message.stop_reason // "")|\(.message.usage.input_tokens // 0)|\(.message.usage.cache_creation_input_tokens // 0)|\(.message.usage.cache_read_input_tokens // 0)|\(.message.model // "")"' 2>/dev/null)
+                    [[ -n "$sa_fields" ]] && IFS='|' read -r sa_sr sa_in sa_cw sa_cr sa_model <<< "$sa_fields"
+                fi
 
                 agent_display="${sa_base#agent-}"
                 sa_meta="$subagents_dir/${sa_base}.meta.json"
@@ -797,40 +938,34 @@ if [[ -n "$session_id" && -n "$transcript_path" ]]; then
                     [[ -n "$meta_type" ]] && agent_display="$meta_type"
                 fi
 
-                printf '%s|%s|%s|%s|%s|%s|%s' "$sa_mt" "$sa_sr" "$sa_in" "$sa_cw" "$sa_cr" "$sa_model" "$agent_display" > "$sa_cache_path" 2>/dev/null
+                sa_done="$sa_prev_done"
+                sa_cache_dirty=true
+            fi
+            [[ "$sa_in" =~ ^[0-9]+$ ]] || sa_in=0
+            [[ "$sa_cw" =~ ^[0-9]+$ ]] || sa_cw=0
+            [[ "$sa_cr" =~ ^[0-9]+$ ]] || sa_cr=0
+
+            # R10: any terminal stop reason is a done signal; tool_use/pause_turn
+            # (and no assistant message yet) mean working.
+            case "$sa_sr" in
+                end_turn|max_tokens|refusal|model_context_window_exceeded|stop_sequence) sa_state="done" ;;
+                *)                                                                      sa_state="working" ;;
+            esac
+            if [[ "$sa_state" == "done" ]]; then
+                if [[ -z "$sa_done" ]]; then
+                    sa_done="$sa_now"
+                    sa_cache_dirty=true
+                fi
+            else
+                [[ -n "$sa_done" ]] && sa_cache_dirty=true
+                sa_done=""
             fi
 
-            [[ "$sa_sr" == "end_turn" ]] && continue
+            [[ "$sa_cache_dirty" == true ]] && printf '%s|%s|%s|%s|%s|%s|%s|%s' "$sa_mt" "$sa_sr" "$sa_in" "$sa_cw" "$sa_cr" "$sa_model" "$agent_display" "$sa_done" > "$sa_cache_path" 2>/dev/null
 
-            sa_used=$((sa_in + sa_cw + sa_cr))
+            [[ "$sa_state" == "done" ]] && (( sa_now - sa_done > DONE_LINGER )) && continue
 
-            sa_ctx_size=$(sa_ctx_for_model "$sa_model")
-
-            sa_pct_int=$(( sa_used * 100 / sa_ctx_size ))
-            (( sa_pct_int < 0 )) && sa_pct_int=0
-            (( sa_pct_int > 100 )) && sa_pct_int=100
-            if   (( sa_pct_int >= 85 )); then sa_color="$RED"
-            elif (( sa_pct_int >= 60 )); then sa_color="$YELLOW"
-            else                              sa_color="$GREEN"
-            fi
-            sa_filled=$(( (bar_width * sa_pct_int + 50) / 100 ))
-            (( sa_filled > bar_width )) && sa_filled=$bar_width
-            (( sa_filled < 0 )) && sa_filled=0
-            sa_empty=$((bar_width - sa_filled))
-            sa_filled_chars=$(repeat_char "█" "$sa_filled")
-            sa_empty_chars=$(repeat_char "░" "$sa_empty")
-            sa_bar="${sa_color}${sa_filled_chars}${RESET}${BAR_EMPTY}${sa_empty_chars}${RESET}"
-
-            sa_used_lbl=$(format_tokens "$sa_used")
-            sa_ctx_k=$((sa_ctx_size / 1000))
-            if (( sa_ctx_k >= 1000 )); then sa_ctx_lbl="$((sa_ctx_k / 1000))M"
-            else                            sa_ctx_lbl="${sa_ctx_k}K"
-            fi
-
-            sa_sep="  ${GRAY}·${RESET}  "
-            sa_working="${YELLOW}○ working${RESET}"
-            sa_content="${sa_bar} ${sa_color}${sa_pct_int}%${RESET}${sa_sep}${WHITE}${sa_used_lbl}${RESET}${GRAY}/${sa_ctx_lbl}${RESET}${sa_sep}${BLUE}${agent_display}${RESET}${sa_sep}${sa_working}"
-            subagent_contents+=("$sa_content")
+            build_sa_row "$((sa_in + sa_cw + sa_cr))" "$(sa_ctx_for_model "$sa_model")" "$sa_model" "$agent_display" "$sa_state"
         done
     fi
 fi
