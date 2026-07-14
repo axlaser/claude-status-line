@@ -36,6 +36,10 @@ See the `# @parity:json-extract-begin` / `# @parity:json-extract-end` block in `
 
 ## Development
 
+### Branching
+
+Two-tier flow: create feature branches as `dev-<feature>` (e.g. `dev-notifications`), PR them into `dev`, and periodically release `dev` into `master` via a release PR. The repo-local `pr` and `sync` skills pick the right base/source automatically from this model.
+
 ### Testing
 
 No test framework. Manual testing required:

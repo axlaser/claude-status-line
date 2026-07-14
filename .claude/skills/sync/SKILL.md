@@ -2,8 +2,8 @@
 name: sync
 description: >
   Fetch the latest upstream branch and merge it into the current branch, in
-  the claude-status-line repo — feature branches sync from `dev`, and `dev`
-  itself syncs from `master`. Stages the merge, walks through any conflicts
+  the claude-status-line repo — feature branches (`dev-<feature>`) sync from
+  `dev`, and `dev` itself syncs from `master`. Stages the merge, walks through any conflicts
   interactively, then creates the signed merge commit directly. Use whenever
   the user says
   "sync", "pull dev", "pull master", "update branch", "merge dev", "merge
@@ -17,9 +17,9 @@ Fetch the latest upstream branch from origin and merge it into the current branc
 
 ## Branch model
 
-This repo uses a two-tier flow: feature branches merge into `dev`, and `dev` periodically merges into `master`. This skill picks the sync source automatically from the current branch:
+This repo uses a two-tier flow: feature branches (named `dev-<feature>`, e.g. `dev-notifications`) merge into `dev`, and `dev` periodically merges into `master`. This skill picks the sync source automatically from the current branch:
 
-- On a feature branch (anything that isn't `dev`/`master`) → source is `dev`.
+- On a feature branch (`dev-<feature>`, or any other branch that isn't `dev`/`master`) → source is `dev`.
 - On `dev` → source is `master` (pulling in anything that landed on `master` directly, e.g. a hotfix).
 - On `master` → nothing to sync into — stop.
 

@@ -2,8 +2,9 @@
 name: pr
 description: >
   Create a pull request from the current branch for claude-status-line, into
-  the right base for this repo's two-tier flow — feature branches target
-  `dev`, and `dev` itself targets `master` as a release PR. Analyzes the new
+  the right base for this repo's two-tier flow — feature branches
+  (`dev-<feature>`) target `dev`, and `dev` itself targets `master` as a
+  release PR. Analyzes the new
   commits, drafts a PR title and a Summary/Test-plan body matching this repo's
   existing PR style, previews it for approval, then creates it via the `gh`
   CLI. Use whenever the user says "pr", "pull request", "open a pr", "create
@@ -18,9 +19,9 @@ Analyze the current branch's changes relative to its base branch, draft a PR tit
 
 ## Branch model
 
-Work happens on feature branches (`feat/...`, or anything that isn't `dev`/`master`), which PR into **`dev`**. `dev` is the integration branch; periodically a **release PR** merges `dev` into **`master`**. This skill picks the base automatically from the current branch — no need to ask which one:
+Work happens on feature branches named **`dev-<feature>`** (e.g. `dev-notifications`, `dev-cjk-width`), which PR into **`dev`**. `dev` is the integration branch; periodically a **release PR** merges `dev` into **`master`**. When creating a new feature branch, use the `dev-<feature>` name. This skill picks the base automatically from the current branch — no need to ask which one:
 
-- On a feature branch → base is `dev`.
+- On a feature branch (`dev-<feature>`, or any other branch that isn't `dev`/`master`) → base is `dev`.
 - On `dev` → base is `master` (this is the release PR).
 - On `master` → nothing to PR — stop.
 
