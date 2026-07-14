@@ -843,6 +843,7 @@ LABEL_W=7
 model_row="$model_part"
 [[ -n "$effort_part" ]] && model_row+="${row_sep}${effort_part}"
 [[ -n "$status_part" ]] && model_row+="${row_sep}${status_part}"
+[[ -n "$ctx_bar_part" ]] && model_row+="${row_sep}${ctx_bar_part}"
 
 cost_row=""
 parts=()
@@ -867,11 +868,10 @@ declare -a row_sections=() row_labels=() row_contents=() rows=() row_secs=()
 row_sections+=(0); row_labels+=("$path_label"); row_contents+=("$path_row")
 row_sections+=(0); row_labels+=("agent");   row_contents+=("$agent_part")
 row_sections+=(1); row_labels+=("model");   row_contents+=("$model_row")
-row_sections+=(1); row_labels+=("context"); row_contents+=("$ctx_bar_part")
+row_sections+=(1); row_labels+=("tokens");  row_contents+=("$tokens_part")
 for sa_content in "${subagent_contents[@]}"; do
     row_sections+=(1); row_labels+=("agent"); row_contents+=("$sa_content")
 done
-row_sections+=(1); row_labels+=("tokens");  row_contents+=("$tokens_part")
 row_sections+=(1); row_labels+=("cost");    row_contents+=("$cost_row")
 row_sections+=(1); row_labels+=("limits");  row_contents+=("$rate_part")
 

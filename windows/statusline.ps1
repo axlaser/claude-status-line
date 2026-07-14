@@ -754,12 +754,13 @@ function Get-Vis([string]$s) {  # visible terminal cells: ANSI stripped; CJK/emo
     return $w
 }
 # @parity:constant LABEL_W=7
-$LABEL_W = 7  # longest label: "context"
+$LABEL_W = 7  # longest label: "project"
 # Rows with empty content are dropped — box auto-hides sections with no data.
 $rowSep = "  ${GRAY}$([char]0x00B7)${RESET}  "
 $modelRow = $modelPart
 if ($effortPart) { $modelRow = "${modelRow}${rowSep}${effortPart}" }
 if ($statusPart) { $modelRow = "${modelRow}${rowSep}${statusPart}" }
+if ($ctxBarPart) { $modelRow = "${modelRow}${rowSep}${ctxBarPart}" }
 $costRow = ''
 $costParts = @()
 if ($costPart)     { $costParts += $costPart }
@@ -776,9 +777,8 @@ $rowSpec = @(
     @{ s=0; label=$pathLabel; content=$pathRow      }
     @{ s=0; label='agent';  content=$agentPart      }
     @{ s=1; label='model';  content=$modelRow       }
-    @{ s=1; label='context'; content=$ctxBarPart    }
-) + $subagentRows + @(
     @{ s=1; label='tokens'; content=$tokensPart     }
+) + $subagentRows + @(
     @{ s=1; label='cost'; content=$costRow          }
     @{ s=1; label='limits'; content=$ratePart       }
 )
