@@ -2,24 +2,24 @@
 name: commit
 description: >
   Generate a professional git commit message from the repo's current diff. Analyzes all
-  staged, unstaged, and untracked changes, categorizes them, and outputs ready-to-paste
-  git commands. Trigger on: "commit", "write a commit", "commit message", "what changed",
+  staged, unstaged, and untracked changes, categorizes them, and creates the commit
+  directly (paste-safe commands are a fallback). Trigger on: "commit", "write a commit", "commit message", "what changed",
   "summarize changes", "draft commit", "changelog", or any request to commit, stage, or
   describe the current diff.
 ---
 
 # /commit -- Git Commit Message Generator
 
-Analyze the current repo's full diff and produce a professional commit message with ready-to-copy git commands.
+Analyze the current repo's full diff, produce a professional commit message, and create the commit directly.
 
 ## Core rules
 
-- **Never execute git commands that modify state.** The user has SSH commit signing -- Claude cannot access the signing key. Output `git add` and `git commit` as fenced code blocks in the chat so the user can copy-paste them into their own terminal.
+- **Stage and commit directly.** Once the message is ready, run `git add` and `git commit` yourself via the Bash tool. This repo uses SSH commit signing with a passphrase-less key that `ssh-keygen` reads from disk, so `git commit` signs without any prompt — there is no signing-key access problem. If a commit ever fails (a passphrase prompt, a pre-commit hook, etc.), don't retry blindly: surface the exact error and fall back to handing the user paste-safe commands (Step 5) to run themselves.
 - **No Co-Authored-By trailer.**
-- **Detect the shell environment.** Check the platform and choose paste-safe syntax (see Step 5).
+- **Detect the shell for hand-offs.** When you fall back to paste-safe commands for the user to run, check the platform and pick the right syntax (see Step 5) — this machine's interactive shell is PowerShell, while your own Bash tool runs Git Bash.
 - **Output goes in the chat, not to a file.**
-- **Paste-safe commands.** Terminal copy-paste breaks long single-line commands and multi-line strings. Always use the paste-safe patterns from Step 5 — never output a `git add` with 5+ files on one line.
-- **Sensitive-content check is blocking.** Don't present the final commands until the user has acknowledged any flagged secret, credential, or unexpected file.
+- **Paste-safe commands.** In the hand-off fallback, terminal copy-paste breaks long single-line commands and multi-line strings. Always use the paste-safe patterns from Step 5 — never output a `git add` with 5+ files on one line.
+- **Sensitive-content check is blocking.** Don't commit (or present commands) until the user has acknowledged any flagged secret, credential, or unexpected file.
 
 ## Step 1 -- Gather the diff
 
@@ -85,24 +85,53 @@ Statusline:
 - Use a flat bullet list when changes are in one area or closely related
 - If changes affect multiple platforms, note which ones in the relevant bullet
 
-## Step 4 -- Verify before output
+## Step 4 -- Verify before committing
 
-Before printing the final commands, check your own work:
+Before running the commit, check your own work:
 
 1. **Count the summary line** -- confirm it is 72 characters or fewer. If not, rewrite and recount.
 2. **Cross-check file coverage** -- every file from `git status` should appear in the body or be explicitly noted as excluded (e.g., binary, untracked infrastructure). Don't silently drop files.
 3. **Confirm no secrets or stray local paths** -- re-scan for `.env`, key files, credentials, and hardcoded personal paths in the staging list. Warn if found.
 4. **Confirm rule compliance** -- re-check the cross-platform-parity, no-`exit`, and silent-degradation flags from Step 2. Surface anything still outstanding.
 
-## Step 5 -- Output the commands
+## Step 5 -- Stage and commit
 
-Print commands as fenced code blocks. List specific files (never `git add -A`).
+Once the message passes Step 4, **preview it to the user**, then stage and commit directly via the Bash tool. (If the user only asked you to *describe* or *draft* the changes rather than commit, stop after the preview — don't commit.)
 
-When pasting into a terminal, long single-line commands break at visual wraps — PowerShell treats each wrapped line as a separate command. Use multi-line paste-safe patterns for `git add` when staging more than a few files.
+**Stage** the specific files (never `git add -A`):
 
-**On Windows (PowerShell):**
+```bash
+git add path/to/file1 path/to/file2
+```
 
-Use `@(...)` array syntax for `git add` — PowerShell keeps parsing until the `)` closes, so newlines are safe:
+**Commit** with a quoted heredoc. Your Bash tool runs Git Bash on every platform, so this one form always works and keeps backticks and markdown literal. Pass a short timeout so a stray passphrase prompt can't hang the session:
+
+```bash
+git commit -m "$(cat <<'EOF'
+Fix statusline bugs and harden installers
+
+Installers:
+- Guard notify-config.json writes so re-runs preserve prefs
+- Add Bash 4+ version check to macOS installer
+
+Statusline:
+- Fix cwd collapse matching partial usernames
+- Suppress stderr on printf calls
+EOF
+)"
+```
+
+**Confirm the result** so the good signature is visible:
+
+```bash
+git log --show-signature -1 --oneline
+```
+
+### Fallback -- hand the commands to the user
+
+If a direct commit fails (a signing passphrase prompt, a failing pre-commit hook) or the user would rather run it themselves, surface the error and print paste-safe commands for their terminal. List specific files, never `git add -A`. Long single-line commands break at visual wraps, so use multi-line patterns for `git add`.
+
+**On Windows (PowerShell):** use `@(...)` array syntax for `git add` — PowerShell keeps parsing until the `)` closes, so newlines are safe:
 
 ~~~
 ```powershell
@@ -134,9 +163,7 @@ Statusline:
 
 If the here-string won't paste cleanly, suggest `git commit` with no `-m` flag to open the user's editor instead.
 
-**On macOS/Linux (Bash):**
-
-Use `\` line continuation for `git add`:
+**On macOS/Linux (Bash):** use `\` line continuation for `git add`:
 
 ~~~
 ```bash
@@ -170,4 +197,5 @@ EOF
 - **Large diffs (>20 files)**: lead with `--stat`, group by area, suggest splitting if changes are logically independent
 - **Only untracked files**: stage and commit them normally -- describe what they add in the body
 - **Binary files**: note paths, don't describe content
+- **Commit fails (signing prompt / hook)**: surface the exact error, don't retry blindly, fall back to the Step 5 paste-safe hand-off
 - **Merge conflict markers**: refuse to produce a commit message until resolved
