@@ -1,4 +1,4 @@
-﻿# Uninstaller: removes ~/.claude/statusline.ps1 and the statusLine key from settings.json.
+# Uninstaller: removes ~/.claude/statusline.ps1 and the statusLine key from settings.json.
 # PowerShell 5.1+ required -- checked at runtime because `#Requires` directives aren't honored via `irm | iex`.
 if ($PSVersionTable.PSVersion -lt [Version]'5.1') { Write-Host "  PowerShell 5.1+ required (current: $($PSVersionTable.PSVersion))" -ForegroundColor Red; return }
 
@@ -99,7 +99,7 @@ if (Test-Path $settingsPath) {
         $tmpPath = "$settingsPath.tmp"
         [System.IO.File]::WriteAllText($tmpPath, $json, (New-Object System.Text.UTF8Encoding $false))
         Move-Item $tmpPath $settingsPath -Force
-        Ok "Removed statusLine and subagentStatusLine from settings.json"
+        Ok "Removed statusline entries from settings.json"
     } catch {
         Warn "Could not parse settings.json -- please remove the `"statusLine`" and `"subagentStatusLine`" keys manually"
         Info $settingsPath

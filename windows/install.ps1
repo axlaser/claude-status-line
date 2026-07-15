@@ -1,4 +1,4 @@
-﻿# Claude Code Status Line -- Installer for Windows
+# Claude Code Status Line -- Installer for Windows
 # PowerShell 5.1+ required -- checked at runtime because `#Requires` directives aren't honored via `irm | iex`.
 if ($PSVersionTable.PSVersion -lt [Version]'5.1') { Write-Host "  PowerShell 5.1+ required (current: $($PSVersionTable.PSVersion))" -ForegroundColor Red; return }
 
@@ -528,7 +528,7 @@ if ($hasNotifyHooks) {
     }
 }
 
-# Register hooks — runs on fresh install (user said Y) or re-install (refreshes missing events)
+# Register hooks -- runs on fresh install (user said Y) or re-install (refreshes missing events)
 if ($enableSound -match '^[Yy]$' -or $enableVisual -match '^[Yy]$' -or $hasNotifyHooks) {
     $notifyCmd = "powershell -NoProfile -File `"$notifyPath`""
 

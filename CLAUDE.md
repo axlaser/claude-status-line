@@ -20,6 +20,7 @@ windows/     statusline.ps1, install.ps1, uninstall.ps1, notify.ps1, git-refresh
 - **Windows**: PowerShell 5.1+ with native `ConvertFrom-Json`
 - 95% code reuse between macOS and Linux; Windows is functionally equivalent using PS idioms
 - Output cached by hashing JSON + file modification times; git status cached with 5s TTL
+- **Statusline scripts are deliberately single-file per platform.** Installers fetch each script individually, so a sourced helper file would create a partial-upgrade hazard (new statusline + stale/missing sibling = broken status line). Accept file growth and small in-file repetition (e.g. the done-linger stamp/expire logic at its three per-platform sites) -- do not split `statusline.*` into sourced files or flag its length in reviews
 
 ### JSON Input Contract
 
@@ -67,6 +68,7 @@ Enforced by `.gitattributes` -- do not override:
 
 - `*.sh` -- LF line endings
 - `*.ps1` -- CRLF line endings with UTF-8 BOM
+- **Exception:** `windows/install.ps1` and `windows/uninstall.ps1` are **BOM-less and ASCII-only**. They run via `irm <url> | iex`, and a BOM survives `irm` as a stray U+FEFF that breaks `iex` on the first token (fixed in `762dcc0`, regressed once by re-applying the BOM rule mechanically -- do not "fix" the missing BOM back). ASCII-only keeps them safe to run from a local clone too.
 
 Getting this wrong breaks Windows PowerShell parsing of non-ASCII literals.
 

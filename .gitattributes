@@ -2,6 +2,12 @@
 # UTF-8 BOM as part of their content — Windows PowerShell 5.1 otherwise decodes
 # BOM-less files as Windows-1252 and corrupts non-ASCII characters inside string
 # literals (which breaks parsing). Do not strip the BOM when editing.
+#
+# EXCEPTION — windows/install.ps1 and windows/uninstall.ps1 must stay BOM-LESS
+# and ASCII-only: they are fetched via `irm <url> | iex` (the README one-liners),
+# and irm keeps a BOM as a stray U+FEFF that makes iex fail on the first token
+# (fixed in 762dcc0, regressed once by re-applying this rule mechanically).
+# ASCII-only keeps them safe to run from a local clone without a BOM.
 *.ps1 text eol=crlf
 
 # Unix shell scripts must keep LF, or shebangs break on Linux/macOS.
