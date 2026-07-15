@@ -18,7 +18,7 @@ windows/     statusline.ps1, install.ps1, uninstall.ps1, notify.ps1, git-refresh
 
 - **macOS/Linux**: Bash 4+ scripts using `jq` for JSON parsing
 - **Windows**: PowerShell 5.1+ with native `ConvertFrom-Json`
-- 95% code reuse between macOS and Linux; Windows is functionally equivalent using PS idioms
+- macOS and Linux scripts are kept in sync; Windows is functionally equivalent using PS idioms
 - Output cached by hashing JSON + file modification times; git status cached with 5s TTL
 - **Statusline scripts are deliberately single-file per platform.** Installers fetch each script individually, so a sourced helper file would create a partial-upgrade hazard (new statusline + stale/missing sibling = broken status line). Accept file growth and small in-file repetition (e.g. the done-linger stamp/expire logic at its three per-platform sites) -- do not split `statusline.*` into sourced files or flag its length in reviews
 
@@ -78,17 +78,7 @@ Getting this wrong breaks Windows PowerShell parsing of non-ASCII literals.
 
 These rules apply to every task in this project unless explicitly overridden.
 Bias: caution over speed on non-trivial work.
-
-### General Principles
-
-- **Think before coding.** State assumptions explicitly. Ask rather than guess. Push back when a simpler approach exists.
-- **Simplicity first.** Minimum code that solves the problem. No abstractions for single-use code.
-- **Surgical changes.** Touch only what you must. Match existing style. Don't refactor what isn't broken.
-- **Goal-driven execution.** Define success criteria. Loop until verified.
-- **Read before you write.** Read exports, immediate callers, and shared utilities before adding code.
-- **Match conventions.** Conformance > taste. Surface disagreements, don't fork silently. Bash: `snake_case` functions, `UPPER_CASE` constants. PowerShell: `PascalCase` functions.
-- **Checkpoint after every significant step.** Summarize what was done, what's verified, what's left.
-- **Fail loud.** "Completed" is wrong if anything was skipped. Surface uncertainty, don't hide it.
+Naming: Bash uses `snake_case` functions and `UPPER_CASE` constants; PowerShell uses `PascalCase` functions.
 
 ### Cross-Platform Parity
 
