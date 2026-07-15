@@ -685,6 +685,11 @@ function Build-SubagentRow($used, $ctxSize, $model, $disp, $state) {
     if (-not [long]::TryParse("$used", [ref]$u) -or $u -lt 0) { $u = 0L }
     $w = 0L
     if (-not [long]::TryParse("$ctxSize", [ref]$w) -or $w -le 0) { $w = 200000L }
+    # Render-sink scrub: strip control/escape bytes from the two untrusted display
+    # fields so no source path (feed-live, feed-read-back, transcript-fallback) can
+    # emit a terminal escape planted via a cache file.
+    $model = Format-SaTitle $model
+    $disp = Format-SaTitle $disp
     # Bar/pct clamp at 100%; the token label keeps the raw used value.
     $saPctInt = [int][Math]::Truncate(($u * 100.0) / $w)
     if ($saPctInt -lt 0) { $saPctInt = 0 }
@@ -735,7 +740,9 @@ if ($_ocFfresh -eq 1 -and $_ocFjson) {
                 if (-not $ftDisp) { $ftDisp = Format-SaTitle $t.type }
                 if (-not $ftDisp) { $ftDisp = Format-SaTitle $t.name }
                 $ftStatus = if ($null -ne $t.status) { "$($t.status)" } else { '' }
-                $ftModel  = if ($null -ne $t.model) { "$($t.model)" } else { '' }
+                # Scrub control chars / "|" from model before it enters the
+                # pipe-delimited cache record (mirrors the title's ingest scrub).
+                $ftModel  = Format-SaTitle $t.model
                 $ftStart  = if ($null -ne $t.startTime) { "$($t.startTime)" } else { '' }
                 if (-not ($ftId -or $ftDisp -or $ftStatus -or $ftModel)) { continue }
                 $ftIdSafe = $ftId -replace '[^a-zA-Z0-9_-]', ''

@@ -809,6 +809,11 @@ build_sa_row() {  # used ctx_size model_id display state(working|done) -> append
     local sa_used="$1" sa_ctx_size="$2" sa_model="$3" sa_disp="$4" sa_state="$5"
     [[ "$sa_used" =~ ^[0-9]+$ ]] || sa_used=0
     { [[ "$sa_ctx_size" =~ ^[0-9]+$ ]] && (( sa_ctx_size > 0 )); } || sa_ctx_size=200000
+    # Render-sink scrub: strip control/escape bytes from the two untrusted display
+    # fields so no source path (feed-live, feed-read-back, transcript-fallback) can
+    # emit a terminal escape planted via a cache file.
+    sa_model=$(sa_sanitize_title "$sa_model")
+    sa_disp=$(sa_sanitize_title "$sa_disp")
 
     # Bar/pct clamp at 100%; the token label keeps the raw used value.
     local sa_pct_int=$(( sa_used * 100 / sa_ctx_size ))
@@ -883,7 +888,7 @@ if [[ -n "$sa_sid_safe" && "$_oc_ffresh" == "1" ]]; then
             [[ -n "$ft_cache" ]] && printf '%s|%s|%s|%s|%s|%s' "$ft_tok" "$ft_ctx" "$ft_model" "$ft_disp" "$ft_done" "$ft_start" > "$ft_cache" 2>/dev/null
             [[ "$ft_state" == "done" ]] && (( sa_now - ft_done > DONE_LINGER )) && continue
             feed_candidates+=("${ft_start}"$'\x1f'"${ft_id}"$'\x1f'"${ft_tok}"$'\x1f'"${ft_ctx}"$'\x1f'"${ft_model}"$'\x1f'"${ft_disp}"$'\x1f'"${ft_state}")
-        done < <(printf '%s' "$_oc_fjson" | jq -r '(.tasks // [])[] | select(type == "object") | [((.id // "") | tostring), (first([.description, .type, .name][] | (. // "") | tostring | gsub("[\\x00-\\x1f\\x7f|]"; " ") | gsub("^ +| +$"; "") | select(. != "")) // ""), ((.status // "") | tostring), ((.model // "") | tostring), ((.contextWindowSize // "") | tostring), ((.tokenCount // 0) | tostring), ((.startTime // "") | tostring)] | join("\u001f")' 2>/dev/null)
+        done < <(printf '%s' "$_oc_fjson" | jq -r '(.tasks // [])[] | select(type == "object") | [((.id // "") | tostring), (first([.description, .type, .name][] | (. // "") | tostring | gsub("[\\x00-\\x1f\\x7f|]"; " ") | gsub("^ +| +$"; "") | select(. != "")) // ""), ((.status // "") | tostring), ((.model // "") | tostring | gsub("[\\x00-\\x1f\\x7f|]"; " ")), ((.contextWindowSize // "") | tostring), ((.tokenCount // 0) | tostring), ((.startTime // "") | tostring)] | join("\u001f")' 2>/dev/null)
 
         # A cached task id missing from a fresh feed is a done signal: stamp
         # done_ts on first observation, linger, then drop the cache entry.
