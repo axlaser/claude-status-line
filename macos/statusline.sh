@@ -659,7 +659,7 @@ format_bucket() {  # label value delta idle_color active_color [arrow] -> "label
 }
 
 # Tokens row — always render (dim "(+0)" when idle).
-row_sep="  ${GRAY}·${RESET}  "
+row_sep=" ${GRAY}·${RESET} "
 tokens_part=$(format_bucket "in" "$session_in_tokens" "$delta_in" "$CYAN" "$CYAN")
 tokens_part+="${row_sep}$(format_bucket "cache" "$session_cache_write_tokens" "$delta_cache_write" "$GRAY" "$YELLOW" "↑")"
 tokens_part+="${row_sep}$(format_bucket "cache" "$session_cache_read_tokens" "$delta_cache_read" "$GRAY" "$CYAN" "↓")"
@@ -751,7 +751,7 @@ if [[ -n "$five_pct" || -n "$seven_pct" ]]; then
     rate_part=""
     [[ -n "$parts_5h" ]] && rate_part="$parts_5h"
     if [[ -n "$parts_7d" ]]; then
-        [[ -n "$rate_part" ]] && rate_part+="  ${GRAY}·${RESET}  "
+        [[ -n "$rate_part" ]] && rate_part+=" ${GRAY}·${RESET} "
         rate_part+="$parts_7d"
     fi
 fi
@@ -762,7 +762,7 @@ agent_name="$J_AGENT_NAME"
 if [[ -n "$agent_name" ]]; then
     agent_part="${BLUE}${BOLD}${agent_name}${RESET}"
     agent_compact=""
-    local_sep="  ${GRAY}·${RESET}  "
+    local_sep=" ${GRAY}·${RESET} "
     if [[ -n "$pct_int" ]]; then
         agent_compact="${pct_color}${pct_int}%${RESET}${local_sep}"
     fi

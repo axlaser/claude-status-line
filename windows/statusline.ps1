@@ -565,7 +565,7 @@ function Format-Bucket($label, $value, $delta, $idleColor, $activeColor, $arrow)
     }
 }
 # Always render — zero values get the dim "(+0)" idle styling.
-$sep        = "  ${GRAY}$([char]0x00B7)${RESET}  "
+$sep        = " ${GRAY}$([char]0x00B7)${RESET} "
 $tokensPart = (Format-Bucket "in" $sessionInTokens $deltaIn $CYAN $CYAN) `
     + $sep + (Format-Bucket "cache" $sessionCacheWriteTokens $deltaCacheWrite $GRAY $YELLOW "$([char]0x2191)") `
     + $sep + (Format-Bucket "cache" $sessionCacheReadTokens $deltaCacheRead $GRAY $CYAN "$([char]0x2193)") `
@@ -640,14 +640,14 @@ if ($null -ne $fivePct -or $null -ne $sevenPct) {
     $part7 = Format-Window '7d' $sevenPct $sevenRes 604800
     if ($part5) { $parts5d += $part5 }
     if ($part7) { $parts5d += $part7 }
-    $ratePart = $parts5d -join "  ${GRAY}$([char]0x00B7)${RESET}  "
+    $ratePart = $parts5d -join " ${GRAY}$([char]0x00B7)${RESET} "
 }
 # --- 7. Agent / subagent status (--agent startup mode only) ---
 $agentPart = ''
 if ($agentName) {
     $agentPart = "${BLUE}${BOLD}${agentName}${RESET}"
     $agentCompact = ''
-    $sep = "  ${GRAY}$([char]0x00B7)${RESET}  "
+    $sep = " ${GRAY}$([char]0x00B7)${RESET} "
     if ($null -ne $pctInt) {
         $agentCompact = "${pctColor}${pctInt}%${RESET}${sep}"
     }
@@ -936,7 +936,7 @@ function Get-Vis([string]$s) {  # visible terminal cells: ANSI stripped; CJK/emo
 # @parity:constant LABEL_W=7
 $LABEL_W = 7  # longest label: "project"
 # Rows with empty content are dropped — box auto-hides sections with no data.
-$rowSep = "  ${GRAY}$([char]0x00B7)${RESET}  "
+$rowSep = " ${GRAY}$([char]0x00B7)${RESET} "
 $modelRow = $modelPart
 if ($effortPart) { $modelRow = "${modelRow}${rowSep}${effortPart}" }
 if ($statusPart) { $modelRow = "${modelRow}${rowSep}${statusPart}" }
