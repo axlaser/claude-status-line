@@ -915,7 +915,6 @@ $rowSep = "  ${GRAY}$([char]0x00B7)${RESET}  "
 $modelRow = $modelPart
 if ($effortPart) { $modelRow = "${modelRow}${rowSep}${effortPart}" }
 if ($statusPart) { $modelRow = "${modelRow}${rowSep}${statusPart}" }
-if ($ctxBarPart) { $modelRow = "${modelRow}${rowSep}${ctxBarPart}" }
 $costRow = ''
 $costParts = @()
 if ($costPart)     { $costParts += $costPart }
@@ -932,6 +931,7 @@ $rowSpec = @(
     @{ s=0; label=$pathLabel; content=$pathRow      }
     @{ s=0; label='agent';  content=$agentPart      }
     @{ s=1; label='model';  content=$modelRow       }
+    @{ s=1; label='context'; content=$ctxBarPart    }
     @{ s=1; label='tokens'; content=$tokensPart     }
 ) + $subagentRows + @(
     @{ s=1; label='cost'; content=$costRow          }
