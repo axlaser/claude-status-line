@@ -32,7 +32,7 @@ See the `# @parity:json-extract-begin` / `# @parity:json-extract-end` block in `
 
 ### Subagent Tasks Feed
 
-Second input contract beside the stdin JSON: Claude Code's `subagentStatusLine` feature pipes `{session_id, tasks: [...]}` (per-task model, context window size, status, token count) to `subagent-statusline.*` on each refresh tick. The handler prints nothing and tees the payload to `statusline-tasks-<session-id>.json` in the OS temp dir (`$TMPDIR`, `%TEMP%` on Windows); the status line reads it when fresh. Per-task `model` / `contextWindowSize` require Claude Code >= v2.1.205 -- without feed data, the status line falls back to parsing subagent transcripts, resolving context windows via the learned map (`~/.claude/statusline-model-windows.json`, written from each main session's model -> window pair), then a seed table, then a 200K default.
+Second input contract beside the stdin JSON: Claude Code's `subagentStatusLine` feature pipes `{session_id, tasks: [...]}` (per-task model, context window size, status, token count, description) to `subagent-statusline.*` on each refresh tick. The handler prints nothing and tees the payload to `statusline-tasks-<session-id>.json` in the OS temp dir (`$TMPDIR`, `%TEMP%` on Windows); the status line reads it when fresh. Per-task `model` / `contextWindowSize` require Claude Code >= v2.1.205 -- without feed data, the status line falls back to parsing subagent transcripts, resolving context windows via the learned map (`~/.claude/statusline-model-windows.json`, written from each main session's model -> window pair), then a seed table, then a 200K default.
 
 ### Dependencies
 

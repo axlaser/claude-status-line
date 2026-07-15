@@ -962,11 +962,13 @@ if [[ "$feed_tier" != true && -n "$session_id" && -n "$transcript_path" ]]; then
                 if [[ -f "$sa_meta" ]]; then
                     # Title chain: meta description -> agentType -> filename id
                     # (already set); each candidate sanitized before the blank test.
-                    meta_desc=$(sa_sanitize_title "$(jq -r '.description // ""' "$sa_meta" 2>/dev/null)")
+                    # Control chars are stripped inside jq like the feed tier: a raw
+                    # NUL surviving into $(...) makes bash 4+ warn on stderr.
+                    meta_desc=$(sa_sanitize_title "$(jq -r '(.description // "") | tostring | gsub("[\\x00-\\x1f\\x7f|]"; " ")' "$sa_meta" 2>/dev/null)")
                     if [[ -n "$meta_desc" ]]; then
                         agent_display="$meta_desc"
                     else
-                        meta_type=$(sa_sanitize_title "$(jq -r '.agentType // ""' "$sa_meta" 2>/dev/null)")
+                        meta_type=$(sa_sanitize_title "$(jq -r '(.agentType // "") | tostring | gsub("[\\x00-\\x1f\\x7f|]"; " ")' "$sa_meta" 2>/dev/null)")
                         [[ -n "$meta_type" ]] && agent_display="$meta_type"
                     fi
                 fi
