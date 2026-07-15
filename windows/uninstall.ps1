@@ -89,7 +89,11 @@ if (Test-Path $settingsPath) {
     try {
         $existing = Get-Content $settingsPath -Raw -Encoding UTF8 | ConvertFrom-Json
         $existing.PSObject.Properties.Remove('statusLine')
-        $existing.PSObject.Properties.Remove('subagentStatusLine')
+        # Only remove subagentStatusLine when it points at this install's handler;
+        # a declined overwrite at install time may have preserved a foreign entry.
+        if ("$($existing.subagentStatusLine.command)" -like '*subagent-statusline*') {
+            $existing.PSObject.Properties.Remove('subagentStatusLine')
+        }
 
         $json = Format-Json ($existing | ConvertTo-Json -Depth 10)
         $tmpPath = "$settingsPath.tmp"

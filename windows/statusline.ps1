@@ -212,7 +212,7 @@ if ($_ocFeed -and (Test-Path -LiteralPath $_ocFeed -ErrorAction SilentlyContinue
 $_ocMwPath = "$env:USERPROFILE\.claude\statusline-model-windows.json"
 $_ocMwmt = ''
 if (Test-Path -LiteralPath $_ocMwPath -ErrorAction SilentlyContinue) {
-    $_ocMwmt = (Get-Item -LiteralPath $_ocMwPath -Force).LastWriteTimeUtc.Ticks
+    try { $_ocMwmt = (Get-Item -LiteralPath $_ocMwPath -Force).LastWriteTimeUtc.Ticks } catch {}
 }
 # @parity:cache OUTPUT_BUCKET=5
 $_ocNowBucket = [int]([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() / 5)

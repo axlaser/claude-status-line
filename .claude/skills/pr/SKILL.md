@@ -95,7 +95,7 @@ Group changes by platform — `macos/`, `linux/`, `windows/`, plus `assets/`, `R
 
 - **Cross-platform parity:** if the diff touches `macos/` or `linux/` without a matching `windows/` change (or vice versa), note it in the preview — don't block, just flag, since a platform-specific fix can be intentional.
 - **`exit` added to `install.*`/`uninstall.*`:** these scripts run via `irm | iex` on Windows and must never `exit` the user's shell session. Flag any new occurrence.
-- **Silent degradation:** `statusline.*`, `notify.*`, `git-refresh.*` must always reach `exit 0` and never write to stderr. Flag any new code path that could break this.
+- **Silent degradation:** `statusline.*`, `notify.*`, `git-refresh.*`, `subagent-statusline.*` must always reach `exit 0` and never write to stderr. Flag any new code path that could break this.
 
 **Sensitive-content scan (blocking).** Inspect the diff:
 
@@ -182,15 +182,17 @@ Do NOT create the PR until the user approves.
 
 ## Step 7 — CI (only if configured)
 
-```bash
-ls .github/workflows 2>/dev/null
-```
+Check the PR itself, not just the local checkout — a workflow added on the base branch after this branch diverged still runs against the PR, so `ls .github/workflows` alone can miss real checks:
 
-This repo currently has no `.github/workflows` — if that's still true, report "No CI configured in this repo — nothing to wait on" and stop.
-
-If workflows exist (e.g. added later), watch them instead of leaving the PR's status unknown:
 ```bash
 sleep 8
+gh pr checks <number>
+```
+
+If that reports no checks (and `ls .github/workflows 2>/dev/null` is also empty), report "No CI configured in this repo — nothing to wait on" and stop.
+
+If checks exist, watch them instead of leaving the PR's status unknown:
+```bash
 gh pr checks <number> --watch --interval 20
 ```
 Report pass/fail. On failure, run `gh pr checks <number>` and `gh run view --job <id> --log-failed` to surface the concrete error, then ask whether to fix now or leave the PR open red.

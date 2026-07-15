@@ -75,9 +75,11 @@ step "Updating Claude Code settings"
 if [[ -f "$SETTINGS_PATH" ]]; then
     if command -v jq &>/dev/null; then
         tmp=$(mktemp "$SETTINGS_PATH.XXXXXX")
-        if jq 'del(.statusLine, .subagentStatusLine)' "$SETTINGS_PATH" > "$tmp"; then
+        # Only remove subagentStatusLine when it points at this install's handler;
+        # a declined overwrite at install time may have preserved a foreign entry.
+        if jq 'del(.statusLine) | if (.subagentStatusLine.command? // "" | tostring | contains("subagent-statusline")) then del(.subagentStatusLine) else . end' "$SETTINGS_PATH" > "$tmp"; then
             mv "$tmp" "$SETTINGS_PATH"
-            ok "Removed statusLine and subagentStatusLine from settings.json"
+            ok "Removed statusline entries from settings.json"
         else
             rm -f "$tmp"
             warn "Failed to update settings.json — remove the \"statusLine\" and \"subagentStatusLine\" keys manually"

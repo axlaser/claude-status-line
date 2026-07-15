@@ -96,7 +96,7 @@ Never merge a change that updates one platform without considering the others.
 
 ### Silent Degradation
 
-Statusline scripts (`statusline.*`, `notify.*`, `git-refresh.*`) must always `exit 0`, even on error. Never print to stderr.
+Statusline scripts (`statusline.*`, `notify.*`, `git-refresh.*`, `subagent-statusline.*`) must always `exit 0`, even on error. Never print to stderr.
 Log errors via the debug log (`STATUSLINE_DEBUG`), not to the user's terminal.
 Breaking this contract crashes the Claude Code status line for users.
 
@@ -108,4 +108,4 @@ Install and uninstall scripts must never use `exit`. Windows scripts are invoked
 - **Bash error paths**: Use `return 1 2>/dev/null || exit 1`. `return` succeeds when sourced; `exit` is the fallback for subshell invocation via `curl | bash`.
 - **PowerShell error paths**: Use `return`. This exits the script scope without terminating the session.
 
-This rule applies only to `install.*` and `uninstall.*`. Statusline, notify, and git-refresh scripts run as subprocesses where `exit 0` is required (see Silent Degradation above).
+This rule applies only to `install.*` and `uninstall.*`. Statusline, notify, git-refresh, and subagent-statusline scripts run as subprocesses where `exit 0` is required (see Silent Degradation above).

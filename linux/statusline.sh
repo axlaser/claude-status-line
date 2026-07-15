@@ -345,28 +345,28 @@ ctx_bar_part="${bar} ${bar_color}${bar_pct_int}%${RESET}${token_suffix}"
 # Persist the main session's model->window pair so subagent rows can resolve
 # real denominators later. Multi-writer file: atomic mktemp+mv, skip when the
 # entry already matches (no mtime churn). All failures are silent.
-MODEL_WINDOWS_JSON=""
-if [[ -f "$MODEL_WINDOWS_PATH" ]]; then
-    MODEL_WINDOWS_JSON=$(jq -c 'if type == "object" then . else empty end' "$MODEL_WINDOWS_PATH" 2>/dev/null)
-fi
-# One parse into an associative array so per-subagent lookups don't fork jq.
+# One jq pass validates and flattens the map straight into an associative
+# array so per-subagent lookups don't fork jq; a non-object file yields no
+# entries (silent degradation to the seed table).
 declare -A MODEL_WINDOWS_MAP=()
-if [[ -n "$MODEL_WINDOWS_JSON" ]]; then
+if [[ -f "$MODEL_WINDOWS_PATH" ]]; then
     while IFS=$'\t' read -r _mw_k _mw_v; do
         [[ -n "$_mw_k" ]] && MODEL_WINDOWS_MAP["$_mw_k"]="$_mw_v"
-    done < <(printf '%s' "$MODEL_WINDOWS_JSON" | jq -r 'to_entries[] | "\(.key)\t\(.value)"' 2>/dev/null)
+    done < <(jq -r 'if type == "object" then to_entries[] | "\(.key)\t\(.value)" else empty end' "$MODEL_WINDOWS_PATH" 2>/dev/null)
 fi
 if [[ -n "$J_MODEL_ID" && -n "$ctx_size" ]]; then
     _mw_key=$(normalize_model_id "$J_MODEL_ID")
     if [[ -n "$_mw_key" && "${MODEL_WINDOWS_MAP[$_mw_key]:-}" != "$ctx_size" ]]; then
-        _mw_base="$MODEL_WINDOWS_JSON"
+        # Rare write path: re-read the file for the merge base (also picks up
+        # entries a concurrent session wrote since the map was flattened above).
+        _mw_base=""
+        [[ -f "$MODEL_WINDOWS_PATH" ]] && _mw_base=$(jq -c 'if type == "object" then . else empty end' "$MODEL_WINDOWS_PATH" 2>/dev/null)
         [[ -z "$_mw_base" ]] && _mw_base="{}"
         _mw_merged=$(printf '%s' "$_mw_base" | jq -c --arg m "$_mw_key" --argjson w "$ctx_size" '. + {($m): $w}' 2>/dev/null)
         if [[ -n "$_mw_merged" ]]; then
             mkdir -p "${MODEL_WINDOWS_PATH%/*}" 2>/dev/null
             _mw_tmp=$(mktemp "${MODEL_WINDOWS_PATH}.XXXXXX" 2>/dev/null) || _mw_tmp=""
             if [[ -n "$_mw_tmp" ]] && printf '%s\n' "$_mw_merged" > "$_mw_tmp" 2>/dev/null && mv -f "$_mw_tmp" "$MODEL_WINDOWS_PATH" 2>/dev/null; then
-                MODEL_WINDOWS_JSON="$_mw_merged"
                 MODEL_WINDOWS_MAP["$_mw_key"]="$ctx_size"
                 log_msg "model-windows: learned ${_mw_key}=${ctx_size}"
             else
@@ -931,7 +931,7 @@ if [[ "$feed_tier" != true && -n "$session_id" && -n "$transcript_path" ]]; then
 
             if [[ -f "$sa_cache_path" ]]; then
                 sc_mt=""; sc_sr=""; sc_in=""; sc_cw=""; sc_cr=""; sc_model=""; sc_display=""; sc_done=""
-                IFS='|' read -r sc_mt sc_sr sc_in sc_cw sc_cr sc_model sc_display sc_done < "$sa_cache_path"
+                { IFS='|' read -r sc_mt sc_sr sc_in sc_cw sc_cr sc_model sc_display sc_done < "$sa_cache_path"; } 2>/dev/null
                 [[ "$sc_done" =~ ^[0-9]+$ ]] && sa_prev_done="$sc_done"
                 if [[ "$sc_mt" == "$sa_mt" ]]; then
                     sa_sr="$sc_sr"; sa_in="$sc_in"; sa_cw="$sc_cw"; sa_cr="$sc_cr"
