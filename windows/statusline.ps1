@@ -579,11 +579,6 @@ if ($claudeIsIdle) {
     $statusDot   = "${YELLOW}$([char]0x25CB)${RESET}"
     $statusLabel = "${YELLOW}working${RESET}"
     $statusPart  = "${statusDot}  ${statusLabel}"
-    if ($workingStartOutTokens -ge 0 -and $sessionOutTokens -gt $workingStartOutTokens) {
-        $delta = $sessionOutTokens - $workingStartOutTokens
-        $deltaLabel = Format-Tokens $delta
-        $statusPart += "  ${GRAY}$([char]0x00B7)${RESET}  ${CYAN}+${deltaLabel}${RESET} ${DIM}tokens${RESET}"
-    }
 }
 # Message count — shown on cost row.
 $msgPart = ''

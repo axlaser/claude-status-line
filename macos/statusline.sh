@@ -674,11 +674,6 @@ else
     status_dot="${YELLOW}○${RESET}"
     status_label="${YELLOW}working${RESET}"
     status_part="${status_dot}  ${status_label}"
-    if (( working_start_out_tokens >= 0 && session_out_tokens > working_start_out_tokens )); then
-        delta=$(( session_out_tokens - working_start_out_tokens ))
-        delta_label=$(format_tokens "$delta")
-        status_part+="  ${GRAY}·${RESET}  ${CYAN}+${delta_label}${RESET} ${DIM}tokens${RESET}"
-    fi
 fi
 
 # Message count — rendered on cost row
