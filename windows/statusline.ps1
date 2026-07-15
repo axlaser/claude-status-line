@@ -675,7 +675,12 @@ $SaTerminalStatuses = @('completed', 'complete', 'done', 'finished', 'failed', '
 # Transcript stop reasons that mean "done" — single place to adjust.
 $SaTerminalStopReasons = @('end_turn', 'max_tokens', 'refusal', 'model_context_window_exceeded', 'stop_sequence')
 
-function Build-SubagentRow($used, $ctxSize, $model, $type, $state) {
+function Format-SaTitle($s) {  # replace "|" and control chars with spaces, trim -> '' when blank
+    if ($null -eq $s) { return '' }
+    return ("$s" -replace '[\x00-\x1f\x7f|]', ' ').Trim()
+}
+
+function Build-SubagentRow($used, $ctxSize, $model, $disp, $state) {
     $u = 0L
     if (-not [long]::TryParse("$used", [ref]$u) -or $u -lt 0) { $u = 0L }
     $w = 0L
@@ -694,7 +699,14 @@ function Build-SubagentRow($used, $ctxSize, $model, $type, $state) {
     $saSep = " ${GRAY}$([char]0x00B7)${RESET} "
     $row = "${saBar} ${saColor}${saPctInt}%${RESET}${saSep}${WHITE}${saUsedLbl}${RESET}${GRAY}/${saCtxLbl}${RESET}"
     if ($model) { $row += "${saSep}${MAGENTA}$(Get-PrettyModelName $model)${RESET}" }
-    if ($type)  { $row += "${saSep}${BLUE}${type}${RESET}" }
+    $disp = "$disp"
+    if ($disp.Length -gt 40) {
+        # Cut to 39 UTF-16 units, one less if that would split a surrogate pair.
+        $dispCut = 39
+        if ([char]::IsHighSurrogate($disp[38])) { $dispCut = 38 }
+        $disp = $disp.Substring(0, $dispCut) + [char]0x2026
+    }
+    if ($disp)  { $row += "${saSep}${BLUE}${disp}${RESET}" }
     if ($state -eq 'done') { $row += "${saSep}${GREEN}$([char]0x2713) done${RESET}" }
     else                   { $row += "${saSep}${YELLOW}$([char]0x25CB) working${RESET}" }
     return $row
@@ -716,11 +728,16 @@ if ($_ocFfresh -eq 1 -and $_ocFjson) {
             foreach ($t in $feedTasks) {
                 if ($null -eq $t -or $t -isnot [PSCustomObject]) { continue }
                 $ftId     = if ($null -ne $t.id) { "$($t.id)" } else { '' }
-                $ftType   = if ($t.type) { "$($t.type)" } elseif ($t.name) { "$($t.name)" } else { '' }
+                # Row title: description -> type -> name, first non-blank after
+                # sanitizing "|"/control chars to spaces, so a hostile title
+                # can't corrupt the pipe-delimited task cache.
+                $ftDisp = Format-SaTitle $t.description
+                if (-not $ftDisp) { $ftDisp = Format-SaTitle $t.type }
+                if (-not $ftDisp) { $ftDisp = Format-SaTitle $t.name }
                 $ftStatus = if ($null -ne $t.status) { "$($t.status)" } else { '' }
                 $ftModel  = if ($null -ne $t.model) { "$($t.model)" } else { '' }
                 $ftStart  = if ($null -ne $t.startTime) { "$($t.startTime)" } else { '' }
-                if (-not ($ftId -or $ftType -or $ftStatus -or $ftModel)) { continue }
+                if (-not ($ftId -or $ftDisp -or $ftStatus -or $ftModel)) { continue }
                 $ftIdSafe = $ftId -replace '[^a-zA-Z0-9_-]', ''
                 if ($ftIdSafe) { $feedSeen[$ftIdSafe] = $true }
                 $ftTok = 0L
@@ -737,7 +754,7 @@ if ($_ocFfresh -eq 1 -and $_ocFjson) {
                 } else {
                     $ftState = 'done'
                     if ($ftCache -and (Test-Path -LiteralPath $ftCache -ErrorAction SilentlyContinue)) {
-                        $fcRaw = Get-Content -LiteralPath $ftCache -Raw -ErrorAction SilentlyContinue
+                        $fcRaw = Get-Content -LiteralPath $ftCache -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
                         if ($fcRaw) {
                             $fcParts = $fcRaw.TrimEnd() -split '\|'
                             $fcPrev = 0L
@@ -747,10 +764,10 @@ if ($_ocFfresh -eq 1 -and $_ocFjson) {
                     if (-not $ftDone) { $ftDone = "$saNow" }
                 }
                 if ($ftCache) {
-                    try { [System.IO.File]::WriteAllText($ftCache, "$ftTok|$ftCtx|$ftModel|$ftType|$ftDone|$ftStart", (New-Object System.Text.UTF8Encoding $false)) } catch {}
+                    try { [System.IO.File]::WriteAllText($ftCache, "$ftTok|$ftCtx|$ftModel|$ftDisp|$ftDone|$ftStart", (New-Object System.Text.UTF8Encoding $false)) } catch {}
                 }
                 if ($ftState -eq 'done' -and ($saNow - [long]$ftDone) -gt $DONE_LINGER) { continue }
-                $feedCandidates += @{ start = $ftStart; id = $ftId; used = $ftTok; ctx = $ftCtx; model = $ftModel; type = $ftType; state = $ftState }
+                $feedCandidates += @{ start = $ftStart; id = $ftId; used = $ftTok; ctx = $ftCtx; model = $ftModel; disp = $ftDisp; state = $ftState }
             }
             # A cached task id missing from a fresh feed is a done signal: stamp
             # done_ts on first observation, linger, then drop the cache entry.
@@ -759,7 +776,7 @@ if ($_ocFfresh -eq 1 -and $_ocFjson) {
                 if ($cf.BaseName.Length -le $taskCachePrefix.Length) { continue }
                 $cfId = $cf.BaseName.Substring($taskCachePrefix.Length)
                 if ($feedSeen.ContainsKey($cfId)) { continue }
-                $fcRaw = Get-Content -LiteralPath $cf.FullName -Raw -ErrorAction SilentlyContinue
+                $fcRaw = Get-Content -LiteralPath $cf.FullName -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
                 if (-not $fcRaw) { continue }
                 $fcParts = $fcRaw.TrimEnd() -split '\|'
                 if ($fcParts.Count -lt 6) { continue }
@@ -772,12 +789,12 @@ if ($_ocFfresh -eq 1 -and $_ocFjson) {
                     try { Remove-Item -LiteralPath $cf.FullName -Force -ErrorAction SilentlyContinue } catch {}
                     continue
                 }
-                $feedCandidates += @{ start = "$($fcParts[5])"; id = $cfId; used = $fcParts[0]; ctx = $fcParts[1]; model = $fcParts[2]; type = $fcParts[3]; state = 'done' }
+                $feedCandidates += @{ start = "$($fcParts[5])"; id = $cfId; used = $fcParts[0]; ctx = $fcParts[1]; model = $fcParts[2]; disp = $fcParts[3]; state = 'done' }
             }
             Write-Log "subagents: feed tier, $($feedCandidates.Count) row(s)"
             # Deterministic order: startTime (ISO string sort), tiebreak id.
             foreach ($c in ($feedCandidates | Sort-Object -Property @{ Expression = { "$($_.start)" } }, @{ Expression = { "$($_.id)" } })) {
-                $subagentRows += @{ s = 1; label = 'agent'; content = (Build-SubagentRow $c.used $c.ctx $c.model $c.type $c.state) }
+                $subagentRows += @{ s = 1; label = 'agent'; content = (Build-SubagentRow $c.used $c.ctx $c.model $c.disp $c.state) }
             }
         }
     } catch {
@@ -810,7 +827,7 @@ if (-not $feedTier -and $sessionId -and $transcriptPath) {
                 $saPrevDone = ''
 
                 if (Test-Path -LiteralPath $saCachePath) {
-                    $sc = (Get-Content -LiteralPath $saCachePath -Raw -ErrorAction SilentlyContinue).TrimEnd() -split '\|'
+                    $sc = (Get-Content -LiteralPath $saCachePath -Raw -Encoding UTF8 -ErrorAction SilentlyContinue).TrimEnd() -split '\|'
                     if ($sc.Count -ge 8) {
                         $scDone = 0L
                         if ([long]::TryParse($sc[7], [ref]$scDone) -and $scDone -gt 0) { $saPrevDone = "$scDone" }
@@ -843,8 +860,16 @@ if (-not $feedTier -and $sessionId -and $transcriptPath) {
                     $metaPath = Join-Path $sa.Directory.FullName "$($sa.BaseName).meta.json"
                     if (Test-Path -LiteralPath $metaPath) {
                         try {
-                            $meta = Get-Content -LiteralPath $metaPath -Raw -ErrorAction SilentlyContinue | ConvertFrom-Json -ErrorAction SilentlyContinue
-                            if ($meta.agentType) { $agentDisplay = $meta.agentType }
+                            $meta = Get-Content -LiteralPath $metaPath -Raw -Encoding UTF8 -ErrorAction SilentlyContinue | ConvertFrom-Json -ErrorAction SilentlyContinue
+                            # Title chain: meta description -> agentType -> filename id
+                            # (already set); each candidate sanitized before the blank test.
+                            $metaDesc = Format-SaTitle $meta.description
+                            if ($metaDesc) {
+                                $agentDisplay = $metaDesc
+                            } else {
+                                $metaType = Format-SaTitle $meta.agentType
+                                if ($metaType) { $agentDisplay = $metaType }
+                            }
                         } catch {}
                     }
                     $saDone = $saPrevDone

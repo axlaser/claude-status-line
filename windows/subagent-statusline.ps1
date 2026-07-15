@@ -29,7 +29,7 @@ if (-not $safeId) { exit 0 }
 
 # Keep only the per-task fields the statusline reader consumes; drop absent ones
 # (model/contextWindowSize are omitted until Claude Code >= v2.1.205 resolves them).
-$taskFields = 'id', 'name', 'type', 'status', 'model', 'contextWindowSize', 'tokenCount', 'startTime'
+$taskFields = 'id', 'name', 'type', 'description', 'status', 'model', 'contextWindowSize', 'tokenCount', 'startTime'
 $outTasks = @()
 foreach ($task in @($json.tasks)) {
     if ($null -eq $task) { continue }
