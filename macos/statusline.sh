@@ -797,8 +797,16 @@ sa_status_is_active() {  # feed statuses that mean "done" — single place to ad
     esac
 }
 
-build_sa_row() {  # used ctx_size model_id agent_type state(working|done) -> appends row
-    local sa_used="$1" sa_ctx_size="$2" sa_model="$3" sa_type="$4" sa_state="$5"
+sa_sanitize_title() {  # replace "|" and control chars with spaces, trim -> "" when blank
+    local s="${1//[$'\x01'-$'\x1f'$'\x7f']/ }"
+    s="${s//'|'/ }"
+    s="${s#"${s%%[! ]*}"}"
+    s="${s%"${s##*[! ]}"}"
+    printf '%s' "$s"
+}
+
+build_sa_row() {  # used ctx_size model_id display state(working|done) -> appends row
+    local sa_used="$1" sa_ctx_size="$2" sa_model="$3" sa_disp="$4" sa_state="$5"
     [[ "$sa_used" =~ ^[0-9]+$ ]] || sa_used=0
     { [[ "$sa_ctx_size" =~ ^[0-9]+$ ]] && (( sa_ctx_size > 0 )); } || sa_ctx_size=200000
 
@@ -821,7 +829,8 @@ build_sa_row() {  # used ctx_size model_id agent_type state(working|done) -> app
     local sa_sep=" ${GRAY}·${RESET} "
     local sa_row="${sa_bar} ${sa_color}${sa_pct_int}%${RESET}${sa_sep}${WHITE}${sa_used_lbl}${RESET}${GRAY}/${sa_ctx_lbl}${RESET}"
     [[ -n "$sa_model" ]] && sa_row+="${sa_sep}${MAGENTA}$(prettify_model_id "$sa_model")${RESET}"
-    [[ -n "$sa_type" ]] && sa_row+="${sa_sep}${BLUE}${sa_type}${RESET}"
+    (( ${#sa_disp} > 40 )) && sa_disp="${sa_disp:0:39}…"
+    [[ -n "$sa_disp" ]] && sa_row+="${sa_sep}${BLUE}${sa_disp}${RESET}"
     if [[ "$sa_state" == "done" ]]; then
         sa_row+="${sa_sep}${GREEN}✓ done${RESET}"
     else
@@ -843,8 +852,11 @@ if [[ -n "$sa_sid_safe" && "$_oc_ffresh" == "1" ]]; then
         feed_tier=true
         declare -a feed_candidates=()
         feed_seen_ids=$'\n'
-        while IFS=$'\x1f' read -r ft_id ft_type ft_status ft_model ft_win ft_tok ft_start; do
-            [[ -z "${ft_id}${ft_type}${ft_status}${ft_model}" ]] && continue
+        # Display resolution lives in the jq extraction (description -> type ->
+        # name, first non-blank after sanitizing "|"/control chars to spaces),
+        # so a hostile title can't corrupt the \x1f record join or "|" caches.
+        while IFS=$'\x1f' read -r ft_id ft_disp ft_status ft_model ft_win ft_tok ft_start; do
+            [[ -z "${ft_id}${ft_disp}${ft_status}${ft_model}" ]] && continue
             ft_id_safe="${ft_id//[^a-zA-Z0-9_-]/}"
             [[ -n "$ft_id_safe" ]] && feed_seen_ids+="${ft_id_safe}"$'\n'
             [[ "$ft_tok" =~ ^[0-9]+$ ]] || ft_tok=0
@@ -868,10 +880,10 @@ if [[ -n "$sa_sid_safe" && "$_oc_ffresh" == "1" ]]; then
                 [[ "$ft_prev_done" =~ ^[0-9]+$ ]] && ft_done="$ft_prev_done"
                 [[ -z "$ft_done" ]] && ft_done="$sa_now"
             fi
-            [[ -n "$ft_cache" ]] && printf '%s|%s|%s|%s|%s|%s' "$ft_tok" "$ft_ctx" "$ft_model" "$ft_type" "$ft_done" "$ft_start" > "$ft_cache" 2>/dev/null
+            [[ -n "$ft_cache" ]] && printf '%s|%s|%s|%s|%s|%s' "$ft_tok" "$ft_ctx" "$ft_model" "$ft_disp" "$ft_done" "$ft_start" > "$ft_cache" 2>/dev/null
             [[ "$ft_state" == "done" ]] && (( sa_now - ft_done > DONE_LINGER )) && continue
-            feed_candidates+=("${ft_start}"$'\x1f'"${ft_id}"$'\x1f'"${ft_tok}"$'\x1f'"${ft_ctx}"$'\x1f'"${ft_model}"$'\x1f'"${ft_type}"$'\x1f'"${ft_state}")
-        done < <(printf '%s' "$_oc_fjson" | jq -r '(.tasks // [])[] | select(type == "object") | [((.id // "") | tostring), ((.type // .name // "") | tostring), ((.status // "") | tostring), ((.model // "") | tostring), ((.contextWindowSize // "") | tostring), ((.tokenCount // 0) | tostring), ((.startTime // "") | tostring)] | join("\u001f")' 2>/dev/null)
+            feed_candidates+=("${ft_start}"$'\x1f'"${ft_id}"$'\x1f'"${ft_tok}"$'\x1f'"${ft_ctx}"$'\x1f'"${ft_model}"$'\x1f'"${ft_disp}"$'\x1f'"${ft_state}")
+        done < <(printf '%s' "$_oc_fjson" | jq -r '(.tasks // [])[] | select(type == "object") | [((.id // "") | tostring), (first([.description, .type, .name][] | (. // "") | tostring | gsub("[\\x00-\\x1f\\x7f|]"; " ") | gsub("^ +| +$"; "") | select(. != "")) // ""), ((.status // "") | tostring), ((.model // "") | tostring), ((.contextWindowSize // "") | tostring), ((.tokenCount // 0) | tostring), ((.startTime // "") | tostring)] | join("\u001f")' 2>/dev/null)
 
         # A cached task id missing from a fresh feed is a done signal: stamp
         # done_ts on first observation, linger, then drop the cache entry.
@@ -880,25 +892,25 @@ if [[ -n "$sa_sid_safe" && "$_oc_ffresh" == "1" ]]; then
             fc_id="${fc_file##*-task-}"
             fc_id="${fc_id%.txt}"
             [[ "$feed_seen_ids" == *$'\n'"${fc_id}"$'\n'* ]] && continue
-            fc_used=""; fc_win=""; fc_model=""; fc_type=""; fc_done=""; fc_start=""
-            { IFS='|' read -r fc_used fc_win fc_model fc_type fc_done fc_start < "$fc_file"; } 2>/dev/null
+            fc_used=""; fc_win=""; fc_model=""; fc_disp=""; fc_done=""; fc_start=""
+            { IFS='|' read -r fc_used fc_win fc_model fc_disp fc_done fc_start < "$fc_file"; } 2>/dev/null
             if [[ ! "$fc_done" =~ ^[0-9]+$ ]]; then
                 fc_done="$sa_now"
-                printf '%s|%s|%s|%s|%s|%s' "$fc_used" "$fc_win" "$fc_model" "$fc_type" "$fc_done" "$fc_start" > "$fc_file" 2>/dev/null
+                printf '%s|%s|%s|%s|%s|%s' "$fc_used" "$fc_win" "$fc_model" "$fc_disp" "$fc_done" "$fc_start" > "$fc_file" 2>/dev/null
             fi
             if (( sa_now - fc_done > DONE_LINGER )); then
                 rm -f "$fc_file" 2>/dev/null
                 continue
             fi
-            feed_candidates+=("${fc_start}"$'\x1f'"${fc_id}"$'\x1f'"${fc_used}"$'\x1f'"${fc_win}"$'\x1f'"${fc_model}"$'\x1f'"${fc_type}"$'\x1f'"done")
+            feed_candidates+=("${fc_start}"$'\x1f'"${fc_id}"$'\x1f'"${fc_used}"$'\x1f'"${fc_win}"$'\x1f'"${fc_model}"$'\x1f'"${fc_disp}"$'\x1f'"done")
         done
 
         log_msg "subagents: feed tier, ${#feed_candidates[@]} row(s)"
         if (( ${#feed_candidates[@]} > 0 )); then
             # Deterministic order: startTime (ISO string sort), tiebreak id.
-            while IFS=$'\x1f' read -r fr_start fr_id fr_used fr_ctx fr_model fr_type fr_state; do
+            while IFS=$'\x1f' read -r fr_start fr_id fr_used fr_ctx fr_model fr_disp fr_state; do
                 [[ -z "$fr_state" ]] && continue
-                build_sa_row "$fr_used" "$fr_ctx" "$fr_model" "$fr_type" "$fr_state"
+                build_sa_row "$fr_used" "$fr_ctx" "$fr_model" "$fr_disp" "$fr_state"
             done < <(printf '%s\n' "${feed_candidates[@]}" | LC_ALL=C sort)
         fi
     fi
@@ -950,8 +962,15 @@ if [[ "$feed_tier" != true && -n "$session_id" && -n "$transcript_path" ]]; then
                 agent_display="${sa_base#agent-}"
                 sa_meta="$subagents_dir/${sa_base}.meta.json"
                 if [[ -f "$sa_meta" ]]; then
-                    meta_type=$(jq -r '.agentType // ""' "$sa_meta" 2>/dev/null)
-                    [[ -n "$meta_type" ]] && agent_display="$meta_type"
+                    # Title chain: meta description -> agentType -> filename id
+                    # (already set); each candidate sanitized before the blank test.
+                    meta_desc=$(sa_sanitize_title "$(jq -r '.description // ""' "$sa_meta" 2>/dev/null)")
+                    if [[ -n "$meta_desc" ]]; then
+                        agent_display="$meta_desc"
+                    else
+                        meta_type=$(sa_sanitize_title "$(jq -r '.agentType // ""' "$sa_meta" 2>/dev/null)")
+                        [[ -n "$meta_type" ]] && agent_display="$meta_type"
+                    fi
                 fi
 
                 sa_done="$sa_prev_done"
