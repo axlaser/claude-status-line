@@ -1000,6 +1000,7 @@ parts=()
 [[ -n "$cost_part" ]] && parts+=("$cost_part")
 [[ -n "$msg_part" ]] && parts+=("$msg_part")
 [[ -n "$duration_part" ]] && parts+=("$duration_part")
+[[ -n "$rate_part" ]] && parts+=("$rate_part")
 for ((j=0; j<${#parts[@]}; j++)); do
     (( j > 0 )) && cost_row+="${row_sep}"
     cost_row+="${parts[$j]}"
@@ -1023,7 +1024,6 @@ for sa_content in "${subagent_contents[@]}"; do
     row_sections+=(1); row_labels+=("agent"); row_contents+=("$sa_content")
 done
 row_sections+=(1); row_labels+=("cost");    row_contents+=("$cost_row")
-row_sections+=(1); row_labels+=("limits");  row_contents+=("$rate_part")
 
 for i in "${!row_sections[@]}"; do
     content="${row_contents[$i]}"

@@ -920,6 +920,7 @@ $costParts = @()
 if ($costPart)     { $costParts += $costPart }
 if ($msgPart)      { $costParts += $msgPart }
 if ($durationPart) { $costParts += $durationPart }
+if ($ratePart)     { $costParts += $ratePart }
 $costRow = $costParts -join $rowSep
 $pathRow = $cwdPart
 $pathLabel = 'project'
@@ -935,7 +936,6 @@ $rowSpec = @(
     @{ s=1; label='tokens'; content=$tokensPart     }
 ) + $subagentRows + @(
     @{ s=1; label='cost'; content=$costRow          }
-    @{ s=1; label='limits'; content=$ratePart       }
 )
 $rows = @()
 foreach ($spec in $rowSpec) {
