@@ -26,10 +26,10 @@ showing context usage, git state, costs, rate limits, and more — all inside a 
 |-----|---------------|
 | **repo** | Working directory (shortened relative to `$HOME`) and git branch with `↑ahead` / `↓behind` remote tracking, `+insertions` / `-deletions` / `~untracked`, and `⊟stash` count |
 | **agent** | Agent name with compact context % and in/out tokens (when running with `--agent` flag); each active subagent also gets its own `agent` row with context bar, `used/window` tokens, model, agent type, and `○ working` / `✓ done` status |
-| **model** | Active model (e.g. `Opus 4.7`), reasoning effort level, ready/working indicator with live output token counter, and a color-coded context bar with percentage and token count (green < 60%, yellow < 85%, red 85%+) |
+| **model** | Active model (e.g. `Opus 4.7`), reasoning effort level, and ready/working indicator |
+| **context** | Color-coded context bar with percentage and token count (green < 60%, yellow < 85%, red 85%+) |
 | **tokens** | Cumulative session breakdown — `in` (fresh input), `cache↑` (cache writes), `cache↓` (cache reads), `out` (output) |
-| **cost** | Session cost in USD, message count, and wall-clock duration |
-| **limits** | 5-hour and 7-day rate limit usage with burn-rate arrows (`⇡` over pace / `⇣` under pace) and time until reset |
+| **cost** | Session cost in USD, message count, wall-clock duration, and 5-hour/7-day rate limit usage with burn-rate arrows (`⇡` over pace / `⇣` under pace) and time until reset |
 | **notifications** | Sound alerts and native OS toast popups for permission requests, task completion, context compaction, rate limit warnings, and context window warnings (enable during install) |
 
 All rows are dynamic — empty rows are automatically hidden.
@@ -42,10 +42,10 @@ All rows are dynamic — empty rows are automatically hidden.
 The context bar changes color as your conversation grows — **green** when you have plenty of room, **yellow** as you approach 85%, and **red** when you're close to the limit. No more surprise context resets mid-task.
 
 ### Burn-rate arrows on rate limits
-The limits row doesn't just show usage — it shows **pace**. An `⇡` arrow means you're burning tokens faster than the reset rate (slow down), while `⇣` means you're under pace with time until reset. Plan your session around real data instead of guessing.
+The rate-limit segments on the cost row don't just show usage — they show **pace**. An `⇡` arrow means you're burning tokens faster than the reset rate (slow down), while `⇣` means you're under pace with time until reset. Plan your session around real data instead of guessing.
 
 ### Live working indicator
-The model row shows a real-time status — `● ready` when idle, or `○ working` with a live output token counter while Claude is generating. You always know if the model is still thinking or waiting for you.
+The model row shows a real-time status — `● ready` when idle, or `○ working` while Claude is generating. You always know if the model is still thinking or waiting for you.
 
 ### Compact agent view
 When running with `--agent`, the agent row shows context usage as a percentage and cumulative in/out tokens in a compact inline format — all the essentials without taking up extra rows.
@@ -533,9 +533,9 @@ This is normal. Claude Code doesn't report context usage until after the first A
 </details>
 
 <details>
-<summary><strong>Rate limits row not showing</strong></summary>
+<summary><strong>Rate limits not showing</strong></summary>
 
-Rate limit data is only available for Claude.ai Pro and Max subscribers. API users (Anthropic Console) won't see this row. The data also only appears after the first API response in a session.
+Rate limit data is only available for Claude.ai Pro and Max subscribers. API users (Anthropic Console) won't see rate limit data on the cost row. The data also only appears after the first API response in a session.
 
 </details>
 
