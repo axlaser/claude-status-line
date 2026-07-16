@@ -50,6 +50,13 @@ if (-not $statePath) { exit 0 }
 $tmpPath = "$statePath.tmp.$PID"
 try {
     $stateJson = [pscustomobject]@{ tasks = @($outTasks) } | ConvertTo-Json -Compress -Depth 5
+    # Drop a planted reparse point at the temp path so the write can't follow a
+    # symlink/junction into a victim file; Move-Item -Force replaces (never
+    # follows) any reparse point planted at the final path.
+    $tmpItem = Get-Item -LiteralPath $tmpPath -Force -ErrorAction SilentlyContinue
+    if ($tmpItem -and ($tmpItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+        Remove-Item -LiteralPath $tmpPath -Force -ErrorAction SilentlyContinue
+    }
     [System.IO.File]::WriteAllText($tmpPath, $stateJson)
     Move-Item -LiteralPath $tmpPath -Destination $statePath -Force -ErrorAction Stop
 } catch {

@@ -171,6 +171,42 @@ $agentOut         = Get-Val $json @('context_window','current_usage','output_tok
 $modelId          = Get-Val $json @('model','id')
 # @parity:json-extract-end
 
+# @parity:temp-guards-begin
+# Trust boundary for predictable temp files. %TEMP% is per-user, so a foreign
+# owner is unexpected here; we still check owner (SID) and reparse-point for
+# parity/defense-in-depth. Reads trust only a regular file we own that is not a
+# reparse point (symlink/junction); writes drop a reparse-point/foreign target
+# and skip when it survives, never following a planted link. Bounded to the few
+# cache/state files touched per refresh, never called per row.
+function Test-TrustedFile([string]$path) {
+    if ([string]::IsNullOrEmpty($path)) { return $false }
+    try {
+        $item = Get-Item -LiteralPath $path -Force -ErrorAction Stop
+        if ($item.PSIsContainer -or ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) { return $false }
+        $me = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+        return ((Get-Acl -LiteralPath $path).GetOwner([System.Security.Principal.SecurityIdentifier]) -eq $me)
+    } catch { return $false }
+}
+function Test-WriteOk([string]$path) {
+    if ([string]::IsNullOrEmpty($path)) { return $false }
+    try {
+        $item = Get-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+        if ($item) {
+            $bad = [bool]($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint)
+            if (-not $bad) {
+                try {
+                    $me = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+                    $bad = ((Get-Acl -LiteralPath $path).GetOwner([System.Security.Principal.SecurityIdentifier]) -ne $me)
+                } catch { $bad = $false }
+            }
+            if ($bad) { Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue }
+        }
+        $item = Get-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+        return -not ($item -and ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint))
+    } catch { return $true }
+}
+# @parity:temp-guards-end
+
 # --- Output cache: skip re-render when all inputs are unchanged ---
 $_ocSafeId = if ($sessionId) { $sessionId -replace '[^a-zA-Z0-9_-]', '' } else { $null }
 $_ocPath = if ($_ocSafeId) { Join-Path $env:TEMP "statusline-oc-$_ocSafeId.txt" } else { $null }
@@ -200,7 +236,7 @@ $_ocFeed = if ($_ocSafeId) { Join-Path $env:TEMP "statusline-tasks-$_ocSafeId.js
 $FEED_TTL = 10
 $_ocFfresh = 0
 $_ocFjson = ''
-if ($_ocFeed -and (Test-Path -LiteralPath $_ocFeed -ErrorAction SilentlyContinue)) {
+if ($_ocFeed -and (Test-TrustedFile $_ocFeed)) {
     try {
         $_ocFeedAge = ([DateTimeOffset]::UtcNow - [DateTimeOffset](Get-Item -LiteralPath $_ocFeed -Force).LastWriteTimeUtc).TotalSeconds
         if ($_ocFeedAge -le $FEED_TTL) {
@@ -219,7 +255,7 @@ $_ocNowBucket = [int]([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() / 5)
 $_ocKeyInput = "${raw}|${_ocTmt}|${_ocGmt}|${_ocSmt}|${_ocFfresh}|${_ocFjson}|${_ocMwmt}|${_ocNowBucket}"
 $_ocKey = [BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($_ocKeyInput))).Replace('-','')
 
-if ($_ocPath -and (Test-Path -LiteralPath $_ocPath -ErrorAction SilentlyContinue)) {
+if ($_ocPath -and (Test-TrustedFile $_ocPath)) {
     try {
         $ocLines = [System.IO.File]::ReadAllLines($_ocPath)
         if ($ocLines.Count -ge 2 -and $ocLines[0] -eq $_ocKey) {
@@ -353,7 +389,7 @@ try {
         $gitUseCache = $false
         $branch = $null; $insertions = 0; $deletions = 0; $untracked = 0; $ahead = 0; $behind = 0; $stash = 0
 
-        if ($gitCachePath -and (Test-Path -LiteralPath $gitCachePath)) {
+        if ($gitCachePath -and (Test-TrustedFile $gitCachePath)) {
             $gc = (Get-Content -LiteralPath $gitCachePath -Raw -ErrorAction SilentlyContinue) -split ([char]0x1F)
             if ($gc.Count -ge 5 -and $gc[0] -eq "$gitIndexMt") {
                 $cacheAge = ([DateTimeOffset]::UtcNow - [DateTimeOffset](Get-Item -LiteralPath $gitCachePath -Force).LastWriteTimeUtc).TotalSeconds
@@ -394,7 +430,7 @@ try {
                 }
                 $stash = @(& git --no-optional-locks -C $gitCwd stash list 2>$null).Count
             } else { $branch = $null }
-            if ($gitCachePath) { try { $d = [char]0x1F; [System.IO.File]::WriteAllText($gitCachePath, "$gitIndexMt$d$branch$d$insertions$d$deletions$d$untracked$d$ahead$d$behind$d$stash", (New-Object System.Text.UTF8Encoding $false)) } catch {} }
+            if ($gitCachePath -and (Test-WriteOk $gitCachePath)) { try { $d = [char]0x1F; [System.IO.File]::WriteAllText($gitCachePath, "$gitIndexMt$d$branch$d$insertions$d$deletions$d$untracked$d$ahead$d$behind$d$stash", (New-Object System.Text.UTF8Encoding $false)) } catch {} }
         }
 
         if ($branch) {
@@ -461,7 +497,7 @@ if ($transcriptPath -and (Test-Path -LiteralPath $transcriptPath -ErrorAction Si
         $prevOut        = [long]0
         $prevCacheWrite = [long]0
         $prevCacheRead  = [long]0
-        if ($cachePath -and (Test-Path -LiteralPath $cachePath)) {
+        if ($cachePath -and (Test-TrustedFile $cachePath)) {
             $cacheLine = Get-Content -LiteralPath $cachePath -Raw -ErrorAction SilentlyContinue
             if ($cacheLine) {
                 $parts = $cacheLine.Trim().Split('|')
@@ -536,7 +572,7 @@ if ($transcriptPath -and (Test-Path -LiteralPath $transcriptPath -ErrorAction Si
                 } else {
                     $workingStartOutTokens = $sessionOutTokens
                 }
-                if ($cachePath) {
+                if ($cachePath -and (Test-WriteOk $cachePath)) {
                     try {
                         [System.IO.File]::WriteAllText(
                             $cachePath,
@@ -760,7 +796,7 @@ if ($_ocFfresh -eq 1 -and $_ocFjson) {
                     $ftState = 'working'
                 } else {
                     $ftState = 'done'
-                    if ($ftCache -and (Test-Path -LiteralPath $ftCache -ErrorAction SilentlyContinue)) {
+                    if ($ftCache -and (Test-TrustedFile $ftCache)) {
                         $fcRaw = Get-Content -LiteralPath $ftCache -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
                         if ($fcRaw) {
                             $fcParts = $fcRaw.TrimEnd() -split '\|'
@@ -770,7 +806,7 @@ if ($_ocFfresh -eq 1 -and $_ocFjson) {
                     }
                     if (-not $ftDone) { $ftDone = "$saNow" }
                 }
-                if ($ftCache) {
+                if ($ftCache -and (Test-WriteOk $ftCache)) {
                     try { [System.IO.File]::WriteAllText($ftCache, "$ftTok|$ftCtx|$ftModel|$ftDisp|$ftDone|$ftStart", (New-Object System.Text.UTF8Encoding $false)) } catch {}
                 }
                 if ($ftState -eq 'done' -and ($saNow - [long]$ftDone) -gt $DONE_LINGER) { continue }
@@ -783,6 +819,7 @@ if ($_ocFfresh -eq 1 -and $_ocFjson) {
                 if ($cf.BaseName.Length -le $taskCachePrefix.Length) { continue }
                 $cfId = $cf.BaseName.Substring($taskCachePrefix.Length)
                 if ($feedSeen.ContainsKey($cfId)) { continue }
+                if (-not (Test-TrustedFile $cf.FullName)) { continue }
                 $fcRaw = Get-Content -LiteralPath $cf.FullName -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
                 if (-not $fcRaw) { continue }
                 $fcParts = $fcRaw.TrimEnd() -split '\|'
@@ -833,7 +870,7 @@ if (-not $feedTier -and $sessionId -and $transcriptPath) {
                 $saDone = ''
                 $saPrevDone = ''
 
-                if (Test-Path -LiteralPath $saCachePath) {
+                if (Test-TrustedFile $saCachePath) {
                     $sc = (Get-Content -LiteralPath $saCachePath -Raw -Encoding UTF8 -ErrorAction SilentlyContinue).TrimEnd() -split '\|'
                     if ($sc.Count -ge 8) {
                         $scDone = 0L
@@ -892,7 +929,7 @@ if (-not $feedTier -and $sessionId -and $transcriptPath) {
                     if ($saDone) { $saCacheDirty = $true }
                     $saDone = ''
                 }
-                if ($saCacheDirty) {
+                if ($saCacheDirty -and (Test-WriteOk $saCachePath)) {
                     try { [System.IO.File]::WriteAllText($saCachePath, "$saMt|$saSr|$inTok|$cwTok|$crTok|$saModel|$agentDisplay|$saDone", (New-Object System.Text.UTF8Encoding $false)) } catch {}
                 }
                 if ($saState -eq 'done' -and ($saNow - [long]$saDone) -gt $DONE_LINGER) { continue }
@@ -1069,7 +1106,7 @@ if ($_ocSafeId) {
         Write-Log "notify: rate_limit fired at ${_rateMax}%"
     }
 
-    if ($_nsChanged) {
+    if ($_nsChanged -and (Test-WriteOk $_notifyState)) {
         $nsCtxStr  = if ($_nsCtx)  { 'true' } else { 'false' }
         $nsRateStr = if ($_nsRate) { 'true' } else { 'false' }
         $nsJson = "{`"notified_context_high`":$nsCtxStr,`"notified_rate_limit`":$nsRateStr,`"last_rate_resets_at`":`"$_rateResetsNow`"}"
@@ -1078,7 +1115,7 @@ if ($_ocSafeId) {
 }
 
 Write-Log ("about to write: lines={0} chars={1}" -f $output.Count, $finalOutput.Length)
-if ($_ocPath) {
+if ($_ocPath -and (Test-WriteOk $_ocPath)) {
     try {
         [System.IO.File]::WriteAllText($_ocPath, "$_ocKey`n$finalOutput", (New-Object System.Text.UTF8Encoding $false))
     } catch {}

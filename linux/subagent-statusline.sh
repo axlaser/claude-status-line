@@ -31,10 +31,14 @@ state_json=$(printf '%s' "$input" | jq -c '{tasks: [(.tasks // [])[] | select(ty
 [[ -z "$state_json" ]] && exit 0
 
 # Atomic write: temp file in the same directory, then rename, so a concurrent
-# statusline refresh never reads a torn file.
+# statusline refresh never reads a torn file. On a shared /tmp, drop a planted
+# symlink or foreign-owned temp target first and skip the write if it survives,
+# so the redirect can't be made to follow a symlink into a victim-owned file;
+# rename() replaces (never follows) any symlink planted at the final path.
 state_path="${TMPDIR:-/tmp}/statusline-tasks-${safe_id}.json"
 tmp_path="${state_path}.tmp.$$"
-if printf '%s' "$state_json" > "$tmp_path" 2>/dev/null; then
+[[ -L "$tmp_path" || ( -e "$tmp_path" && ! -O "$tmp_path" ) ]] && rm -f "$tmp_path" 2>/dev/null
+if [[ ! -L "$tmp_path" && ( ! -e "$tmp_path" || -O "$tmp_path" ) ]] && printf '%s' "$state_json" > "$tmp_path" 2>/dev/null; then
     mv -f "$tmp_path" "$state_path" 2>/dev/null || rm -f "$tmp_path" 2>/dev/null
 else
     rm -f "$tmp_path" 2>/dev/null

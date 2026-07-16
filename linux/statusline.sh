@@ -98,6 +98,20 @@ J_AGENT_OUT="${_jf[21]}"
 J_MODEL_ID="${_jf[22]}"
 # @parity:json-extract-end
 
+# @parity:temp-guards-begin
+# Trust boundary for predictable temp files (shared /tmp on Linux; per-user dirs
+# on macOS/Windows). Read only a regular file we own that is not a symlink; on
+# write, skip (never follow) a planted symlink or foreign-owned target,
+# re-testing after the unlink since a foreign-owned entry cannot be removed
+# under a sticky dir. Applied to every statusline-* cache/state file we touch.
+sl_trusted_file() { [[ -f "$1" && ! -L "$1" && -O "$1" ]]; }
+sl_write_ok() {
+    local f="$1"
+    [[ -L "$f" || ( -e "$f" && ! -O "$f" ) ]] && rm -f "$f" 2>/dev/null
+    [[ ! -L "$f" && ( ! -e "$f" || -O "$f" ) ]]
+}
+# @parity:temp-guards-end
+
 # --- Idle-state fast path ---
 _oc_path="${TMPDIR:-/tmp}/statusline-oc-${J_SESSION_ID//[^a-zA-Z0-9_-]/}.txt"
 _oc_tmt=""
@@ -127,7 +141,7 @@ if [[ "$_oc_fmt" =~ ^[0-9]+$ ]] && (( _oc_now - _oc_fmt <= FEED_TTL )); then
     # Handler writes compact single-line JSON; the builtin read avoids a cat
     # fork on this every-tick path. Command group silences a redirect-open
     # failure if the file vanishes between the stat and the read.
-    { IFS= read -r _oc_fjson < "$_oc_feed"; } 2>/dev/null
+    sl_trusted_file "$_oc_feed" && { IFS= read -r _oc_fjson < "$_oc_feed"; } 2>/dev/null
 fi
 MODEL_WINDOWS_PATH="$HOME/.claude/statusline-model-windows.json"
 _oc_mwmt=""
@@ -135,7 +149,7 @@ _oc_mwmt=""
 # @parity:cache OUTPUT_BUCKET=5
 _oc_key=$(printf '%s' "${raw}|${_oc_tmt}|${_oc_gmt}|${_oc_smt}|${_oc_ffresh}|${_oc_fjson}|${_oc_mwmt}|$(( _oc_now / 5 ))" | sha256sum | cut -d' ' -f1)
 
-if [[ -n "$J_SESSION_ID" && -f "$_oc_path" ]]; then
+if [[ -n "$J_SESSION_ID" ]] && sl_trusted_file "$_oc_path"; then
     # Command group so a redirect-open failure (git-refresh hook may delete the
     # file between -f and read) is silenced; a trailing 2>/dev/null on the bare
     # read does not cover the redirect itself.
@@ -410,7 +424,7 @@ if [[ -f "$git_index" ]]; then
     git_cache_path="${TMPDIR:-/tmp}/statusline-git-${session_id//[^a-zA-Z0-9_-]/}.txt"
     git_use_cache=false
 
-    if [[ -f "$git_cache_path" ]]; then
+    if sl_trusted_file "$git_cache_path"; then
         gc_mt=""
         { IFS=$'\x1f' read -r gc_mt gc_branch gc_ins gc_del gc_unt gc_ahead gc_behind gc_stash < "$git_cache_path"; } 2>/dev/null
         # Validate numerics so a torn/corrupt cache write can't reach arithmetic.
@@ -452,7 +466,7 @@ if [[ -f "$git_index" ]]; then
                 stash=$(( stash + 0 ))
             fi
         fi
-        printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s' "$git_index_mt" "$branch" "$insertions" "$deletions" "$untracked" "$ahead" "$behind" "$stash" > "$git_cache_path" 2>/dev/null
+        sl_write_ok "$git_cache_path" && printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s' "$git_index_mt" "$branch" "$insertions" "$deletions" "$untracked" "$ahead" "$behind" "$stash" > "$git_cache_path" 2>/dev/null
     fi
 fi
 
@@ -529,7 +543,7 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
     prev_cache_read=0
     prev_out=0
 
-    if [[ -n "$cache_path" && -f "$cache_path" ]]; then  # read prev even on miss (for deltas + working_start)
+    if [[ -n "$cache_path" ]] && sl_trusted_file "$cache_path"; then  # read prev even on miss (for deltas + working_start)
         IFS='|' read -r c_ver c_mt c_sz c_msg c_idle c_in c_out c_wstart c_cwrite c_cread c_din c_dout c_dcw c_dcr < "$cache_path"
         # Validate all numeric cache fields to prevent arithmetic injection
         [[ "$c_in" =~ ^-?[0-9]+$ ]] || c_in=0
@@ -629,7 +643,7 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
                 working_start_out_tokens=$session_out_tokens
             fi
 
-            if [[ -n "$cache_path" ]]; then
+            if [[ -n "$cache_path" ]] && sl_write_ok "$cache_path"; then
                 printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s' \
                     "$CACHE_VERSION" "$transcript_mt" "$transcript_sz" "$msg_count" "$claude_is_idle" \
                     "$session_in_tokens" "$session_out_tokens" \
@@ -877,13 +891,13 @@ if [[ -n "$sa_sid_safe" && "$_oc_ffresh" == "1" ]]; then
             else
                 ft_state="done"
                 ft_prev_done=""
-                if [[ -n "$ft_cache" && -f "$ft_cache" ]]; then
+                if [[ -n "$ft_cache" ]] && sl_trusted_file "$ft_cache"; then
                     { IFS='|' read -r _fc1 _fc2 _fc3 _fc4 ft_prev_done _fc6 < "$ft_cache"; } 2>/dev/null
                 fi
                 [[ "$ft_prev_done" =~ ^[0-9]+$ ]] && ft_done="$ft_prev_done"
                 [[ -z "$ft_done" ]] && ft_done="$sa_now"
             fi
-            [[ -n "$ft_cache" ]] && printf '%s|%s|%s|%s|%s|%s' "$ft_tok" "$ft_ctx" "$ft_model" "$ft_disp" "$ft_done" "$ft_start" > "$ft_cache" 2>/dev/null
+            [[ -n "$ft_cache" ]] && sl_write_ok "$ft_cache" && printf '%s|%s|%s|%s|%s|%s' "$ft_tok" "$ft_ctx" "$ft_model" "$ft_disp" "$ft_done" "$ft_start" > "$ft_cache" 2>/dev/null
             [[ "$ft_state" == "done" ]] && (( sa_now - ft_done > DONE_LINGER )) && continue
             feed_candidates+=("${ft_start}"$'\x1f'"${ft_id}"$'\x1f'"${ft_tok}"$'\x1f'"${ft_ctx}"$'\x1f'"${ft_model}"$'\x1f'"${ft_disp}"$'\x1f'"${ft_state}")
         done < <(printf '%s' "$_oc_fjson" | jq -r '(.tasks // [])[] | select(type == "object") | [((.id // "") | tostring), (first([.description, .type, .name][] | (. // "") | tostring | gsub("[\\x00-\\x1f\\x7f|]"; " ") | gsub("^ +| +$"; "") | select(. != "")) // ""), ((.status // "") | tostring), ((.model // "") | tostring | gsub("[\\x00-\\x1f\\x7f|]"; " ")), ((.contextWindowSize // "") | tostring), ((.tokenCount // 0) | tostring), ((.startTime // "") | tostring)] | join("\u001f")' 2>/dev/null)
@@ -891,7 +905,7 @@ if [[ -n "$sa_sid_safe" && "$_oc_ffresh" == "1" ]]; then
         # A cached task id missing from a fresh feed is a done signal: stamp
         # done_ts on first observation, linger, then drop the cache entry.
         for fc_file in "${TMPDIR:-/tmp}/statusline-sa-${sa_sid_safe}-task-"*.txt; do
-            [[ -f "$fc_file" ]] || continue
+            sl_trusted_file "$fc_file" || continue
             fc_id="${fc_file##*-task-}"
             fc_id="${fc_id%.txt}"
             [[ "$feed_seen_ids" == *$'\n'"${fc_id}"$'\n'* ]] && continue
@@ -941,7 +955,7 @@ if [[ "$feed_tier" != true && -n "$session_id" && -n "$transcript_path" ]]; then
             sa_done=""
             sa_prev_done=""
 
-            if [[ -f "$sa_cache_path" ]]; then
+            if sl_trusted_file "$sa_cache_path"; then
                 sc_mt=""; sc_sr=""; sc_in=""; sc_cw=""; sc_cr=""; sc_model=""; sc_display=""; sc_done=""
                 { IFS='|' read -r sc_mt sc_sr sc_in sc_cw sc_cr sc_model sc_display sc_done < "$sa_cache_path"; } 2>/dev/null
                 [[ "$sc_done" =~ ^[0-9]+$ ]] && sa_prev_done="$sc_done"
@@ -1001,7 +1015,7 @@ if [[ "$feed_tier" != true && -n "$session_id" && -n "$transcript_path" ]]; then
                 sa_done=""
             fi
 
-            [[ "$sa_cache_dirty" == true ]] && printf '%s|%s|%s|%s|%s|%s|%s|%s' "$sa_mt" "$sa_sr" "$sa_in" "$sa_cw" "$sa_cr" "$sa_model" "$agent_display" "$sa_done" > "$sa_cache_path" 2>/dev/null
+            [[ "$sa_cache_dirty" == true ]] && sl_write_ok "$sa_cache_path" && printf '%s|%s|%s|%s|%s|%s|%s|%s' "$sa_mt" "$sa_sr" "$sa_in" "$sa_cw" "$sa_cr" "$sa_model" "$agent_display" "$sa_done" > "$sa_cache_path" 2>/dev/null
 
             [[ "$sa_state" == "done" ]] && (( sa_now - sa_done > DONE_LINGER )) && continue
 
@@ -1158,14 +1172,14 @@ if [[ -n "$J_SESSION_ID" ]]; then
         log_msg "notify: rate_limit fired at ${_rate_max}%"
     fi
 
-    if [[ "$_ns_changed" == true ]]; then
+    if [[ "$_ns_changed" == true ]] && sl_write_ok "$_notify_state"; then
         printf '{"notified_context_high":%s,"notified_rate_limit":%s,"last_rate_resets_at":"%s"}' \
             "$_ns_ctx" "$_ns_rate" "$_rate_resets_now" > "$_notify_state" 2>/dev/null
     fi
 fi
 
 log_msg "about to write: chars=${#output}"
-if [[ -n "$J_SESSION_ID" ]]; then
+if [[ -n "$J_SESSION_ID" ]] && sl_write_ok "$_oc_path"; then
     printf '%s\n%s' "$_oc_key" "$output" > "$_oc_path" 2>/dev/null
 fi
 printf '%s' "$output"
