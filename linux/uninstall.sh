@@ -35,7 +35,7 @@ human_size() {
 
 # --- Header ---
 echo ""
-printf "  ${DIM}claude-status-line · Uninstaller${RESET}\n"
+printf "  ${DIM}claude-statusline · Uninstaller${RESET}\n"
 printf "  ${GRAY}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}\n"
 echo ""
 

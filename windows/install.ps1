@@ -2,7 +2,7 @@
 # PowerShell 5.1+ required -- checked at runtime because `#Requires` directives aren't honored via `irm | iex`.
 if ($PSVersionTable.PSVersion -lt [Version]'5.1') { Write-Host "  PowerShell 5.1+ required (current: $($PSVersionTable.PSVersion))" -ForegroundColor Red; return }
 
-$repo = "https://raw.githubusercontent.com/axlaser/claude-status-line/master/windows"
+$repo = "https://raw.githubusercontent.com/axlaser/claude-statusline/master/windows"
 $claudeDir = "$env:USERPROFILE\.claude"
 $scriptPath = "$claudeDir\statusline.ps1"
 $settingsPath = "$claudeDir\settings.json"

@@ -48,7 +48,7 @@ function Format-Json([string]$Json) {
 
 # --- Header ---
 Write-Host ""
-Write-Host "  ${DIM}claude-status-line $([char]0x00B7) Uninstaller${RESET}"
+Write-Host "  ${DIM}claude-statusline $([char]0x00B7) Uninstaller${RESET}"
 Write-Host "  ${GRAY}$([string][char]0x2501 * 43)${RESET}"
 Write-Host ""
 

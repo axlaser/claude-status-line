@@ -3,7 +3,7 @@
 # leak into the caller's shell and persist after return. Failures are handled
 # explicitly at each critical step instead.
 
-REPO="https://raw.githubusercontent.com/axlaser/claude-status-line/master/linux"
+REPO="https://raw.githubusercontent.com/axlaser/claude-statusline/master/linux"
 CLAUDE_DIR="$HOME/.claude"
 SCRIPT_PATH="$CLAUDE_DIR/statusline.sh"
 SETTINGS_PATH="$CLAUDE_DIR/settings.json"

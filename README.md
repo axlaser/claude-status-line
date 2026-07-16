@@ -1,6 +1,6 @@
 <div align="center">
 
-# claude-status-line
+# claude-statusline
 
 **A rich, color-coded custom status line for [Claude Code](https://claude.ai/code) showing context usage, git state, costs, rate limits, and more**
 
@@ -70,7 +70,7 @@ Sound alerts and native OS toast notifications fire on permission requests, task
 **Install:**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/axlaser/claude-status-line/master/macos/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/axlaser/claude-statusline/master/macos/install.sh | bash
 ```
 
 The installer checks for `jq` and offers to install it via Homebrew if missing.
@@ -82,7 +82,7 @@ Re-run the install command above — your other settings are preserved.
 **Uninstall:**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/axlaser/claude-status-line/master/macos/uninstall.sh | bash
+curl -fsSL https://raw.githubusercontent.com/axlaser/claude-statusline/master/macos/uninstall.sh | bash
 ```
 
 <details>
@@ -96,11 +96,11 @@ curl -fsSL https://raw.githubusercontent.com/axlaser/claude-status-line/master/m
 2. **Download the scripts** to your Claude config directory:
    ```bash
    mkdir -p ~/.claude
-   curl -fsSL https://raw.githubusercontent.com/axlaser/claude-status-line/master/macos/statusline.sh -o ~/.claude/statusline.sh
-   curl -fsSL https://raw.githubusercontent.com/axlaser/claude-status-line/master/macos/notify.sh -o ~/.claude/notify.sh
-   curl -fsSL https://raw.githubusercontent.com/axlaser/claude-status-line/master/macos/git-refresh.sh -o ~/.claude/git-refresh.sh
-   curl -fsSL https://raw.githubusercontent.com/axlaser/claude-status-line/master/macos/subagent-statusline.sh -o ~/.claude/subagent-statusline.sh
-   curl -fsSL https://raw.githubusercontent.com/axlaser/claude-status-line/master/assets/claude-icon.png -o ~/.claude/claude-icon.png
+   curl -fsSL https://raw.githubusercontent.com/axlaser/claude-statusline/master/macos/statusline.sh -o ~/.claude/statusline.sh
+   curl -fsSL https://raw.githubusercontent.com/axlaser/claude-statusline/master/macos/notify.sh -o ~/.claude/notify.sh
+   curl -fsSL https://raw.githubusercontent.com/axlaser/claude-statusline/master/macos/git-refresh.sh -o ~/.claude/git-refresh.sh
+   curl -fsSL https://raw.githubusercontent.com/axlaser/claude-statusline/master/macos/subagent-statusline.sh -o ~/.claude/subagent-statusline.sh
+   curl -fsSL https://raw.githubusercontent.com/axlaser/claude-statusline/master/assets/claude-icon.png -o ~/.claude/claude-icon.png
    chmod +x ~/.claude/statusline.sh ~/.claude/notify.sh ~/.claude/git-refresh.sh ~/.claude/subagent-statusline.sh
    ```
 
@@ -177,7 +177,7 @@ curl -fsSL https://raw.githubusercontent.com/axlaser/claude-status-line/master/m
 **Install:**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/axlaser/claude-status-line/master/linux/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/axlaser/claude-statusline/master/linux/install.sh | bash
 ```
 
 The installer detects your package manager (apt, dnf, pacman, zypper, apk) and offers to install `jq` if missing.
@@ -189,7 +189,7 @@ Re-run the install command above — your other settings are preserved.
 **Uninstall:**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/axlaser/claude-status-line/master/linux/uninstall.sh | bash
+curl -fsSL https://raw.githubusercontent.com/axlaser/claude-statusline/master/linux/uninstall.sh | bash
 ```
 
 <details>
@@ -205,11 +205,11 @@ curl -fsSL https://raw.githubusercontent.com/axlaser/claude-status-line/master/l
 2. **Download the scripts** to your Claude config directory:
    ```bash
    mkdir -p ~/.claude
-   curl -fsSL https://raw.githubusercontent.com/axlaser/claude-status-line/master/linux/statusline.sh -o ~/.claude/statusline.sh
-   curl -fsSL https://raw.githubusercontent.com/axlaser/claude-status-line/master/linux/notify.sh -o ~/.claude/notify.sh
-   curl -fsSL https://raw.githubusercontent.com/axlaser/claude-status-line/master/linux/git-refresh.sh -o ~/.claude/git-refresh.sh
-   curl -fsSL https://raw.githubusercontent.com/axlaser/claude-status-line/master/linux/subagent-statusline.sh -o ~/.claude/subagent-statusline.sh
-   curl -fsSL https://raw.githubusercontent.com/axlaser/claude-status-line/master/assets/claude-icon.png -o ~/.claude/claude-icon.png
+   curl -fsSL https://raw.githubusercontent.com/axlaser/claude-statusline/master/linux/statusline.sh -o ~/.claude/statusline.sh
+   curl -fsSL https://raw.githubusercontent.com/axlaser/claude-statusline/master/linux/notify.sh -o ~/.claude/notify.sh
+   curl -fsSL https://raw.githubusercontent.com/axlaser/claude-statusline/master/linux/git-refresh.sh -o ~/.claude/git-refresh.sh
+   curl -fsSL https://raw.githubusercontent.com/axlaser/claude-statusline/master/linux/subagent-statusline.sh -o ~/.claude/subagent-statusline.sh
+   curl -fsSL https://raw.githubusercontent.com/axlaser/claude-statusline/master/assets/claude-icon.png -o ~/.claude/claude-icon.png
    chmod +x ~/.claude/statusline.sh ~/.claude/notify.sh ~/.claude/git-refresh.sh ~/.claude/subagent-statusline.sh
    ```
 
@@ -288,7 +288,7 @@ curl -fsSL https://raw.githubusercontent.com/axlaser/claude-status-line/master/l
 **Install:**
 
 ```powershell
-irm https://raw.githubusercontent.com/axlaser/claude-status-line/master/windows/install.ps1 | iex
+irm https://raw.githubusercontent.com/axlaser/claude-statusline/master/windows/install.ps1 | iex
 ```
 
 No additional dependencies required — uses built-in PowerShell.
@@ -300,7 +300,7 @@ Re-run the install command above — your other settings are preserved.
 **Uninstall:**
 
 ```powershell
-irm https://raw.githubusercontent.com/axlaser/claude-status-line/master/windows/uninstall.ps1 | iex
+irm https://raw.githubusercontent.com/axlaser/claude-statusline/master/windows/uninstall.ps1 | iex
 ```
 
 <details>
@@ -308,11 +308,11 @@ irm https://raw.githubusercontent.com/axlaser/claude-status-line/master/windows/
 
 1. **Download the scripts** to your Claude config directory:
    ```powershell
-   Invoke-WebRequest -Uri "https://raw.githubusercontent.com/axlaser/claude-status-line/master/windows/statusline.ps1" -OutFile "$env:USERPROFILE\.claude\statusline.ps1"
-   Invoke-WebRequest -Uri "https://raw.githubusercontent.com/axlaser/claude-status-line/master/windows/notify.ps1" -OutFile "$env:USERPROFILE\.claude\notify.ps1"
-   Invoke-WebRequest -Uri "https://raw.githubusercontent.com/axlaser/claude-status-line/master/windows/git-refresh.ps1" -OutFile "$env:USERPROFILE\.claude\git-refresh.ps1"
-   Invoke-WebRequest -Uri "https://raw.githubusercontent.com/axlaser/claude-status-line/master/windows/subagent-statusline.ps1" -OutFile "$env:USERPROFILE\.claude\subagent-statusline.ps1"
-   Invoke-WebRequest -Uri "https://raw.githubusercontent.com/axlaser/claude-status-line/master/assets/claude-icon.png" -OutFile "$env:USERPROFILE\.claude\claude-icon.png"
+   Invoke-WebRequest -Uri "https://raw.githubusercontent.com/axlaser/claude-statusline/master/windows/statusline.ps1" -OutFile "$env:USERPROFILE\.claude\statusline.ps1"
+   Invoke-WebRequest -Uri "https://raw.githubusercontent.com/axlaser/claude-statusline/master/windows/notify.ps1" -OutFile "$env:USERPROFILE\.claude\notify.ps1"
+   Invoke-WebRequest -Uri "https://raw.githubusercontent.com/axlaser/claude-statusline/master/windows/git-refresh.ps1" -OutFile "$env:USERPROFILE\.claude\git-refresh.ps1"
+   Invoke-WebRequest -Uri "https://raw.githubusercontent.com/axlaser/claude-statusline/master/windows/subagent-statusline.ps1" -OutFile "$env:USERPROFILE\.claude\subagent-statusline.ps1"
+   Invoke-WebRequest -Uri "https://raw.githubusercontent.com/axlaser/claude-statusline/master/assets/claude-icon.png" -OutFile "$env:USERPROFILE\.claude\claude-icon.png"
    ```
 
 2. **Install BurntToast** (optional — for visual toast notifications):
@@ -389,8 +389,8 @@ irm https://raw.githubusercontent.com/axlaser/claude-status-line/master/windows/
 ### From a cloned repo
 
 ```bash
-git clone https://github.com/axlaser/claude-status-line.git
-cd claude-status-line
+git clone https://github.com/axlaser/claude-statusline.git
+cd claude-statusline
 bash macos/install.sh      # macOS
 bash linux/install.sh      # Linux
 .\windows\install.ps1      # Windows

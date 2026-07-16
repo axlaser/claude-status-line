@@ -1,4 +1,4 @@
-# CLAUDE.md -- claude-status-line
+# CLAUDE.md -- claude-statusline
 
 Cross-platform custom status line for Claude Code. Claude Code pipes JSON to stdin on each refresh; scripts parse, cache, and render ANSI output.
 

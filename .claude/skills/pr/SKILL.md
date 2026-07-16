@@ -1,7 +1,7 @@
 ---
 name: pr
 description: >
-  Create a pull request from the current branch for claude-status-line, into
+  Create a pull request from the current branch for claude-statusline, into
   the right base for this repo's two-tier flow — feature branches
   (`dev-<feature>`) target `dev`, and `dev` itself targets `master` as a
   release PR. Analyzes the new
