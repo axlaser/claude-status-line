@@ -112,6 +112,19 @@ sl_write_ok() {
 }
 # @parity:temp-guards-end
 
+# @parity:sanitize-title-begin
+# Shared field sanitizer (subagent render sink, git-branch render, fallback meta
+# reads). Defined early so the git block — which runs before the subagent
+# helpers — can call it.
+sa_sanitize_title() {  # replace "|" and control chars with spaces, trim -> "" when blank
+    local s="${1//[$'\x01'-$'\x1f'$'\x7f']/ }"
+    s="${s//'|'/ }"
+    s="${s#"${s%%[! ]*}"}"
+    s="${s%"${s##*[! ]}"}"
+    printf '%s' "$s"
+}
+# @parity:sanitize-title-end
+
 # --- Idle-state fast path ---
 _oc_path="${TMPDIR:-/tmp}/statusline-oc-${J_SESSION_ID//[^a-zA-Z0-9_-]/}.txt"
 _oc_tmt=""
@@ -472,6 +485,9 @@ if [[ -f "$git_index" ]]; then
     fi
 fi
 
+# Scrub control/escape bytes from the branch (its cached value is plantable via
+# statusline-git-*), mirroring the subagent render-sink scrub, before it renders.
+branch=$(sa_sanitize_title "$branch")
 if [[ -n "$branch" ]]; then
     is_dirty=false
     (( insertions > 0 || deletions > 0 || untracked > 0 )) && is_dirty=true
@@ -809,14 +825,6 @@ sa_status_is_active() {  # feed statuses that mean "done" — single place to ad
         completed|complete|done|finished|failed|cancelled|canceled|killed|stopped|error) return 1 ;;
         *)                                                                               return 0 ;;
     esac
-}
-
-sa_sanitize_title() {  # replace "|" and control chars with spaces, trim -> "" when blank
-    local s="${1//[$'\x01'-$'\x1f'$'\x7f']/ }"
-    s="${s//'|'/ }"
-    s="${s#"${s%%[! ]*}"}"
-    s="${s%"${s##*[! ]}"}"
-    printf '%s' "$s"
 }
 
 build_sa_row() {  # used ctx_size model_id display state(working|done) -> appends row

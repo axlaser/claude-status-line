@@ -207,6 +207,16 @@ function Test-WriteOk([string]$path) {
 }
 # @parity:temp-guards-end
 
+# @parity:sanitize-title-begin
+# Shared field sanitizer (subagent render sink, git-branch render, fallback meta
+# reads). Defined early so the git block — which runs before Build-SubagentRow —
+# can call it.
+function Format-SaTitle($s) {  # replace "|" and control chars with spaces, trim -> '' when blank
+    if ($null -eq $s) { return '' }
+    return ("$s" -replace '[\x00-\x1f\x7f|]', ' ').Trim()
+}
+# @parity:sanitize-title-end
+
 # --- Output cache: skip re-render when all inputs are unchanged ---
 $_ocSafeId = if ($sessionId) { $sessionId -replace '[^a-zA-Z0-9_-]', '' } else { $null }
 $_ocPath = if ($_ocSafeId) { Join-Path $env:TEMP "statusline-oc-$_ocSafeId.txt" } else { $null }
@@ -433,6 +443,9 @@ try {
             if ($gitCachePath -and (Test-WriteOk $gitCachePath)) { try { $d = [char]0x1F; [System.IO.File]::WriteAllText($gitCachePath, "$gitIndexMt$d$branch$d$insertions$d$deletions$d$untracked$d$ahead$d$behind$d$stash", (New-Object System.Text.UTF8Encoding $false)) } catch {} }
         }
 
+        # Scrub control/escape bytes from the branch (its cached value is plantable
+        # via statusline-git-*), mirroring the subagent render-sink scrub.
+        $branch = Format-SaTitle $branch
         if ($branch) {
             $isDirty = ($insertions -gt 0 -or $deletions -gt 0 -or $untracked -gt 0)
             $branchColor = if ($isDirty) { $YELLOW } else { $GREEN }
@@ -710,11 +723,6 @@ $DONE_LINGER = 30
 $SaTerminalStatuses = @('completed', 'complete', 'done', 'finished', 'failed', 'cancelled', 'canceled', 'killed', 'stopped', 'error')
 # Transcript stop reasons that mean "done" — single place to adjust.
 $SaTerminalStopReasons = @('end_turn', 'max_tokens', 'refusal', 'model_context_window_exceeded', 'stop_sequence')
-
-function Format-SaTitle($s) {  # replace "|" and control chars with spaces, trim -> '' when blank
-    if ($null -eq $s) { return '' }
-    return ("$s" -replace '[\x00-\x1f\x7f|]', ' ').Trim()
-}
 
 function Build-SubagentRow($used, $ctxSize, $model, $disp, $state) {
     $u = 0L
