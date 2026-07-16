@@ -73,9 +73,76 @@ function Format-Tokens($n) {  # 1234567 -> "1.2M"; "0" for empty
     return "$([int]$v)"
 }
 
-function Get-SubagentCtxSize([string]$model) {
-    if ($model -match '\[1m\]' -or $model -match '-1m') { return 1000000 }
+function Get-NormalizedModelId([string]$id) {  # strip trailing -YYYYMMDD date suffix
+    if (-not $id) { return '' }
+    return ($id -replace '-\d{8}$', '')
+}
+
+function Get-PrettyModelName([string]$id) {  # claude-sonnet-5 -> "Sonnet 5"; unknown -> cleaned id
+    $clean = (Get-NormalizedModelId $id) -replace '^claude-', ''
+    if ($clean -match '^(fable|opus|sonnet|haiku)-(\d+(?:-\d+)*)') {
+        $fam = $Matches[1]
+        $ver = $Matches[2] -replace '-', '.'
+        return ($fam.Substring(0,1).ToUpper() + $fam.Substring(1) + ' ' + $ver)
+    }
+    return $clean
+}
+
+# @parity:seed-table-begin
+# Known model->window seeds; keys are normalized ids (date suffix stripped,
+# claude- prefix tolerated). Unlisted ids fall through to the resolver tiers.
+$ModelWindowSeeds = @{
+    'fable-5'    = 1000000
+    'opus-4-8'   = 1000000
+    'opus-4-7'   = 1000000
+    'opus-4-6'   = 1000000
+    'sonnet-5'   = 1000000
+    'sonnet-4-6' = 1000000
+    'haiku-4-5'  = 200000
+    'sonnet-4-5' = 200000
+    'opus-4-5'   = 200000
+}
+# @parity:seed-table-end
+
+function Get-SubagentCtxSize([string]$model) {  # tiered: learned map -> seed table -> 1m marker -> 200K default
+    $norm = Get-NormalizedModelId $model
+    if ($ModelWindowsMap) {
+        $prop = $ModelWindowsMap.PSObject.Properties[$norm]
+        if ($prop) {
+            $learned = 0L
+            if ([long]::TryParse("$($prop.Value)", [ref]$learned) -and $learned -gt 0) {
+                Write-Log "sa ctx: $norm -> $learned (learned)"
+                return $learned
+            }
+        }
+    }
+    $seedKey = $norm -replace '^claude-', ''
+    if ($ModelWindowSeeds.ContainsKey($seedKey)) {
+        Write-Log "sa ctx: $norm -> $($ModelWindowSeeds[$seedKey]) (seed)"
+        return $ModelWindowSeeds[$seedKey]
+    }
+    if ($norm -match '\[1m\]' -or $norm -match '-1m') {
+        Write-Log "sa ctx: $norm -> 1000000 (marker)"
+        return 1000000
+    }
+    Write-Log "sa ctx: $norm -> 200000 (default)"
     return 200000
+}
+
+function Get-PctColor([int]$pct) {  # context percentage -> threshold color
+    # @parity:threshold CONTEXT_CRIT=85
+    # @parity:threshold CONTEXT_WARN=60
+    if ($pct -ge 85) { return $RED } elseif ($pct -ge 60) { return $YELLOW } else { return $GREEN }
+}
+
+function Build-Bar([int]$pct, [string]$color) {  # filled/empty bar over barWidth cells
+    if ($pct -lt 0) { $pct = 0 } elseif ($pct -gt 100) { $pct = 100 }
+    $filled = [int][Math]::Truncate(($barWidth * $pct + 50) / 100)
+    if ($filled -lt 0) { $filled = 0 } elseif ($filled -gt $barWidth) { $filled = $barWidth }
+    $empty = $barWidth - $filled
+    $filledChars = if ($filled -gt 0) { [string]([char]0x2588) * $filled } else { '' }
+    $emptyChars  = if ($empty -gt 0)  { [string]([char]0x2591) * $empty }  else { '' }
+    return "${color}${filledChars}${RESET}${BAR_EMPTY}${emptyChars}${RESET}"
 }
 
 # @parity:json-extract-begin
@@ -101,7 +168,54 @@ $sevenRes         = Get-Val $json @('rate_limits','seven_day','resets_at')
 $agentName        = Get-Val $json @('agent','name')
 $agentIn          = Get-Val $json @('context_window','current_usage','input_tokens') 0
 $agentOut         = Get-Val $json @('context_window','current_usage','output_tokens') 0
+$modelId          = Get-Val $json @('model','id')
 # @parity:json-extract-end
+
+# @parity:temp-guards-begin
+# Trust boundary for predictable temp files. %TEMP% is per-user, so a foreign
+# owner is unexpected here; we still check owner (SID) and reparse-point for
+# parity/defense-in-depth. Reads trust only a regular file we own that is not a
+# reparse point (symlink/junction); writes drop a reparse-point/foreign target
+# and skip when it survives, never following a planted link. Bounded to the few
+# cache/state files touched per refresh, never called per row.
+function Test-TrustedFile([string]$path) {
+    if ([string]::IsNullOrEmpty($path)) { return $false }
+    try {
+        $item = Get-Item -LiteralPath $path -Force -ErrorAction Stop
+        if ($item.PSIsContainer -or ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) { return $false }
+        $me = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+        return ((Get-Acl -LiteralPath $path -ErrorAction Stop).GetOwner([System.Security.Principal.SecurityIdentifier]) -eq $me)
+    } catch { return $false }
+}
+function Test-WriteOk([string]$path) {
+    if ([string]::IsNullOrEmpty($path)) { return $false }
+    try {
+        $item = Get-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+        if ($item) {
+            $bad = [bool]($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint)
+            if (-not $bad) {
+                try {
+                    $me = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+                    $bad = ((Get-Acl -LiteralPath $path -ErrorAction Stop).GetOwner([System.Security.Principal.SecurityIdentifier]) -ne $me)
+                } catch { $bad = $false }
+            }
+            if ($bad) { Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue }
+        }
+        $item = Get-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+        return -not ($item -and ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint))
+    } catch { return $true }
+}
+# @parity:temp-guards-end
+
+# @parity:sanitize-title-begin
+# Shared field sanitizer (subagent render sink, git-branch render, fallback meta
+# reads). Defined early so the git block — which runs before Build-SubagentRow —
+# can call it.
+function Format-SaTitle($s) {  # replace "|" and control chars with spaces, trim -> '' when blank
+    if ($null -eq $s) { return '' }
+    return ("$s" -replace '[\x00-\x1f\x7f|]', ' ').Trim()
+}
+# @parity:sanitize-title-end
 
 # --- Output cache: skip re-render when all inputs are unchanged ---
 $_ocSafeId = if ($sessionId) { $sessionId -replace '[^a-zA-Z0-9_-]', '' } else { $null }
@@ -123,12 +237,35 @@ if ($transcriptPath) {
         $_ocSmt = (Get-Item -LiteralPath $_ocSdir -Force).LastWriteTimeUtc.Ticks
     }
 }
+# Feed content+freshness and the learned-map mtime join the key so subagent
+# tier switches and learned window changes invalidate the render cache. The
+# handler rewrites the feed file every tick, so keying on its mtime would
+# defeat the output cache; mtime feeds only the freshness flag.
+$_ocFeed = if ($_ocSafeId) { Join-Path $env:TEMP "statusline-tasks-$_ocSafeId.json" } else { $null }
+# @parity:cache FEED_TTL=10
+$FEED_TTL = 10
+$_ocFfresh = 0
+$_ocFjson = ''
+if ($_ocFeed -and (Test-TrustedFile $_ocFeed)) {
+    try {
+        $_ocFeedAge = ([DateTimeOffset]::UtcNow - [DateTimeOffset](Get-Item -LiteralPath $_ocFeed -Force).LastWriteTimeUtc).TotalSeconds
+        if ($_ocFeedAge -le $FEED_TTL) {
+            $_ocFfresh = 1
+            $_ocFjson = [System.IO.File]::ReadAllText($_ocFeed)
+        }
+    } catch {}
+}
+$_ocMwPath = "$env:USERPROFILE\.claude\statusline-model-windows.json"
+$_ocMwmt = ''
+if (Test-Path -LiteralPath $_ocMwPath -ErrorAction SilentlyContinue) {
+    try { $_ocMwmt = (Get-Item -LiteralPath $_ocMwPath -Force).LastWriteTimeUtc.Ticks } catch {}
+}
 # @parity:cache OUTPUT_BUCKET=5
 $_ocNowBucket = [int]([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() / 5)
-$_ocKeyInput = "${raw}|${_ocTmt}|${_ocGmt}|${_ocSmt}|${_ocNowBucket}"
+$_ocKeyInput = "${raw}|${_ocTmt}|${_ocGmt}|${_ocSmt}|${_ocFfresh}|${_ocFjson}|${_ocMwmt}|${_ocNowBucket}"
 $_ocKey = [BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($_ocKeyInput))).Replace('-','')
 
-if ($_ocPath -and (Test-Path -LiteralPath $_ocPath -ErrorAction SilentlyContinue)) {
+if ($_ocPath -and (Test-TrustedFile $_ocPath)) {
     try {
         $ocLines = [System.IO.File]::ReadAllLines($_ocPath)
         if ($ocLines.Count -ge 2 -and $ocLines[0] -eq $_ocKey) {
@@ -175,9 +312,7 @@ $pctInt   = $null
 $pctColor = $WHITE
 if ($null -ne $usedPct) {
     $pctInt   = [int][Math]::Round($usedPct)
-    # @parity:threshold CONTEXT_CRIT=85
-    # @parity:threshold CONTEXT_WARN=60
-    $pctColor = if ($pctInt -ge 85) { $RED } elseif ($pctInt -ge 60) { $YELLOW } else { $GREEN }
+    $pctColor = Get-PctColor $pctInt
 }
 $modelPart = "${MAGENTA}${modelShort}${RESET}"
 # --- 2b. Context bar ---
@@ -188,13 +323,7 @@ $pctClamped = [Math]::Max(0.0, [Math]::Min(100.0, $rawPct))
 $barPctInt  = if ($null -ne $pctInt)  { $pctInt }   else { 0 }
 $barColor   = if ($null -ne $pctInt)  { $pctColor } else { $GREEN }
 $barPctTrunc = [int][Math]::Truncate($pctClamped)
-$filled      = [int][Math]::Truncate(($barWidth * $barPctTrunc + 50) / 100)
-if ($filled -lt 0) { $filled = 0 }
-if ($filled -gt $barWidth) { $filled = $barWidth }
-$emptyCount = $barWidth - $filled
-$filledChars = if ($filled -gt 0)     { [string]([char]0x2588) * $filled }     else { '' }
-$emptyChars  = if ($emptyCount -gt 0) { [string]([char]0x2591) * $emptyCount } else { '' }
-$bar = "${barColor}${filledChars}${RESET}${BAR_EMPTY}${emptyChars}${RESET}"
+$bar = Build-Bar $barPctTrunc $barColor
 $tokenSuffix = ''
 if ($ctxSize) {
     # Prefer total_input_tokens (full precision); used_percentage is integer-rounded, so on a
@@ -205,6 +334,46 @@ if ($ctxSize) {
     $tokenSuffix = " ${GRAY}$([char]0x00B7)${RESET} ${WHITE}${usedLbl}${RESET}${GRAY}/${ctxLabel}${RESET}"
 }
 $ctxBarPart = "${bar} ${barColor}${barPctInt}%${RESET}${tokenSuffix}"
+# --- 2c. Learned model->window map ---
+# Persist the main session's model->window pair so subagent rows can resolve
+# real denominators later. Multi-writer file: atomic temp+Move-Item, skip when
+# the entry already matches (no mtime churn). All failures are silent.
+$ModelWindowsMap = $null
+if (Test-Path -LiteralPath $_ocMwPath -ErrorAction SilentlyContinue) {
+    try {
+        $mwParsed = Get-Content -LiteralPath $_ocMwPath -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+        if ($mwParsed -is [PSCustomObject]) { $ModelWindowsMap = $mwParsed }
+    } catch { Write-Log ("model-windows read failed: " + $_.Exception.Message) }
+}
+$mwWin = 0L
+if ($modelId -and $null -ne $ctxSize -and [long]::TryParse("$ctxSize", [ref]$mwWin) -and $mwWin -gt 0) {
+    $mwTmp = $null
+    try {
+        $mwKey = Get-NormalizedModelId $modelId
+        $mwCur = $null
+        if ($ModelWindowsMap) {
+            $mwProp = $ModelWindowsMap.PSObject.Properties[$mwKey]
+            if ($mwProp) {
+                $mwCurParsed = 0L
+                if ([long]::TryParse("$($mwProp.Value)", [ref]$mwCurParsed)) { $mwCur = $mwCurParsed }
+            }
+        }
+        if ($mwKey -and $mwCur -ne $mwWin) {
+            if (-not $ModelWindowsMap) { $ModelWindowsMap = New-Object PSObject }
+            $ModelWindowsMap | Add-Member -NotePropertyName $mwKey -NotePropertyValue $mwWin -Force
+            $mwDir = Split-Path -Parent $_ocMwPath
+            if (-not (Test-Path -LiteralPath $mwDir)) { New-Item -ItemType Directory -Path $mwDir -Force -ErrorAction Stop | Out-Null }
+            $mwTmp = Join-Path $mwDir ('statusline-model-windows.json.' + [System.IO.Path]::GetRandomFileName())
+            [System.IO.File]::WriteAllText($mwTmp, ($ModelWindowsMap | ConvertTo-Json -Compress), (New-Object System.Text.UTF8Encoding $false))
+            Move-Item -LiteralPath $mwTmp -Destination $_ocMwPath -Force
+            $mwTmp = $null
+            Write-Log "model-windows: learned $mwKey=$mwWin"
+        }
+    } catch {
+        Write-Log ("model-windows write failed: " + $_.Exception.Message)
+        if ($mwTmp) { try { Remove-Item -LiteralPath $mwTmp -Force -ErrorAction SilentlyContinue } catch {} }
+    }
+}
 # --- 3. Reasoning effort ---
 $effortPart  = ''
 if ($effortLevel) {
@@ -230,7 +399,7 @@ try {
         $gitUseCache = $false
         $branch = $null; $insertions = 0; $deletions = 0; $untracked = 0; $ahead = 0; $behind = 0; $stash = 0
 
-        if ($gitCachePath -and (Test-Path -LiteralPath $gitCachePath)) {
+        if ($gitCachePath -and (Test-TrustedFile $gitCachePath)) {
             $gc = (Get-Content -LiteralPath $gitCachePath -Raw -ErrorAction SilentlyContinue) -split ([char]0x1F)
             if ($gc.Count -ge 5 -and $gc[0] -eq "$gitIndexMt") {
                 $cacheAge = ([DateTimeOffset]::UtcNow - [DateTimeOffset](Get-Item -LiteralPath $gitCachePath -Force).LastWriteTimeUtc).TotalSeconds
@@ -271,9 +440,12 @@ try {
                 }
                 $stash = @(& git --no-optional-locks -C $gitCwd stash list 2>$null).Count
             } else { $branch = $null }
-            if ($gitCachePath) { try { $d = [char]0x1F; [System.IO.File]::WriteAllText($gitCachePath, "$gitIndexMt$d$branch$d$insertions$d$deletions$d$untracked$d$ahead$d$behind$d$stash", (New-Object System.Text.UTF8Encoding $false)) } catch {} }
+            if ($gitCachePath -and (Test-WriteOk $gitCachePath)) { try { $d = [char]0x1F; [System.IO.File]::WriteAllText($gitCachePath, "$gitIndexMt$d$branch$d$insertions$d$deletions$d$untracked$d$ahead$d$behind$d$stash", (New-Object System.Text.UTF8Encoding $false)) } catch {} }
         }
 
+        # Scrub control/escape bytes from the branch (its cached value is plantable
+        # via statusline-git-*), mirroring the subagent render-sink scrub.
+        $branch = Format-SaTitle $branch
         if ($branch) {
             $isDirty = ($insertions -gt 0 -or $deletions -gt 0 -or $untracked -gt 0)
             $branchColor = if ($isDirty) { $YELLOW } else { $GREEN }
@@ -338,7 +510,7 @@ if ($transcriptPath -and (Test-Path -LiteralPath $transcriptPath -ErrorAction Si
         $prevOut        = [long]0
         $prevCacheWrite = [long]0
         $prevCacheRead  = [long]0
-        if ($cachePath -and (Test-Path -LiteralPath $cachePath)) {
+        if ($cachePath -and (Test-TrustedFile $cachePath)) {
             $cacheLine = Get-Content -LiteralPath $cachePath -Raw -ErrorAction SilentlyContinue
             if ($cacheLine) {
                 $parts = $cacheLine.Trim().Split('|')
@@ -413,7 +585,7 @@ if ($transcriptPath -and (Test-Path -LiteralPath $transcriptPath -ErrorAction Si
                 } else {
                     $workingStartOutTokens = $sessionOutTokens
                 }
-                if ($cachePath) {
+                if ($cachePath -and (Test-WriteOk $cachePath)) {
                     try {
                         [System.IO.File]::WriteAllText(
                             $cachePath,
@@ -442,7 +614,7 @@ function Format-Bucket($label, $value, $delta, $idleColor, $activeColor, $arrow)
     }
 }
 # Always render — zero values get the dim "(+0)" idle styling.
-$sep        = "  ${GRAY}$([char]0x00B7)${RESET}  "
+$sep        = " ${GRAY}$([char]0x00B7)${RESET} "
 $tokensPart = (Format-Bucket "in" $sessionInTokens $deltaIn $CYAN $CYAN) `
     + $sep + (Format-Bucket "cache" $sessionCacheWriteTokens $deltaCacheWrite $GRAY $YELLOW "$([char]0x2191)") `
     + $sep + (Format-Bucket "cache" $sessionCacheReadTokens $deltaCacheRead $GRAY $CYAN "$([char]0x2193)") `
@@ -456,11 +628,6 @@ if ($claudeIsIdle) {
     $statusDot   = "${YELLOW}$([char]0x25CB)${RESET}"
     $statusLabel = "${YELLOW}working${RESET}"
     $statusPart  = "${statusDot}  ${statusLabel}"
-    if ($workingStartOutTokens -ge 0 -and $sessionOutTokens -gt $workingStartOutTokens) {
-        $delta = $sessionOutTokens - $workingStartOutTokens
-        $deltaLabel = Format-Tokens $delta
-        $statusPart += "  ${GRAY}$([char]0x00B7)${RESET}  ${CYAN}+${deltaLabel}${RESET} ${DIM}tokens${RESET}"
-    }
 }
 # Message count — shown on cost row.
 $msgPart = ''
@@ -522,14 +689,14 @@ if ($null -ne $fivePct -or $null -ne $sevenPct) {
     $part7 = Format-Window '7d' $sevenPct $sevenRes 604800
     if ($part5) { $parts5d += $part5 }
     if ($part7) { $parts5d += $part7 }
-    $ratePart = $parts5d -join "  ${GRAY}$([char]0x00B7)${RESET}  "
+    $ratePart = $parts5d -join " ${GRAY}$([char]0x00B7)${RESET} "
 }
 # --- 7. Agent / subagent status (--agent startup mode only) ---
 $agentPart = ''
 if ($agentName) {
     $agentPart = "${BLUE}${BOLD}${agentName}${RESET}"
     $agentCompact = ''
-    $sep = "  ${GRAY}$([char]0x00B7)${RESET}  "
+    $sep = " ${GRAY}$([char]0x00B7)${RESET} "
     if ($null -ne $pctInt) {
         $agentCompact = "${pctColor}${pctInt}%${RESET}${sep}"
     }
@@ -541,85 +708,243 @@ if ($agentName) {
     $agentPart += "${sep}${agentCompact}"
 }
 # --- 7b. Subagent context ---
-# One row per ACTIVE subagent (last assistant stop_reason != "end_turn").
-# Transcripts: <project>/<sessionId>/subagents/agent-*.jsonl + sibling .meta.json.
+# One row per Task-tool subagent. Rows come from ONE tier per refresh: the
+# tasks-feed state file when fresh (age within FEED_TTL), else per-agent
+# transcript parsing. Tiers are never merged. A done signal (feed: non-active
+# status or task gone; fallback: terminal stop_reason) stamps done_ts into the
+# per-agent session cache; the row lingers green for DONE_LINGER seconds.
+# FEED_TTL is defined with the output-cache key inputs above.
+# @parity:threshold DONE_LINGER=30
+$DONE_LINGER = 30
+# Feed statuses that mean "done" — single place to adjust.
+# Deny-list polarity: an unknown status means "working" (fail open to visible),
+# matching the fallback tier's terminal-stop-reason check; a completed task
+# that leaves the feed is still caught by the disappeared-task done signal.
+$SaTerminalStatuses = @('completed', 'complete', 'done', 'finished', 'failed', 'cancelled', 'canceled', 'killed', 'stopped', 'error')
+# Transcript stop reasons that mean "done" — single place to adjust.
+$SaTerminalStopReasons = @('end_turn', 'max_tokens', 'refusal', 'model_context_window_exceeded', 'stop_sequence')
+
+function Build-SubagentRow($used, $ctxSize, $model, $disp, $state) {
+    $u = 0L
+    if (-not [long]::TryParse("$used", [ref]$u) -or $u -lt 0) { $u = 0L }
+    $w = 0L
+    if (-not [long]::TryParse("$ctxSize", [ref]$w) -or $w -le 0) { $w = 200000L }
+    # Render-sink scrub: strip control/escape bytes from the two untrusted display
+    # fields so no source path (feed-live, feed-read-back, transcript-fallback) can
+    # emit a terminal escape planted via a cache file.
+    $model = Format-SaTitle $model
+    $disp = Format-SaTitle $disp
+    # Bar/pct clamp at 100%; the token label keeps the raw used value.
+    $saPctInt = [int][Math]::Truncate(($u * 100.0) / $w)
+    if ($saPctInt -lt 0) { $saPctInt = 0 }
+    if ($saPctInt -gt 100) { $saPctInt = 100 }
+    $saColor = Get-PctColor $saPctInt
+    $saBar = Build-Bar $saPctInt $saColor
+    $saUsedLbl = Format-Tokens $u
+    if (-not $saUsedLbl) { $saUsedLbl = '0' }
+    $saCtxK = [math]::Floor($w / 1000)
+    $saCtxLbl = if ($saCtxK -ge 1000) { "$([math]::Floor($saCtxK / 1000))M" } else { "${saCtxK}K" }
+    # Compact single-space separators — same segment style as the context bar.
+    $saSep = " ${GRAY}$([char]0x00B7)${RESET} "
+    $row = "${saBar} ${saColor}${saPctInt}%${RESET}${saSep}${WHITE}${saUsedLbl}${RESET}${GRAY}/${saCtxLbl}${RESET}"
+    if ($model) { $row += "${saSep}${MAGENTA}$(Get-PrettyModelName $model)${RESET}" }
+    $disp = "$disp"
+    if ($disp.Length -gt 40) {
+        # Cut to 39 UTF-16 units, one less if that would split a surrogate pair.
+        $dispCut = 39
+        if ([char]::IsHighSurrogate($disp[38])) { $dispCut = 38 }
+        $disp = $disp.Substring(0, $dispCut) + [char]0x2026
+    }
+    if ($disp)  { $row += "${saSep}${BLUE}${disp}${RESET}" }
+    if ($state -eq 'done') { $row += "${saSep}${GREEN}$([char]0x2713) done${RESET}" }
+    else                   { $row += "${saSep}${YELLOW}$([char]0x25CB) working${RESET}" }
+    return $row
+}
+
 $subagentRows = @()
-if ($sessionId -and $transcriptPath) {
+$saNow = [long][DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+$feedTier = $false
+if ($_ocFfresh -eq 1 -and $_ocFjson) {
+    # Parse the same content the output-cache key hashed, so the render always
+    # matches its key even if the handler rewrote the file mid-refresh.
+    try {
+        $feedJson = $_ocFjson | ConvertFrom-Json -ErrorAction Stop
+        if ($feedJson -is [PSCustomObject] -and ($null -eq $feedJson.tasks -or $feedJson.tasks -is [array])) {
+            $feedTier = $true
+            $feedTasks = if ($null -ne $feedJson.tasks) { @($feedJson.tasks) } else { @() }
+            $feedSeen = @{}
+            $feedCandidates = @()
+            foreach ($t in $feedTasks) {
+                if ($null -eq $t -or $t -isnot [PSCustomObject]) { continue }
+                $ftId     = if ($null -ne $t.id) { "$($t.id)" } else { '' }
+                # Row title: description -> type -> name, first non-blank after
+                # sanitizing "|"/control chars to spaces, so a hostile title
+                # can't corrupt the pipe-delimited task cache.
+                $ftDisp = Format-SaTitle $t.description
+                if (-not $ftDisp) { $ftDisp = Format-SaTitle $t.type }
+                if (-not $ftDisp) { $ftDisp = Format-SaTitle $t.name }
+                $ftStatus = if ($null -ne $t.status) { "$($t.status)" } else { '' }
+                # Scrub control chars / "|" from model before it enters the
+                # pipe-delimited cache record (mirrors the title's ingest scrub).
+                $ftModel  = Format-SaTitle $t.model
+                $ftStart  = if ($null -ne $t.startTime) { "$($t.startTime)" } else { '' }
+                if (-not ($ftId -or $ftDisp -or $ftStatus -or $ftModel)) { continue }
+                $ftIdSafe = $ftId -replace '[^a-zA-Z0-9_-]', ''
+                if ($ftIdSafe) { $feedSeen[$ftIdSafe] = $true }
+                $ftTok = 0L
+                if (-not [long]::TryParse("$($t.tokenCount)", [ref]$ftTok) -or $ftTok -lt 0) { $ftTok = 0L }
+                # Task window when present, else the tiered resolver (absent model -> 200K).
+                $ftCtx = 0L
+                if (-not [long]::TryParse("$($t.contextWindowSize)", [ref]$ftCtx) -or $ftCtx -le 0) {
+                    $ftCtx = Get-SubagentCtxSize $ftModel
+                }
+                $ftCache = if ($ftIdSafe) { Join-Path $env:TEMP "statusline-sa-$_ocSafeId-task-$ftIdSafe.txt" } else { $null }
+                $ftDone = ''
+                if ($SaTerminalStatuses -notcontains $ftStatus.ToLowerInvariant()) {
+                    $ftState = 'working'
+                } else {
+                    $ftState = 'done'
+                    if ($ftCache -and (Test-TrustedFile $ftCache)) {
+                        $fcRaw = Get-Content -LiteralPath $ftCache -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
+                        if ($fcRaw) {
+                            $fcParts = $fcRaw.TrimEnd() -split '\|'
+                            $fcPrev = 0L
+                            if ($fcParts.Count -ge 5 -and [long]::TryParse($fcParts[4], [ref]$fcPrev) -and $fcPrev -gt 0) { $ftDone = "$fcPrev" }
+                        }
+                    }
+                    if (-not $ftDone) { $ftDone = "$saNow" }
+                }
+                if ($ftCache -and (Test-WriteOk $ftCache)) {
+                    try { [System.IO.File]::WriteAllText($ftCache, "$ftTok|$ftCtx|$ftModel|$ftDisp|$ftDone|$ftStart", (New-Object System.Text.UTF8Encoding $false)) } catch {}
+                }
+                if ($ftState -eq 'done' -and ($saNow - [long]$ftDone) -gt $DONE_LINGER) { continue }
+                $feedCandidates += @{ start = $ftStart; id = $ftId; used = $ftTok; ctx = $ftCtx; model = $ftModel; disp = $ftDisp; state = $ftState }
+            }
+            # A cached task id missing from a fresh feed is a done signal: stamp
+            # done_ts on first observation, linger, then drop the cache entry.
+            $taskCachePrefix = "statusline-sa-$_ocSafeId-task-"
+            foreach ($cf in @(Get-ChildItem -Path (Join-Path $env:TEMP "$taskCachePrefix*.txt") -ErrorAction SilentlyContinue)) {
+                if ($cf.BaseName.Length -le $taskCachePrefix.Length) { continue }
+                $cfId = $cf.BaseName.Substring($taskCachePrefix.Length)
+                if ($feedSeen.ContainsKey($cfId)) { continue }
+                if (-not (Test-TrustedFile $cf.FullName)) { continue }
+                $fcRaw = Get-Content -LiteralPath $cf.FullName -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
+                if (-not $fcRaw) { continue }
+                $fcParts = $fcRaw.TrimEnd() -split '\|'
+                if ($fcParts.Count -lt 6) { continue }
+                $fcDone = 0L
+                if (-not [long]::TryParse($fcParts[4], [ref]$fcDone) -or $fcDone -le 0) {
+                    $fcDone = $saNow
+                    try { [System.IO.File]::WriteAllText($cf.FullName, "$($fcParts[0])|$($fcParts[1])|$($fcParts[2])|$($fcParts[3])|$fcDone|$($fcParts[5])", (New-Object System.Text.UTF8Encoding $false)) } catch {}
+                }
+                if (($saNow - $fcDone) -gt $DONE_LINGER) {
+                    try { Remove-Item -LiteralPath $cf.FullName -Force -ErrorAction SilentlyContinue } catch {}
+                    continue
+                }
+                $feedCandidates += @{ start = "$($fcParts[5])"; id = $cfId; used = $fcParts[0]; ctx = $fcParts[1]; model = $fcParts[2]; disp = $fcParts[3]; state = 'done' }
+            }
+            Write-Log "subagents: feed tier, $($feedCandidates.Count) row(s)"
+            # Deterministic order: startTime (ISO string sort), tiebreak id.
+            foreach ($c in ($feedCandidates | Sort-Object -Property @{ Expression = { "$($_.start)" } }, @{ Expression = { "$($_.id)" } })) {
+                $subagentRows += @{ s = 1; label = 'agent'; content = (Build-SubagentRow $c.used $c.ctx $c.model $c.disp $c.state) }
+            }
+        }
+    } catch {
+        Write-Log ("feed tier FAILED, falling back: " + $_.Exception.Message)
+        $feedTier = $false
+        $subagentRows = @()
+    }
+}
+
+# Fallback tier: per-agent transcripts under
+# <project>/<sessionId>/subagents/agent-*.jsonl (+ sibling .meta.json).
+if (-not $feedTier -and $sessionId -and $transcriptPath) {
     $projectDir   = Split-Path -Parent $transcriptPath
     $sessionBase  = [System.IO.Path]::GetFileNameWithoutExtension($transcriptPath)
     $subagentsDir = Join-Path $projectDir (Join-Path $sessionBase 'subagents')
     if (Test-Path -LiteralPath $subagentsDir) {
+        Write-Log "subagents: fallback tier (feed absent/stale)"
         $saFiles = Get-ChildItem -LiteralPath $subagentsDir -Filter 'agent-*.jsonl' -ErrorAction SilentlyContinue |
                    Sort-Object Name
         foreach ($sa in $saFiles) {
             try {
-                $saAge = ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds()) - ([DateTimeOffset]$sa.LastWriteTimeUtc).ToUnixTimeSeconds()
+                $saAge = $saNow - ([DateTimeOffset]$sa.LastWriteTimeUtc).ToUnixTimeSeconds()
                 if ($saAge -gt 180) { continue }
 
                 $saMt = $sa.LastWriteTimeUtc.Ticks
                 $saCachePath = Join-Path $env:TEMP "statusline-sa-$_ocSafeId-$($sa.BaseName).txt"
                 $saUseCache = $false
+                $saCacheDirty = $false
+                $saDone = ''
+                $saPrevDone = ''
 
-                if (Test-Path -LiteralPath $saCachePath) {
-                    $sc = (Get-Content -LiteralPath $saCachePath -Raw -ErrorAction SilentlyContinue).TrimEnd() -split '\|'
+                if (Test-TrustedFile $saCachePath) {
+                    $sc = (Get-Content -LiteralPath $saCachePath -Raw -Encoding UTF8 -ErrorAction SilentlyContinue).TrimEnd() -split '\|'
+                    if ($sc.Count -ge 8) {
+                        $scDone = 0L
+                        if ([long]::TryParse($sc[7], [ref]$scDone) -and $scDone -gt 0) { $saPrevDone = "$scDone" }
+                    }
                     if ($sc.Count -ge 7 -and $sc[0] -eq "$saMt") {
                         $saSr = $sc[1]; $inTok = [long]$sc[2]; $cwTok = [long]$sc[3]; $crTok = [long]$sc[4]
-                        $saModel = $sc[5]; $agentDisplay = $sc[6]
+                        $saModel = $sc[5]; $agentDisplay = $sc[6]; $saDone = $saPrevDone
                         $saUseCache = $true
                     }
                 }
 
                 if (-not $saUseCache) {
+                    # No assistant message yet -> zeros and no model id; the row
+                    # renders without the model segment for this refresh.
+                    $saSr = ''; $inTok = 0L; $cwTok = 0L; $crTok = 0L; $saModel = ''
                     # Scan from end for the last assistant entry.
                     $saLines    = [System.IO.File]::ReadAllLines($sa.FullName)
                     $lastAssist = $null
                     for ($i = $saLines.Length - 1; $i -ge 0; $i--) {
                         if ($saLines[$i] -match '"type"\s*:\s*"assistant"') { $lastAssist = $saLines[$i]; break }
                     }
-                    if (-not $lastAssist) { continue }
-                    $saSr = ''
-                    if ($lastAssist -match '"stop_reason"\s*:\s*"([^"]*)"') { $saSr = $Matches[1] }
-                    $inTok = 0; $cwTok = 0; $crTok = 0
-                    if ($lastAssist -match '"input_tokens"\s*:\s*(\d+)')                { $inTok = [long]$Matches[1] }
-                    if ($lastAssist -match '"cache_creation_input_tokens"\s*:\s*(\d+)') { $cwTok = [long]$Matches[1] }
-                    if ($lastAssist -match '"cache_read_input_tokens"\s*:\s*(\d+)')    { $crTok = [long]$Matches[1] }
-                    # 200K default; 1M for Opus 4.x [1m] variants.
-                    $saModel = ''
-                    if ($lastAssist -match '"model"\s*:\s*"([^"]+)"') { $saModel = $Matches[1] }
+                    if ($lastAssist) {
+                        if ($lastAssist -match '"stop_reason"\s*:\s*"([^"]*)"') { $saSr = $Matches[1] }
+                        if ($lastAssist -match '"input_tokens"\s*:\s*(\d+)')                { $inTok = [long]$Matches[1] }
+                        if ($lastAssist -match '"cache_creation_input_tokens"\s*:\s*(\d+)') { $cwTok = [long]$Matches[1] }
+                        if ($lastAssist -match '"cache_read_input_tokens"\s*:\s*(\d+)')    { $crTok = [long]$Matches[1] }
+                        if ($lastAssist -match '"model"\s*:\s*"([^"]+)"') { $saModel = $Matches[1] }
+                    }
                     $agentDisplay = $sa.BaseName -replace '^agent-',''
                     $metaPath = Join-Path $sa.Directory.FullName "$($sa.BaseName).meta.json"
                     if (Test-Path -LiteralPath $metaPath) {
                         try {
-                            $meta = Get-Content -LiteralPath $metaPath -Raw -ErrorAction SilentlyContinue | ConvertFrom-Json -ErrorAction SilentlyContinue
-                            if ($meta.agentType) { $agentDisplay = $meta.agentType }
+                            $meta = Get-Content -LiteralPath $metaPath -Raw -Encoding UTF8 -ErrorAction SilentlyContinue | ConvertFrom-Json -ErrorAction SilentlyContinue
+                            # Title chain: meta description -> agentType -> filename id
+                            # (already set); each candidate sanitized before the blank test.
+                            $metaDesc = Format-SaTitle $meta.description
+                            if ($metaDesc) {
+                                $agentDisplay = $metaDesc
+                            } else {
+                                $metaType = Format-SaTitle $meta.agentType
+                                if ($metaType) { $agentDisplay = $metaType }
+                            }
                         } catch {}
                     }
-                    try { [System.IO.File]::WriteAllText($saCachePath, "$saMt|$saSr|$inTok|$cwTok|$crTok|$saModel|$agentDisplay", (New-Object System.Text.UTF8Encoding $false)) } catch {}
+                    $saDone = $saPrevDone
+                    $saCacheDirty = $true
                 }
 
-                if ($saSr -eq 'end_turn') { continue }
+                # Any terminal stop reason is a done signal; tool_use/pause_turn
+                # (and no assistant message yet) mean working.
+                $saState = if ($SaTerminalStopReasons -contains $saSr) { 'done' } else { 'working' }
+                if ($saState -eq 'done') {
+                    if (-not $saDone) { $saDone = "$saNow"; $saCacheDirty = $true }
+                } else {
+                    if ($saDone) { $saCacheDirty = $true }
+                    $saDone = ''
+                }
+                if ($saCacheDirty -and (Test-WriteOk $saCachePath)) {
+                    try { [System.IO.File]::WriteAllText($saCachePath, "$saMt|$saSr|$inTok|$cwTok|$crTok|$saModel|$agentDisplay|$saDone", (New-Object System.Text.UTF8Encoding $false)) } catch {}
+                }
+                if ($saState -eq 'done' -and ($saNow - [long]$saDone) -gt $DONE_LINGER) { continue }
+
                 $saUsed = $inTok + $cwTok + $crTok
                 $saCtxSize = Get-SubagentCtxSize $saModel
-                # Bar + label — mirrors the main context row.
-                $saPctRaw  = [Math]::Max(0.0, [Math]::Min(100.0, ($saUsed / [double]$saCtxSize) * 100))
-                $saPctInt  = [int][Math]::Truncate($saPctRaw)
-                $saColor   = if ($saPctInt -ge 85) { $RED } elseif ($saPctInt -ge 60) { $YELLOW } else { $GREEN }
-                $saPctTrunc = [int][Math]::Truncate($saPctRaw)
-                $saFilled  = [int][Math]::Truncate(($barWidth * $saPctTrunc + 50) / 100)
-                if ($saFilled -lt 0) { $saFilled = 0 } elseif ($saFilled -gt $barWidth) { $saFilled = $barWidth }
-                $saEmpty   = $barWidth - $saFilled
-                $saFilledChars = if ($saFilled -gt 0) { [string]([char]0x2588) * $saFilled } else { '' }
-                $saEmptyChars  = if ($saEmpty  -gt 0) { [string]([char]0x2591) * $saEmpty  } else { '' }
-                $saBar     = "${saColor}${saFilledChars}${RESET}${BAR_EMPTY}${saEmptyChars}${RESET}"
-                $saUsedLbl = Format-Tokens $saUsed
-                if (-not $saUsedLbl) { $saUsedLbl = '0' }
-                $saCtxK    = [math]::Floor($saCtxSize / 1000)
-                $saCtxLbl  = if ($saCtxK -ge 1000) { "$([math]::Floor($saCtxK / 1000))M" }
-                             else { "${saCtxK}K" }
-                $saSep     = "  ${GRAY}$([char]0x00B7)${RESET}  "
-                $saWorking = "${YELLOW}$([char]0x25CB) working${RESET}"
-                $saContent = "${saBar} ${saColor}${saPctInt}%${RESET}${saSep}${WHITE}${saUsedLbl}${RESET}${GRAY}/${saCtxLbl}${RESET}${saSep}${BLUE}${agentDisplay}${RESET}${saSep}${saWorking}"
-                $subagentRows += @{ s = 1; label = 'agent'; content = $saContent }
+                $subagentRows += @{ s = 1; label = 'agent'; content = (Build-SubagentRow $saUsed $saCtxSize $saModel $agentDisplay $saState) }
             } catch {}
         }
     }
@@ -661,9 +986,9 @@ function Get-Vis([string]$s) {  # visible terminal cells: ANSI stripped; CJK/emo
     return $w
 }
 # @parity:constant LABEL_W=7
-$LABEL_W = 7  # longest label: "context"
+$LABEL_W = 7  # longest label: "project"
 # Rows with empty content are dropped — box auto-hides sections with no data.
-$rowSep = "  ${GRAY}$([char]0x00B7)${RESET}  "
+$rowSep = " ${GRAY}$([char]0x00B7)${RESET} "
 $modelRow = $modelPart
 if ($effortPart) { $modelRow = "${modelRow}${rowSep}${effortPart}" }
 if ($statusPart) { $modelRow = "${modelRow}${rowSep}${statusPart}" }
@@ -672,6 +997,7 @@ $costParts = @()
 if ($costPart)     { $costParts += $costPart }
 if ($msgPart)      { $costParts += $msgPart }
 if ($durationPart) { $costParts += $durationPart }
+if ($ratePart)     { $costParts += $ratePart }
 $costRow = $costParts -join $rowSep
 $pathRow = $cwdPart
 $pathLabel = 'project'
@@ -684,10 +1010,9 @@ $rowSpec = @(
     @{ s=0; label='agent';  content=$agentPart      }
     @{ s=1; label='model';  content=$modelRow       }
     @{ s=1; label='context'; content=$ctxBarPart    }
-) + $subagentRows + @(
     @{ s=1; label='tokens'; content=$tokensPart     }
+) + $subagentRows + @(
     @{ s=1; label='cost'; content=$costRow          }
-    @{ s=1; label='limits'; content=$ratePart       }
 )
 $rows = @()
 foreach ($spec in $rowSpec) {
@@ -736,7 +1061,7 @@ if ($_ocSafeId) {
     $_notifyState = Join-Path $env:TEMP "statusline-notify-$_ocSafeId.json"
     $_nsCtx = $false; $_nsRate = $false; $_nsRateResets = ''
 
-    if (Test-Path -LiteralPath $_notifyState -ErrorAction SilentlyContinue) {
+    if (Test-TrustedFile $_notifyState) {
         try {
             $_nsData = Get-Content -LiteralPath $_notifyState -Raw -Encoding UTF8 | ConvertFrom-Json
             $_nsCtx = if ($_nsData.notified_context_high -eq $true) { $true } else { $false }
@@ -789,7 +1114,7 @@ if ($_ocSafeId) {
         Write-Log "notify: rate_limit fired at ${_rateMax}%"
     }
 
-    if ($_nsChanged) {
+    if ($_nsChanged -and (Test-WriteOk $_notifyState)) {
         $nsCtxStr  = if ($_nsCtx)  { 'true' } else { 'false' }
         $nsRateStr = if ($_nsRate) { 'true' } else { 'false' }
         $nsJson = "{`"notified_context_high`":$nsCtxStr,`"notified_rate_limit`":$nsRateStr,`"last_rate_resets_at`":`"$_rateResetsNow`"}"
@@ -798,7 +1123,7 @@ if ($_ocSafeId) {
 }
 
 Write-Log ("about to write: lines={0} chars={1}" -f $output.Count, $finalOutput.Length)
-if ($_ocPath) {
+if ($_ocPath -and (Test-WriteOk $_ocPath)) {
     try {
         [System.IO.File]::WriteAllText($_ocPath, "$_ocKey`n$finalOutput", (New-Object System.Text.UTF8Encoding $false))
     } catch {}

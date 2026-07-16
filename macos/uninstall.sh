@@ -9,6 +9,7 @@ SCRIPT_PATH="$CLAUDE_DIR/statusline.sh"
 SETTINGS_PATH="$CLAUDE_DIR/settings.json"
 NOTIFY_PATH="$CLAUDE_DIR/notify.sh"
 GIT_REFRESH_PATH="$CLAUDE_DIR/git-refresh.sh"
+SUBAGENT_PATH="$CLAUDE_DIR/subagent-statusline.sh"
 
 # --- Helpers ---
 RESET=$'\033[0m'
@@ -35,7 +36,7 @@ human_size() {
 
 # --- Header ---
 echo ""
-printf "  ${DIM}claude-status-line · Uninstaller${RESET}\n"
+printf "  ${DIM}claude-statusline · Uninstaller${RESET}\n"
 printf "  ${GRAY}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}\n"
 echo ""
 
@@ -50,20 +51,41 @@ else
 fi
 echo ""
 
+# --- Remove subagent status line handler ---
+step "Removing subagent status line handler"
+if [[ -f "$SUBAGENT_PATH" ]]; then
+    _sz=$(human_size $(file_bytes "$SUBAGENT_PATH"))
+    rm -f "$SUBAGENT_PATH"
+    ok "Deleted $SUBAGENT_PATH ($_sz)"
+else
+    info "Subagent handler not found (not installed)"
+fi
+
+# --- Remove learned model window map ---
+MODEL_WINDOWS_PATH="$CLAUDE_DIR/statusline-model-windows.json"
+if [[ -f "$MODEL_WINDOWS_PATH" ]]; then
+    _sz=$(human_size $(file_bytes "$MODEL_WINDOWS_PATH"))
+    rm -f "$MODEL_WINDOWS_PATH"
+    ok "Deleted $MODEL_WINDOWS_PATH ($_sz)"
+fi
+echo ""
+
 # --- Remove from settings.json ---
 step "Updating Claude Code settings"
 if [[ -f "$SETTINGS_PATH" ]]; then
     if command -v jq &>/dev/null; then
         tmp=$(mktemp "$SETTINGS_PATH.XXXXXX")
-        if jq 'del(.statusLine)' "$SETTINGS_PATH" > "$tmp"; then
+        # Only remove subagentStatusLine when it points at this install's handler;
+        # a declined overwrite at install time may have preserved a foreign entry.
+        if jq 'del(.statusLine) | if (.subagentStatusLine.command? // "" | tostring | contains("subagent-statusline")) then del(.subagentStatusLine) else . end' "$SETTINGS_PATH" > "$tmp"; then
             mv "$tmp" "$SETTINGS_PATH"
-            ok "Removed statusLine from settings.json"
+            ok "Removed statusline entries from settings.json"
         else
             rm -f "$tmp"
-            warn "Failed to update settings.json — remove the \"statusLine\" key manually"
+            warn "Failed to update settings.json — remove the \"statusLine\" and \"subagentStatusLine\" keys manually"
         fi
     else
-        warn "jq not installed — please remove the \"statusLine\" key from settings.json manually"
+        warn "jq not installed — please remove the \"statusLine\" and \"subagentStatusLine\" keys from settings.json manually"
         info "$SETTINGS_PATH"
     fi
 else

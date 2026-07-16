@@ -4,12 +4,13 @@
 # leak into the caller's shell and persist after return. Failures are handled
 # explicitly at each critical step instead.
 
-REPO="https://raw.githubusercontent.com/axlaser/claude-status-line/master/macos"
+REPO="https://raw.githubusercontent.com/axlaser/claude-statusline/master/macos"
 CLAUDE_DIR="$HOME/.claude"
 SCRIPT_PATH="$CLAUDE_DIR/statusline.sh"
 SETTINGS_PATH="$CLAUDE_DIR/settings.json"
 NOTIFY_PATH="$CLAUDE_DIR/notify.sh"
 GIT_REFRESH_PATH="$CLAUDE_DIR/git-refresh.sh"
+SUBAGENT_PATH="$CLAUDE_DIR/subagent-statusline.sh"
 
 # --- Helpers ---
 RESET=$'\033[0m'
@@ -188,6 +189,50 @@ else
     fi
 fi
 info "$SETTINGS_PATH"
+
+# --- Install subagent status line handler ---
+echo ""
+step "Installing subagent status line handler"
+if [[ -n "$SCRIPT_DIR" && -f "$SCRIPT_DIR/subagent-statusline.sh" ]]; then
+    tmp=$(mktemp "$CLAUDE_DIR/subagent-statusline.XXXXXX")
+    cp "$SCRIPT_DIR/subagent-statusline.sh" "$tmp" && mv "$tmp" "$SUBAGENT_PATH" || { rm -f "$tmp"; return 1 2>/dev/null || exit 1; }
+    ok "Copied from local repo"
+else
+    tmp=$(mktemp "$CLAUDE_DIR/subagent-statusline.XXXXXX")
+    curl -fsSL "$REPO/subagent-statusline.sh" -o "$tmp" && mv "$tmp" "$SUBAGENT_PATH" || { rm -f "$tmp"; return 1 2>/dev/null || exit 1; }
+    ok "Downloaded from GitHub"
+fi
+chmod +x "$SUBAGENT_PATH" || warn "Could not mark $SUBAGENT_PATH executable"
+info "$SUBAGENT_PATH ($(human_size $(file_bytes "$SUBAGENT_PATH")))"
+
+# --- Register subagentStatusLine handler ---
+echo ""
+step "Subagent status line"
+info "Feeds each subagent's model and context usage to the status line."
+SUBAGENT_ENTRY='{"subagentStatusLine":{"type":"command","command":"~/.claude/subagent-statusline.sh"}}'
+if [[ -f "$SETTINGS_PATH" ]] && jq -e --argjson entry "$SUBAGENT_ENTRY" '.subagentStatusLine == $entry.subagentStatusLine' "$SETTINGS_PATH" &>/dev/null; then
+    ok "Already configured"
+else
+    _skip_subagent=false
+    if [[ -f "$SETTINGS_PATH" ]] && jq -e '.subagentStatusLine' "$SETTINGS_PATH" &>/dev/null; then
+        echo ""
+        read -rp "  ${YELLOW}${BOLD} ?${RESET} Existing subagentStatusLine config found. Overwrite? (${GREEN}y${RESET}/${RED}n${RESET}) " answer </dev/tty
+        if [[ ! "$answer" =~ ^[Yy]$ ]]; then
+            _skip_subagent=true
+            warn "Skipped subagentStatusLine update"
+        fi
+    fi
+    if [[ "$_skip_subagent" != true ]]; then
+        tmp=$(mktemp "$SETTINGS_PATH.XXXXXX")
+        if jq --argjson entry "$SUBAGENT_ENTRY" '. + $entry' "$SETTINGS_PATH" > "$tmp"; then
+            mv "$tmp" "$SETTINGS_PATH"
+            ok "subagentStatusLine handler enabled"
+        else
+            rm -f "$tmp"
+            warn "Failed to configure subagentStatusLine (jq error)"
+        fi
+    fi
+fi
 
 # --- Install git-refresh hook script ---
 echo ""

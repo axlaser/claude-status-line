@@ -2,7 +2,7 @@
 name: sync
 description: >
   Fetch the latest upstream branch and merge it into the current branch, in
-  the claude-status-line repo — feature branches (`dev-<feature>`) sync from
+  the claude-statusline repo — feature branches (`dev-<feature>`) sync from
   `dev`, and `dev` itself syncs from `master`. Stages the merge, walks through any conflicts
   interactively, then creates the signed merge commit directly. Use whenever
   the user says

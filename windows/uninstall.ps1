@@ -1,4 +1,4 @@
-﻿# Uninstaller: removes ~/.claude/statusline.ps1 and the statusLine key from settings.json.
+# Uninstaller: removes ~/.claude/statusline.ps1 and the statusLine key from settings.json.
 # PowerShell 5.1+ required -- checked at runtime because `#Requires` directives aren't honored via `irm | iex`.
 if ($PSVersionTable.PSVersion -lt [Version]'5.1') { Write-Host "  PowerShell 5.1+ required (current: $($PSVersionTable.PSVersion))" -ForegroundColor Red; return }
 
@@ -7,6 +7,7 @@ $scriptPath = "$claudeDir\statusline.ps1"
 $settingsPath = "$claudeDir\settings.json"
 $notifyPath = "$claudeDir\notify.ps1"
 $gitRefreshPath = "$claudeDir\git-refresh.ps1"
+$subagentPath = "$claudeDir\subagent-statusline.ps1"
 
 # --- Colors / log helpers ---
 $ESC    = [char]27
@@ -47,7 +48,7 @@ function Format-Json([string]$Json) {
 
 # --- Header ---
 Write-Host ""
-Write-Host "  ${DIM}claude-status-line $([char]0x00B7) Uninstaller${RESET}"
+Write-Host "  ${DIM}claude-statusline $([char]0x00B7) Uninstaller${RESET}"
 Write-Host "  ${GRAY}$([string][char]0x2501 * 43)${RESET}"
 Write-Host ""
 
@@ -62,6 +63,25 @@ if (Test-Path $scriptPath) {
 }
 Write-Host ""
 
+# --- Remove subagent status line handler ---
+Step "Removing subagent status line handler"
+if (Test-Path $subagentPath) {
+    $sz = HumanSize (Get-Item $subagentPath).Length
+    Remove-Item $subagentPath -Force -ErrorAction SilentlyContinue
+    Ok "Deleted $subagentPath ($sz)"
+} else {
+    Info "Subagent handler not found (not installed)"
+}
+
+# --- Remove learned model window map ---
+$modelWindowsPath = "$claudeDir\statusline-model-windows.json"
+if (Test-Path $modelWindowsPath) {
+    $sz = HumanSize (Get-Item $modelWindowsPath).Length
+    Remove-Item $modelWindowsPath -Force -ErrorAction SilentlyContinue
+    Ok "Deleted $modelWindowsPath ($sz)"
+}
+Write-Host ""
+
 # --- Remove from settings.json ---
 # UTF-8 without BOM -- Claude Code rejects a leading BOM on settings.json.
 Step "Updating Claude Code settings"
@@ -69,14 +89,19 @@ if (Test-Path $settingsPath) {
     try {
         $existing = Get-Content $settingsPath -Raw -Encoding UTF8 | ConvertFrom-Json
         $existing.PSObject.Properties.Remove('statusLine')
+        # Only remove subagentStatusLine when it points at this install's handler;
+        # a declined overwrite at install time may have preserved a foreign entry.
+        if ("$($existing.subagentStatusLine.command)" -like '*subagent-statusline*') {
+            $existing.PSObject.Properties.Remove('subagentStatusLine')
+        }
 
         $json = Format-Json ($existing | ConvertTo-Json -Depth 10)
         $tmpPath = "$settingsPath.tmp"
         [System.IO.File]::WriteAllText($tmpPath, $json, (New-Object System.Text.UTF8Encoding $false))
         Move-Item $tmpPath $settingsPath -Force
-        Ok "Removed statusLine from settings.json"
+        Ok "Removed statusline entries from settings.json"
     } catch {
-        Warn "Could not parse settings.json -- please remove the `"statusLine`" key manually"
+        Warn "Could not parse settings.json -- please remove the `"statusLine`" and `"subagentStatusLine`" keys manually"
         Info $settingsPath
     }
 } else {

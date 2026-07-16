@@ -16,7 +16,7 @@ Analyze the current repo's full diff, produce a professional commit message, and
 
 - **Stage and commit directly.** Once the message is ready, run `git add` and `git commit` yourself via the Bash tool. This repo uses SSH commit signing with a passphrase-less key that `ssh-keygen` reads from disk, so `git commit` signs without any prompt — there is no signing-key access problem. If a commit ever fails (a passphrase prompt, a pre-commit hook, etc.), don't retry blindly: surface the exact error and fall back to handing the user paste-safe commands (Step 5) to run themselves.
 - **No Co-Authored-By trailer.**
-- **Detect the shell for hand-offs.** When you fall back to paste-safe commands for the user to run, check the platform and pick the right syntax (see Step 5) — this machine's interactive shell is PowerShell, while your own Bash tool runs Git Bash.
+- **Detect the shell for hand-offs.** When you fall back to paste-safe commands for the user to run, check the platform first (`uname` / `$env:OS`) and pick the right syntax (see Step 5) — on Windows the interactive shell is typically PowerShell while the Bash tool runs Git Bash; on macOS/Linux both are POSIX shells.
 - **Output goes in the chat, not to a file.**
 - **Paste-safe commands.** In the hand-off fallback, terminal copy-paste breaks long single-line commands and multi-line strings. Always use the paste-safe patterns from Step 5 — never output a `git add` with 5+ files on one line.
 - **Sensitive-content check is blocking.** Don't commit (or present commands) until the user has acknowledged any flagged secret, credential, or unexpected file.
@@ -51,7 +51,7 @@ Read the diff and identify what changed, why, and the scope.
 **Repo rule compliance.** Cross-check the diff against this project's CLAUDE.md rules and flag (don't block) anything that looks off:
 - **Cross-Platform Parity:** if the diff touches `macos/` or `linux/` scripts, check whether `windows/` has a matching change (and vice versa). A platform-only fix can be intentional — just surface it.
 - **No `exit` in install/uninstall scripts:** flag any new `exit` call added to `install.*`/`uninstall.*` (Windows scripts run via `irm | iex`, so `exit` would kill the user's shell session).
-- **Silent Degradation:** flag any new `stderr` output, or a `statusline.*`/`notify.*`/`git-refresh.*` code path that could skip its final `exit 0`.
+- **Silent Degradation:** flag any new `stderr` output, or a `statusline.*`/`notify.*`/`git-refresh.*`/`subagent-statusline.*` code path that could skip its final `exit 0`.
 
 - **Large single-file diffs** (>500 lines): summarize at the file level using `--stat` rather than line-by-line.
 - **Binary files**: note their paths in the analysis but don't attempt to describe content changes.
@@ -98,10 +98,10 @@ Before running the commit, check your own work:
 
 Once the message passes Step 4, **preview it to the user**, then stage and commit directly via the Bash tool. (If the user only asked you to *describe* or *draft* the changes rather than commit, stop after the preview — don't commit.)
 
-**Stage** the specific files (never `git add -A`):
+**Stage** the specific files (never `git add -A`) — but only when the index started empty. If `git diff --cached` already showed staged changes in Step 1, commit exactly what is staged and skip `git add` entirely: the message covers staged changes only, and `git add` on a partially staged file would absorb the hunks the user deliberately left out.
 
 ```bash
-git add path/to/file1 path/to/file2
+git add path/to/file1 path/to/file2   # only when nothing was staged beforehand
 ```
 
 **Commit** with a quoted heredoc. Your Bash tool runs Git Bash on every platform, so this one form always works and keeps backticks and markdown literal. Pass a short timeout so a stray passphrase prompt can't hang the session:

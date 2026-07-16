@@ -1,13 +1,14 @@
-﻿# Claude Code Status Line -- Installer for Windows
+# Claude Code Status Line -- Installer for Windows
 # PowerShell 5.1+ required -- checked at runtime because `#Requires` directives aren't honored via `irm | iex`.
 if ($PSVersionTable.PSVersion -lt [Version]'5.1') { Write-Host "  PowerShell 5.1+ required (current: $($PSVersionTable.PSVersion))" -ForegroundColor Red; return }
 
-$repo = "https://raw.githubusercontent.com/axlaser/claude-status-line/master/windows"
+$repo = "https://raw.githubusercontent.com/axlaser/claude-statusline/master/windows"
 $claudeDir = "$env:USERPROFILE\.claude"
 $scriptPath = "$claudeDir\statusline.ps1"
 $settingsPath = "$claudeDir\settings.json"
 $notifyPath = "$claudeDir\notify.ps1"
 $gitRefreshPath = "$claudeDir\git-refresh.ps1"
+$subagentPath = "$claudeDir\subagent-statusline.ps1"
 
 # --- Colors / log helpers ---
 $ESC    = [char]27
@@ -212,6 +213,77 @@ if (Test-Path $settingsPath) {
     }
 }
 Info $settingsPath
+
+# --- Install subagent status line handler ---
+Write-Host ""
+Step "Installing subagent status line handler"
+$localSubagent = if ($myPath) { Join-Path (Split-Path -Parent $myPath) "subagent-statusline.ps1" } else { $null }
+if ($localSubagent -and (Test-Path $localSubagent)) {
+    try {
+        Copy-WithRetry $localSubagent $subagentPath
+        Ok "Copied from local repo"
+    } catch {
+        Err "Copy failed (file may be locked by Claude Code): $_"
+        Err "Close Claude Code and try again."
+        return
+    }
+} else {
+    try {
+        Invoke-WebRequest -Uri "$repo/subagent-statusline.ps1" -OutFile $subagentPath -UseBasicParsing -ErrorAction Stop
+        Ok "Downloaded from GitHub"
+    } catch {
+        Err "Download failed: $_"
+        Err "Run the installer from a local clone instead."
+        return
+    }
+}
+Info "$subagentPath ($(HumanSize (Get-Item $subagentPath).Length))"
+
+# --- Register subagentStatusLine handler ---
+Write-Host ""
+Step "Subagent status line"
+Info "Feeds each subagent's model and context usage to the status line."
+
+try {
+    $existing = Get-Content $settingsPath -Raw -Encoding UTF8 | ConvertFrom-Json
+} catch {
+    Err "settings.json could not be parsed: $_"
+    return
+}
+
+$subagentCmd = "powershell -NoProfile -File `"$subagentPath`""
+$subagentEntry = [PSCustomObject]@{ type = "command"; command = $subagentCmd }
+
+$skipSubagent = $false
+if ($existing.subagentStatusLine) {
+    $currentJson = $existing.subagentStatusLine | ConvertTo-Json -Compress -Depth 10
+    $newJson = $subagentEntry | ConvertTo-Json -Compress -Depth 10
+    if ($currentJson -eq $newJson) {
+        Ok "Already configured"
+        $skipSubagent = $true
+    } else {
+        Write-Host ""
+        $answer = Read-Host "  ${YELLOW}${BOLD} ?${RESET} Existing subagentStatusLine config found. Overwrite? (${GREEN}y${RESET}/${RED}n${RESET})"
+        if ($answer -notmatch '^[Yy]$') {
+            $skipSubagent = $true
+            Warn "Skipped subagentStatusLine update"
+        }
+    }
+}
+
+if (-not $skipSubagent) {
+    $existing | Add-Member -NotePropertyName 'subagentStatusLine' -NotePropertyValue $subagentEntry -Force
+    try {
+        $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+        $tmpPath = "$settingsPath.tmp"
+        [System.IO.File]::WriteAllText($tmpPath, (Format-Json ($existing | ConvertTo-Json -Depth 10)), $utf8NoBom)
+        Move-Item $tmpPath $settingsPath -Force
+        Ok "subagentStatusLine handler enabled"
+    } catch {
+        Remove-Item $tmpPath -Force -ErrorAction SilentlyContinue
+        Warn "Failed to configure subagentStatusLine: $_"
+    }
+}
 
 # --- Install git-refresh hook script ---
 Write-Host ""
@@ -456,7 +528,7 @@ if ($hasNotifyHooks) {
     }
 }
 
-# Register hooks — runs on fresh install (user said Y) or re-install (refreshes missing events)
+# Register hooks -- runs on fresh install (user said Y) or re-install (refreshes missing events)
 if ($enableSound -match '^[Yy]$' -or $enableVisual -match '^[Yy]$' -or $hasNotifyHooks) {
     $notifyCmd = "powershell -NoProfile -File `"$notifyPath`""
 
