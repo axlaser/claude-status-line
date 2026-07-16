@@ -184,7 +184,7 @@ function Test-TrustedFile([string]$path) {
         $item = Get-Item -LiteralPath $path -Force -ErrorAction Stop
         if ($item.PSIsContainer -or ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) { return $false }
         $me = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
-        return ((Get-Acl -LiteralPath $path).GetOwner([System.Security.Principal.SecurityIdentifier]) -eq $me)
+        return ((Get-Acl -LiteralPath $path -ErrorAction Stop).GetOwner([System.Security.Principal.SecurityIdentifier]) -eq $me)
     } catch { return $false }
 }
 function Test-WriteOk([string]$path) {
@@ -196,7 +196,7 @@ function Test-WriteOk([string]$path) {
             if (-not $bad) {
                 try {
                     $me = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
-                    $bad = ((Get-Acl -LiteralPath $path).GetOwner([System.Security.Principal.SecurityIdentifier]) -ne $me)
+                    $bad = ((Get-Acl -LiteralPath $path -ErrorAction Stop).GetOwner([System.Security.Principal.SecurityIdentifier]) -ne $me)
                 } catch { $bad = $false }
             }
             if ($bad) { Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue }
@@ -1061,7 +1061,7 @@ if ($_ocSafeId) {
     $_notifyState = Join-Path $env:TEMP "statusline-notify-$_ocSafeId.json"
     $_nsCtx = $false; $_nsRate = $false; $_nsRateResets = ''
 
-    if (Test-Path -LiteralPath $_notifyState -ErrorAction SilentlyContinue) {
+    if (Test-TrustedFile $_notifyState) {
         try {
             $_nsData = Get-Content -LiteralPath $_notifyState -Raw -Encoding UTF8 | ConvertFrom-Json
             $_nsCtx = if ($_nsData.notified_context_high -eq $true) { $true } else { $false }

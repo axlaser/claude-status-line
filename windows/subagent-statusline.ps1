@@ -56,9 +56,13 @@ try {
     $tmpItem = Get-Item -LiteralPath $tmpPath -Force -ErrorAction SilentlyContinue
     if ($tmpItem -and ($tmpItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
         Remove-Item -LiteralPath $tmpPath -Force -ErrorAction SilentlyContinue
+        $tmpItem = Get-Item -LiteralPath $tmpPath -Force -ErrorAction SilentlyContinue
     }
-    [System.IO.File]::WriteAllText($tmpPath, $stateJson)
-    Move-Item -LiteralPath $tmpPath -Destination $statePath -Force -ErrorAction Stop
+    # Skip the write if a reparse point survived removal (never follow it).
+    if (-not ($tmpItem -and ($tmpItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint))) {
+        [System.IO.File]::WriteAllText($tmpPath, $stateJson)
+        Move-Item -LiteralPath $tmpPath -Destination $statePath -Force -ErrorAction Stop
+    }
 } catch {
     Write-Log "state write failed: $_"
     if (Test-Path -LiteralPath $tmpPath) { Remove-Item -LiteralPath $tmpPath -Force -ErrorAction SilentlyContinue }

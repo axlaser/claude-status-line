@@ -1135,7 +1135,7 @@ if [[ -n "$J_SESSION_ID" ]]; then
     _notify_state="${TMPDIR:-/tmp}/statusline-notify-${J_SESSION_ID//[^a-zA-Z0-9_-]/}.json"
     _ns_ctx=false _ns_rate=false _ns_rate_resets=""
 
-    if [[ -f "$_notify_state" ]] && command -v jq &>/dev/null; then
+    if sl_trusted_file "$_notify_state" && command -v jq &>/dev/null; then
         _ns_ctx=$(jq -r '.notified_context_high // false' "$_notify_state" 2>/dev/null)
         _ns_rate=$(jq -r '.notified_rate_limit // false' "$_notify_state" 2>/dev/null)
         _ns_rate_resets=$(jq -r '.last_rate_resets_at // ""' "$_notify_state" 2>/dev/null)
