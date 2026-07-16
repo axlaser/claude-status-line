@@ -101,3 +101,8 @@ Install and uninstall scripts must never use `exit`. Windows scripts are invoked
 - **PowerShell error paths**: Use `return`. This exits the script scope without terminating the session.
 
 This rule applies only to `install.*` and `uninstall.*`. Statusline, notify, git-refresh, and subagent-statusline scripts run as subprocesses where `exit 0` is required (see Silent Degradation above).
+
+### Never Commit
+
+- A hardcoded absolute personal path (`/Users/<name>/...`, `C:\Users\<name>\...`) where `$HOME` / `~` / `$env:USERPROFILE` belongs. This tool runs on other people's machines — a baked-in personal path is a shipped bug, not just a privacy leak.
+- `statusline-debug.log` or any other runtime debug/log artifact.
