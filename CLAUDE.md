@@ -9,6 +9,7 @@ macos/       statusline.sh, install.sh, uninstall.sh, notify.sh, git-refresh.sh,
 linux/       statusline.sh, install.sh, uninstall.sh, notify.sh, git-refresh.sh, subagent-statusline.sh
 windows/     statusline.ps1, install.ps1, uninstall.ps1, notify.ps1, git-refresh.ps1, subagent-statusline.ps1
 docs/solutions/  documented fixes and practices, by category, with YAML frontmatter (module, tags, problem_type) -- relevant when debugging or implementing in an area one of them covers
+docs/performance.md  standing performance rules: cost model, measurement methodology, equivalence matrix, PR checklist -- binding for any hot-path change
 ```
 
 - `notify.*` -- sound notification handler, triggered by hooks on permission requests and task completion
@@ -102,6 +103,15 @@ Install and uninstall scripts must never use `exit`. Windows scripts are invoked
 - **PowerShell error paths**: Use `return`. This exits the script scope without terminating the session.
 
 This rule applies only to `install.*` and `uninstall.*`. Statusline, notify, git-refresh, and subagent-statusline scripts run as subprocesses where `exit 0` is required (see Silent Degradation above).
+
+### Performance
+
+The hot cost is process creation, not script logic: every refresh spawns a fresh interpreter (~124 ms PowerShell floor), so every call is a first call and every fork counts. Full rules, cost model, and the mandatory PR checklist live in `docs/performance.md`. The non-negotiables:
+
+- No new subprocess/fork on a per-tick path, and no new work before the output-cache check.
+- Performance changes must keep rendered output byte-identical (verified across the state matrix in `docs/performance.md` §4) and must be measured with fresh-process probes, never warm loops — end-to-end before/after medians only.
+- Debug-log call sites must not evaluate expensive arguments when logging is off (PowerShell evaluates arguments before the callee's guard).
+- Bump `CACHE_VERSION` whenever a cache record format changes.
 
 ### Never Commit
 
