@@ -146,6 +146,28 @@ Implementation order when performance work is picked up:
 Open design questions (unowned, highest leverage): keying the output cache on rendered
 values instead of raw payload; taking the 5 s bucket out of the key.
 
+### Rendered-value cache key decision (2026-07-26, U9 design gate) — no change
+
+The design resolved cleanly (two-tier key: today's raw-level key as tier 1, a
+rendered-value key checked after display inputs are computed as tier 2; tier 2 needs no
+time bucket because visible countdown labels self-invalidate; threshold notifications
+are safe where they are because rendered percentages and configured thresholds are both
+integers, so every crossing changes the key). It fails on the measured benefit bar:
+
+- A tier-2 hit still pays everything before the render — measured 501 ms of a 538.6 ms
+  forced-miss tick — because those stages produce the tier-2 key's inputs.
+- The render tail (box assembly, notifications, cache write, emit) is **37.6 ms**: the
+  per-hit ceiling, ~7% of tick cost, against a permanent second key tier in three
+  scripts whose completeness failure mode is a silently stale display.
+- Root cause: the audits priced this idea against pre-optimization misses (0.7–1.4 s).
+  The git consolidation and incremental transcript parse moved that work behind their
+  own caches, leaving the rendered-value key nothing expensive to skip.
+
+Reopen condition: a future change that makes the render tail expensive again (or a
+requirement to eliminate the idle 5 s re-render entirely, which additionally needs a
+replacement idle recompute driver for ref-only git changes — see the plan's U9 gate
+questions for the full analysis).
+
 ### Subagent tee decision (2026-07-26, U10 design gate) — no change
 
 Measured (fresh-process medians, 11+ samples): current handler ~266 ms; interpreter floor
