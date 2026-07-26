@@ -121,11 +121,11 @@ sl_write_ok() {
 # reads). Defined early so the git block — which runs before the subagent
 # helpers — can call it.
 sa_sanitize_title() {  # replace "|" and control chars with spaces, trim -> "" when blank
-    local s="${1//[$'\x01'-$'\x1f'$'\x7f']/ }"
-    s="${s//'|'/ }"
-    s="${s#"${s%%[! ]*}"}"
-    s="${s%"${s##*[! ]}"}"
-    printf '%s' "$s"
+    local _st_s="${2//[$'\x01'-$'\x1f'$'\x7f']/ }"
+    _st_s="${_st_s//'|'/ }"
+    _st_s="${_st_s#"${_st_s%%[! ]*}"}"
+    _st_s="${_st_s%"${_st_s##*[! ]}"}"
+    printf -v "$1" '%s' "$_st_s"
 }
 # @parity:sanitize-title-end
 
@@ -177,27 +177,30 @@ if [[ -n "$J_SESSION_ID" ]] && sl_trusted_file "$_oc_path"; then
     fi
 fi
 
+# Pure render helpers below return via `printf -v` into a caller-named
+# out-variable (always $1, data args after it) instead of echoing into a $( )
+# command substitution -- every substitution forks a subshell, and these run on
+# every tick and every subagent row. The format string is always a fixed
+# literal; untrusted data is only ever a %s/%d argument, never the format.
 format_tokens() {  # 1234567 -> "1.2M"
-    local n=$1
-    [[ -z "$n" || "$n" == "0" ]] && { printf '0'; return; }
-    if (( n >= 1000000 )); then
-        local whole=$((n / 1000000)) frac=$(( (n % 1000000) / 100000 ))
-        printf '%d.%dM' "$whole" "$frac"
-    elif (( n >= 1000 )); then
-        local whole=$((n / 1000)) frac=$(( (n % 1000) / 100 ))
-        printf '%d.%dK' "$whole" "$frac"
+    local _ft_n=$2
+    [[ -z "$_ft_n" || "$_ft_n" == "0" ]] && { printf -v "$1" '%s' '0'; return; }
+    if (( _ft_n >= 1000000 )); then
+        printf -v "$1" '%d.%dM' "$(( _ft_n / 1000000 ))" "$(( (_ft_n % 1000000) / 100000 ))"
+    elif (( _ft_n >= 1000 )); then
+        printf -v "$1" '%d.%dK' "$(( _ft_n / 1000 ))" "$(( (_ft_n % 1000) / 100 ))"
     else
-        printf '%d' "$n"
+        printf -v "$1" '%d' "$_ft_n"
     fi
 }
 
 pct_color_for() {  # context percentage -> threshold color
-    local pct=${1:-0}
+    local _pc_pct=${2:-0}
 # @parity:threshold CONTEXT_CRIT=85
 # @parity:threshold CONTEXT_WARN=60
-    if   (( pct >= 85 )); then printf '%s' "$RED"
-    elif (( pct >= 60 )); then printf '%s' "$YELLOW"
-    else                       printf '%s' "$GREEN"
+    if   (( _pc_pct >= 85 )); then printf -v "$1" '%s' "$RED"
+    elif (( _pc_pct >= 60 )); then printf -v "$1" '%s' "$YELLOW"
+    else                           printf -v "$1" '%s' "$GREEN"
     fi
 }
 
@@ -208,29 +211,31 @@ effort_color_for() {  # reasoning effort level -> ladder color
 # @parity:effort-ladder-begin
     # Lowercased before matching so this agrees with PowerShell's switch, which is
     # case-insensitive by default (same idiom as sa_status_is_active).
-    case "${1,,}" in
-        low)    printf '%s' "$GRAY" ;;
-        medium) printf '%s' "$WHITE" ;;
-        high)   printf '%s' "$CYAN" ;;
-        xhigh)  printf '%s' "$YELLOW" ;;
-        max)    printf '%s' "$RED" ;;
-        *)      printf '%s' "$WHITE" ;;
+    case "${2,,}" in
+        low)    printf -v "$1" '%s' "$GRAY" ;;
+        medium) printf -v "$1" '%s' "$WHITE" ;;
+        high)   printf -v "$1" '%s' "$CYAN" ;;
+        xhigh)  printf -v "$1" '%s' "$YELLOW" ;;
+        max)    printf -v "$1" '%s' "$RED" ;;
+        *)      printf -v "$1" '%s' "$WHITE" ;;
     esac
 # @parity:effort-ladder-end
 }
 
 render_bar() {  # pct color -> filled/empty bar over bar_width cells
-    local pct=${1:-0} color=$2 filled
-    (( pct < 0 )) && pct=0
-    (( pct > 100 )) && pct=100
-    filled=$(( (bar_width * pct + 50) / 100 ))
-    printf '%s' "${color}$(repeat_char "█" "$filled")${RESET}${BAR_EMPTY}$(repeat_char "░" "$((bar_width - filled))")${RESET}"
+    local _rb_pct=${2:-0} _rb_color=$3 _rb_filled _rb_fill _rb_empty
+    (( _rb_pct < 0 )) && _rb_pct=0
+    (( _rb_pct > 100 )) && _rb_pct=100
+    _rb_filled=$(( (bar_width * _rb_pct + 50) / 100 ))
+    repeat_char _rb_fill "█" "$_rb_filled"
+    repeat_char _rb_empty "░" "$(( bar_width - _rb_filled ))"
+    printf -v "$1" '%s' "${_rb_color}${_rb_fill}${RESET}${BAR_EMPTY}${_rb_empty}${RESET}"
 }
 
 normalize_model_id() {  # strip trailing -YYYYMMDD date suffix
-    local id="$1"
-    [[ "$id" =~ -[0-9]{8}$ ]] && id="${id%-*}"
-    printf '%s' "$id"
+    local _nm_id="$2"
+    [[ "$_nm_id" =~ -[0-9]{8}$ ]] && _nm_id="${_nm_id%-*}"
+    printf -v "$1" '%s' "$_nm_id"
 }
 
 # @parity:base-id-begin
@@ -239,23 +244,23 @@ normalize_model_id() {  # strip trailing -YYYYMMDD date suffix
 # AND the string the variant-marker tier matches on, so teaching it to strip "[1m]"
 # would rewrite every stored key and make that tier unreachable.
 model_base_id() {
-    local b
-    b=$(normalize_model_id "$1")
-    b="${b%\[1m\]}"
-    b="${b%-1m}"
-    printf '%s' "${b,,}"
+    local _mb_b
+    normalize_model_id _mb_b "$2"
+    _mb_b="${_mb_b%\[1m\]}"
+    _mb_b="${_mb_b%-1m}"
+    printf -v "$1" '%s' "${_mb_b,,}"
 }
 # @parity:base-id-end
 
 prettify_model_id() {  # claude-sonnet-5 -> "Sonnet 5"; unknown -> cleaned id
-    local id
-    id=$(normalize_model_id "$1")
-    id="${id#claude-}"
-    if [[ "$id" =~ ^(fable|opus|sonnet|haiku)-([0-9]+(-[0-9]+)*) ]]; then
-        local fam="${BASH_REMATCH[1]}" ver="${BASH_REMATCH[2]//-/.}"
-        printf '%s %s' "${fam^}" "$ver"
+    local _pm_id
+    normalize_model_id _pm_id "$2"
+    _pm_id="${_pm_id#claude-}"
+    if [[ "$_pm_id" =~ ^(fable|opus|sonnet|haiku)-([0-9]+(-[0-9]+)*) ]]; then
+        local _pm_fam="${BASH_REMATCH[1]}" _pm_ver="${BASH_REMATCH[2]//-/.}"
+        printf -v "$1" '%s %s' "${_pm_fam^}" "$_pm_ver"
     else
-        printf '%s' "$id"
+        printf -v "$1" '%s' "$_pm_id"
     fi
 }
 
@@ -263,28 +268,31 @@ prettify_model_id() {  # claude-sonnet-5 -> "Sonnet 5"; unknown -> cleaned id
 # Known model->window seeds; keys are normalized ids (date suffix stripped,
 # claude- prefix tolerated). Unlisted ids fall through to the resolver tiers.
 seed_window_for_model() {  # normalized model id -> window size or ""
-    case "${1#claude-}" in
-        fable-5|opus-4-8|opus-4-7|opus-4-6|sonnet-5|sonnet-4-6) echo 1000000 ;;
-        haiku-4-5|sonnet-4-5|opus-4-5)                          echo 200000  ;;
-        *)                                                      echo ""      ;;
+    case "${2#claude-}" in
+        fable-5|opus-4-8|opus-4-7|opus-4-6|sonnet-5|sonnet-4-6) printf -v "$1" '%s' 1000000 ;;
+        haiku-4-5|sonnet-4-5|opus-4-5)                          printf -v "$1" '%s' 200000  ;;
+        *)                                                      printf -v "$1" '%s' ''      ;;
     esac
 }
 # @parity:seed-table-end
 
 sa_ctx_for_model() {  # tiered: session -> learned map -> seed table -> 1m marker -> 200K default
-    local norm win=""
-    norm=$(normalize_model_id "$1")
+    local norm win="" _sa_base _sa_session_base
+    normalize_model_id norm "$1"
     # Session inheritance leads: a subagent running the session's own model has the
     # session's window, which is live truth for this session -- it outranks a learned
     # entry, which is a historical observation that may have come from elsewhere or
     # been wrong when written. Compared on base ids so "[1m]" and the bare id match;
     # norm keeps its suffix for the marker tier below. Skipped entirely when the
     # session window is missing or non-positive, so nothing new can fail here.
-    if [[ -n "$1" && -n "$J_MODEL_ID" && "$J_CTX_SIZE" =~ ^[0-9]+$ && "$J_CTX_SIZE" -gt 0 ]] \
-        && [[ "$(model_base_id "$1")" == "$(model_base_id "$J_MODEL_ID")" ]]; then
-        log_msg "sa ctx: ${norm} -> ${J_CTX_SIZE} (session)"
-        echo "$J_CTX_SIZE"
-        return
+    if [[ -n "$1" && -n "$J_MODEL_ID" && "$J_CTX_SIZE" =~ ^[0-9]+$ && "$J_CTX_SIZE" -gt 0 ]]; then
+        model_base_id _sa_base "$1"
+        model_base_id _sa_session_base "$J_MODEL_ID"
+        if [[ "$_sa_base" == "$_sa_session_base" ]]; then
+            log_msg "sa ctx: ${norm} -> ${J_CTX_SIZE} (session)"
+            echo "$J_CTX_SIZE"
+            return
+        fi
     fi
     [[ -n "$norm" ]] && win="${MODEL_WINDOWS_MAP[$norm]:-}"
     if [[ "$win" =~ ^[0-9]+$ ]]; then
@@ -292,7 +300,7 @@ sa_ctx_for_model() {  # tiered: session -> learned map -> seed table -> 1m marke
         echo "$win"
         return
     fi
-    win=$(seed_window_for_model "$norm")
+    seed_window_for_model win "$norm"
     if [[ -n "$win" ]]; then
         log_msg "sa ctx: ${norm} -> ${win} (seed)"
         echo "$win"
@@ -310,31 +318,31 @@ sa_ctx_for_model() {  # tiered: session -> learned map -> seed table -> 1m marke
 
 shopt -s extglob
 get_vis() {  # visible terminal cells: ANSI stripped; CJK/emoji count as 2
-    local s="$1"
-    s="${s//$'\033'\[*([0-9;])m/}"
-    if [[ "$s" != *[![:ascii:]]* ]]; then
-        printf '%d' "${#s}"
+    local _gv_s="$2"
+    _gv_s="${_gv_s//$'\033'\[*([0-9;])m/}"
+    if [[ "$_gv_s" != *[![:ascii:]]* ]]; then
+        printf -v "$1" '%d' "${#_gv_s}"
         return
     fi
-    local n=${#s} w=0 i cp
-    for ((i = 0; i < n; i++)); do
-        printf -v cp '%d' "'${s:i:1}" 2>/dev/null || cp=0
-        if (( (cp >= 0x1100 && cp <= 0x115F) || (cp >= 0x2E80 && cp <= 0xA4CF) ||
-              (cp >= 0xAC00 && cp <= 0xD7A3) || (cp >= 0xF900 && cp <= 0xFAFF) ||
-              (cp >= 0xFE30 && cp <= 0xFE4F) || (cp >= 0xFF00 && cp <= 0xFF60) ||
-              (cp >= 0xFFE0 && cp <= 0xFFE6) || cp >= 0x1F000 )); then
-            w=$((w + 2))
+    local _gv_n=${#_gv_s} _gv_w=0 _gv_i _gv_cp
+    for ((_gv_i = 0; _gv_i < _gv_n; _gv_i++)); do
+        printf -v _gv_cp '%d' "'${_gv_s:_gv_i:1}" 2>/dev/null || _gv_cp=0
+        if (( (_gv_cp >= 0x1100 && _gv_cp <= 0x115F) || (_gv_cp >= 0x2E80 && _gv_cp <= 0xA4CF) ||
+              (_gv_cp >= 0xAC00 && _gv_cp <= 0xD7A3) || (_gv_cp >= 0xF900 && _gv_cp <= 0xFAFF) ||
+              (_gv_cp >= 0xFE30 && _gv_cp <= 0xFE4F) || (_gv_cp >= 0xFF00 && _gv_cp <= 0xFF60) ||
+              (_gv_cp >= 0xFFE0 && _gv_cp <= 0xFFE6) || _gv_cp >= 0x1F000 )); then
+            _gv_w=$(( _gv_w + 2 ))
         else
-            w=$((w + 1))
+            _gv_w=$(( _gv_w + 1 ))
         fi
     done
-    printf '%d' "$w"
+    printf -v "$1" '%d' "$_gv_w"
 }
 
 repeat_char() {  # multi-byte safe char repeat
-    local ch="$1" count="$2" out=""
-    for ((i = 0; i < count; i++)); do out+="$ch"; done
-    printf '%s' "$out"
+    local _rc_pad=''
+    (( ${3:-0} > 0 )) && printf -v _rc_pad '%*s' "$3" ''
+    printf -v "$1" '%s' "${_rc_pad// /$2}"
 }
 
 # --- 1. CWD ---
@@ -384,7 +392,7 @@ pct_int=""
 pct_color="$WHITE"
 if [[ -n "$used_pct" ]]; then
     pct_int=$(printf '%.0f' "$used_pct" 2>/dev/null)
-    pct_color=$(pct_color_for "$pct_int")
+    pct_color_for pct_color "$pct_int"
 fi
 
 model_part="${MAGENTA}${model_short}${RESET}"
@@ -401,7 +409,7 @@ bar_pct_clamped="${bar_used_pct%.*}"
 [[ -z "$bar_pct_clamped" ]] && bar_pct_clamped=0
 (( bar_pct_clamped < 0 )) && bar_pct_clamped=0
 (( bar_pct_clamped > 100 )) && bar_pct_clamped=100
-bar=$(render_bar "$bar_pct_clamped" "$bar_color")
+render_bar bar "$bar_pct_clamped" "$bar_color"
 
 token_suffix=""
 if [[ -n "$ctx_size" ]]; then
@@ -412,7 +420,7 @@ if [[ -n "$ctx_size" ]]; then
     else
         used_tokens=$(( ctx_size * bar_pct_clamped / 100 ))
     fi
-    used_lbl=$(format_tokens "$used_tokens")
+    format_tokens used_lbl "$used_tokens"
     token_suffix=" ${GRAY}·${RESET} ${WHITE}${used_lbl}${RESET}${GRAY}/${ctx_label}${RESET}"
 fi
 
@@ -432,7 +440,7 @@ if [[ -f "$MODEL_WINDOWS_PATH" ]]; then
     done < <(jq -r 'if type == "object" then to_entries[] | "\(.key)\t\(.value)" else empty end' "$MODEL_WINDOWS_PATH" 2>/dev/null)
 fi
 if [[ -n "$J_MODEL_ID" && -n "$ctx_size" ]]; then
-    _mw_key=$(normalize_model_id "$J_MODEL_ID")
+    normalize_model_id _mw_key "$J_MODEL_ID"
     if [[ -n "$_mw_key" && "${MODEL_WINDOWS_MAP[$_mw_key]:-}" != "$ctx_size" ]]; then
         # Rare write path: re-read the file for the merge base (also picks up
         # entries a concurrent session wrote since the map was flattened above).
@@ -457,7 +465,8 @@ fi
 effort_level="$J_EFFORT_LEVEL"
 effort_part=""
 if [[ -n "$effort_level" ]]; then
-    effort_part="$(effort_color_for "$effort_level")${effort_level} effort${RESET}"
+    effort_color_for _effort_color "$effort_level"
+    effort_part="${_effort_color}${effort_level} effort${RESET}"
 fi
 
 # --- 4. Git status ---
@@ -549,7 +558,7 @@ fi
 
 # Scrub control/escape bytes from the branch (its cached value is plantable via
 # statusline-git-*), mirroring the subagent render-sink scrub, before it renders.
-branch=$(sa_sanitize_title "$branch")
+sa_sanitize_title branch "$branch"
 if [[ -n "$branch" ]]; then
     is_dirty=false
     (( insertions > 0 || deletions > 0 || untracked > 0 )) && is_dirty=true
@@ -857,25 +866,28 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
 fi
 
 format_bucket() {  # label value delta idle_color active_color [arrow] -> "label N (+delta)"
-    local label="$1" value="$2" delta="$3" idle_color="$4" active_color="$5" arrow="$6"
-    local lbl d_lbl arrow_part=""
-    lbl=$(format_tokens "$value")
-    d_lbl=$(format_tokens "$delta")
-    [[ -z "$d_lbl" ]] && d_lbl="0"
-    [[ -n "$arrow" ]] && arrow_part="${GRAY}${arrow}${RESET}"
-    if (( delta > 0 )); then
-        printf '%s' "${active_color}${BOLD}${label}${RESET}${arrow_part} ${active_color}${lbl}${RESET} ${GREEN}(+${d_lbl})${RESET}"
+    local _fb_label="$2" _fb_value="$3" _fb_delta="$4" _fb_idle_color="$5" _fb_active_color="$6" _fb_arrow="$7"
+    local _fb_lbl _fb_d_lbl _fb_arrow_part=""
+    format_tokens _fb_lbl "$_fb_value"
+    format_tokens _fb_d_lbl "$_fb_delta"
+    [[ -z "$_fb_d_lbl" ]] && _fb_d_lbl="0"
+    [[ -n "$_fb_arrow" ]] && _fb_arrow_part="${GRAY}${_fb_arrow}${RESET}"
+    if (( _fb_delta > 0 )); then
+        printf -v "$1" '%s' "${_fb_active_color}${BOLD}${_fb_label}${RESET}${_fb_arrow_part} ${_fb_active_color}${_fb_lbl}${RESET} ${GREEN}(+${_fb_d_lbl})${RESET}"
     else
-        printf '%s' "${DIM}${label}${RESET}${arrow_part} ${idle_color}${lbl}${RESET} ${DIM}(+${d_lbl})${RESET}"
+        printf -v "$1" '%s' "${DIM}${_fb_label}${RESET}${_fb_arrow_part} ${_fb_idle_color}${_fb_lbl}${RESET} ${DIM}(+${_fb_d_lbl})${RESET}"
     fi
 }
 
 # Tokens row — always render (dim "(+0)" when idle).
 row_sep=" ${GRAY}·${RESET} "
-tokens_part=$(format_bucket "in" "$session_in_tokens" "$delta_in" "$CYAN" "$CYAN")
-tokens_part+="${row_sep}$(format_bucket "cache" "$session_cache_write_tokens" "$delta_cache_write" "$GRAY" "$YELLOW" "↑")"
-tokens_part+="${row_sep}$(format_bucket "cache" "$session_cache_read_tokens" "$delta_cache_read" "$GRAY" "$CYAN" "↓")"
-tokens_part+="${row_sep}$(format_bucket "out" "$session_out_tokens" "$delta_out" "$MAGENTA" "$MAGENTA")"
+format_bucket tokens_part "in" "$session_in_tokens" "$delta_in" "$CYAN" "$CYAN"
+format_bucket _bucket "cache" "$session_cache_write_tokens" "$delta_cache_write" "$GRAY" "$YELLOW" "↑"
+tokens_part+="${row_sep}${_bucket}"
+format_bucket _bucket "cache" "$session_cache_read_tokens" "$delta_cache_read" "$GRAY" "$CYAN" "↓"
+tokens_part+="${row_sep}${_bucket}"
+format_bucket _bucket "out" "$session_out_tokens" "$delta_out" "$MAGENTA" "$MAGENTA"
+tokens_part+="${row_sep}${_bucket}"
 
 # Status (idle/working) — rendered on model row
 if [[ "$claude_is_idle" == true ]]; then
@@ -899,18 +911,19 @@ fi
 # --- 6. Rate limits (5h + 7d) ---
 # Burn-rate arrow compares actual % vs linear "expected %" for elapsed time.
 format_duration() {  # seconds -> "5m", "2h15m", "1d3h"
-    local secs=$1
-    (( secs <= 0 )) && return
-    if (( secs < 3600 )); then
-        printf '%dm' $((secs / 60))
-    elif (( secs < 86400 )); then
-        local h=$((secs / 3600))
-        local m=$(( (secs - h * 3600) / 60 ))
-        if (( m == 0 )); then printf '%dh' "$h"; else printf '%dh%dm' "$h" "$m"; fi
+    local _fd_secs=$2
+    printf -v "$1" '%s' ''
+    (( _fd_secs <= 0 )) && return
+    if (( _fd_secs < 3600 )); then
+        printf -v "$1" '%dm' "$(( _fd_secs / 60 ))"
+    elif (( _fd_secs < 86400 )); then
+        local _fd_h=$(( _fd_secs / 3600 ))
+        local _fd_m=$(( (_fd_secs - _fd_h * 3600) / 60 ))
+        if (( _fd_m == 0 )); then printf -v "$1" '%dh' "$_fd_h"; else printf -v "$1" '%dh%dm' "$_fd_h" "$_fd_m"; fi
     else
-        local d=$((secs / 86400))
-        local h=$(( (secs - d * 86400) / 3600 ))
-        if (( h == 0 )); then printf '%dd' "$d"; else printf '%dd%dh' "$d" "$h"; fi
+        local _fd_d=$(( _fd_secs / 86400 ))
+        local _fd_h=$(( (_fd_secs - _fd_d * 86400) / 3600 ))
+        if (( _fd_h == 0 )); then printf -v "$1" '%dd' "$_fd_d"; else printf -v "$1" '%dd%dh' "$_fd_d" "$_fd_h"; fi
     fi
 }
 
@@ -943,7 +956,7 @@ format_window() {  # label pct resets_at window_secs -> "5h 42% ⇡3% (1h)"
                 fi
             fi
             local r_lbl
-            r_lbl=$(format_duration "$remaining")
+            format_duration r_lbl "$remaining"
             [[ -n "$r_lbl" ]] && reset_part=" ${GRAY}(${r_lbl})${RESET}"
         fi
     fi
@@ -980,8 +993,8 @@ if [[ -n "$agent_name" ]]; then
     fi
     agent_in="$J_AGENT_IN"
     agent_out="$J_AGENT_OUT"
-    in_fmt=$(format_tokens "${agent_in:-0}")
-    out_fmt=$(format_tokens "${agent_out:-0}")
+    format_tokens in_fmt "${agent_in:-0}"
+    format_tokens out_fmt "${agent_out:-0}"
     [[ -z "$in_fmt" ]] && in_fmt="0"
     [[ -z "$out_fmt" ]] && out_fmt="0"
     agent_compact+="${DIM}in${RESET} ${WHITE}${in_fmt}${RESET}  ${DIM}out${RESET} ${WHITE}${out_fmt}${RESET}"
@@ -1017,12 +1030,12 @@ build_sa_row() {  # used ctx_size model_id display state(working|done) effort ->
     # fields so no source path (feed-live, feed-read-back, transcript-fallback) can
     # emit a terminal escape planted via a cache file. The sink scrubs only the
     # fields it names, so a newly added field inherits nothing automatically.
-    sa_model=$(sa_sanitize_title "$sa_model")
-    sa_disp=$(sa_sanitize_title "$sa_disp")
+    sa_sanitize_title sa_model "$sa_model"
+    sa_sanitize_title sa_disp "$sa_disp"
     # Bounded here rather than at ingest so every source path is capped, including
     # a record written by an older version. No real level exceeds 6 characters, so
     # this never truncates a legitimate value.
-    sa_effort=$(sa_sanitize_title "$sa_effort")
+    sa_sanitize_title sa_effort "$sa_effort"
     sa_effort="${sa_effort:0:16}"
 
     # Bar/pct clamp at 100%; the token label keeps the raw used value.
@@ -1030,11 +1043,11 @@ build_sa_row() {  # used ctx_size model_id display state(working|done) effort ->
     (( sa_pct_int < 0 )) && sa_pct_int=0
     (( sa_pct_int > 100 )) && sa_pct_int=100
     local sa_color sa_bar
-    sa_color=$(pct_color_for "$sa_pct_int")
-    sa_bar=$(render_bar "$sa_pct_int" "$sa_color")
+    pct_color_for sa_color "$sa_pct_int"
+    render_bar sa_bar "$sa_pct_int" "$sa_color"
 
-    local sa_used_lbl sa_ctx_k sa_ctx_lbl
-    sa_used_lbl=$(format_tokens "$sa_used")
+    local sa_used_lbl sa_ctx_k sa_ctx_lbl sa_model_pretty sa_effort_color
+    format_tokens sa_used_lbl "$sa_used"
     sa_ctx_k=$((sa_ctx_size / 1000))
     if (( sa_ctx_k >= 1000 )); then sa_ctx_lbl="$((sa_ctx_k / 1000))M"
     else                            sa_ctx_lbl="${sa_ctx_k}K"
@@ -1043,10 +1056,16 @@ build_sa_row() {  # used ctx_size model_id display state(working|done) effort ->
     # Compact single-space separators — same segment style as the context bar.
     local sa_sep=" ${GRAY}·${RESET} "
     local sa_row="${sa_bar} ${sa_color}${sa_pct_int}%${RESET}${sa_sep}${WHITE}${sa_used_lbl}${RESET}${GRAY}/${sa_ctx_lbl}${RESET}"
-    [[ -n "$sa_model" ]] && sa_row+="${sa_sep}${MAGENTA}$(prettify_model_id "$sa_model")${RESET}"
+    if [[ -n "$sa_model" ]]; then
+        prettify_model_id sa_model_pretty "$sa_model"
+        sa_row+="${sa_sep}${MAGENTA}${sa_model_pretty}${RESET}"
+    fi
     # Present only when the feed reported an override; absence is meaningful, so
     # nothing is inferred from the session's own effort here.
-    [[ -n "$sa_effort" ]] && sa_row+="${sa_sep}$(effort_color_for "$sa_effort")${sa_effort} effort${RESET}"
+    if [[ -n "$sa_effort" ]]; then
+        effort_color_for sa_effort_color "$sa_effort"
+        sa_row+="${sa_sep}${sa_effort_color}${sa_effort} effort${RESET}"
+    fi
     (( ${#sa_disp} > 40 )) && sa_disp="${sa_disp:0:39}…"
     [[ -n "$sa_disp" ]] && sa_row+="${sa_sep}${BLUE}${sa_disp}${RESET}"
     if [[ "$sa_state" == "done" ]]; then
@@ -1191,11 +1210,13 @@ if [[ "$feed_tier" != true && -n "$session_id" && -n "$transcript_path" ]]; then
                     # (already set); each candidate sanitized before the blank test.
                     # Control chars are stripped inside jq like the feed tier: a raw
                     # NUL surviving into $(...) makes bash 4+ warn on stderr.
-                    meta_desc=$(sa_sanitize_title "$(jq -r '(.description // "") | tostring | gsub("[\\x00-\\x1f\\x7f|]"; " ")' "$sa_meta" 2>/dev/null)")
+                    meta_desc=$(jq -r '(.description // "") | tostring | gsub("[\\x00-\\x1f\\x7f|]"; " ")' "$sa_meta" 2>/dev/null)
+                    sa_sanitize_title meta_desc "$meta_desc"
                     if [[ -n "$meta_desc" ]]; then
                         agent_display="$meta_desc"
                     else
-                        meta_type=$(sa_sanitize_title "$(jq -r '(.agentType // "") | tostring | gsub("[\\x00-\\x1f\\x7f|]"; " ")' "$sa_meta" 2>/dev/null)")
+                        meta_type=$(jq -r '(.agentType // "") | tostring | gsub("[\\x00-\\x1f\\x7f|]"; " ")' "$sa_meta" 2>/dev/null)
+                        sa_sanitize_title meta_type "$meta_type"
                         [[ -n "$meta_type" ]] && agent_display="$meta_type"
                     fi
                 fi
@@ -1285,12 +1306,15 @@ for i in "${!row_sections[@]}"; do
 done
 
 max_inner=30
+# Visible widths are computed once here and reused by the padding pass below.
+declare -a row_vis=()
 for r in "${rows[@]}"; do
-    vl=$(get_vis "$r")
+    get_vis vl "$r"
+    row_vis+=("$vl")
     (( vl > max_inner )) && max_inner=$vl
 done
 
-heavy_horiz=$(repeat_char "━" "$max_inner")
+repeat_char heavy_horiz "━" "$max_inner"
 top_rule="${GRAY}┏${heavy_horiz}┓${RESET}"
 sec_div_rule="${GRAY}┣${heavy_horiz}┫${RESET}"
 bot_rule="${GRAY}┗${heavy_horiz}┛${RESET}"
@@ -1298,8 +1322,8 @@ bot_rule="${GRAY}┗${heavy_horiz}┛${RESET}"
 left_dash_count=$((LABEL_W + 1))
 right_dash_count=$((max_inner - LABEL_W - 4))
 (( right_dash_count < 1 )) && right_dash_count=1
-left_dashes=$(repeat_char "─" "$left_dash_count")
-right_dashes=$(repeat_char "─" "$right_dash_count")
+repeat_char left_dashes "─" "$left_dash_count"
+repeat_char right_dashes "─" "$right_dash_count"
 row_div_rule="${GRAY}┃${RESET} ${GRAY}${left_dashes}${RESET}${GRAY}┼${RESET}${GRAY}${right_dashes}${RESET} ${GRAY}┃${RESET}"
 
 output="$top_rule"
@@ -1318,10 +1342,10 @@ for i in "${!rows[@]}"; do
     prev_sec="${row_secs[$i]}"
 
     r="${rows[$i]}"
-    vis_len=$(get_vis "$r")
+    vis_len="${row_vis[$i]}"
     pad_count=$((max_inner - vis_len))
     (( pad_count < 0 )) && pad_count=0
-    padding=$(repeat_char " " "$pad_count")
+    repeat_char padding " " "$pad_count"
 
     output+=$'\n'"${GRAY}┃${RESET}${r}${padding}${GRAY}┃${RESET}"
 done
