@@ -8,6 +8,7 @@ Cross-platform custom status line for Claude Code. Claude Code pipes JSON to std
 macos/       statusline.sh, install.sh, uninstall.sh, notify.sh, git-refresh.sh, subagent-statusline.sh
 linux/       statusline.sh, install.sh, uninstall.sh, notify.sh, git-refresh.sh, subagent-statusline.sh
 windows/     statusline.ps1, install.ps1, uninstall.ps1, notify.ps1, git-refresh.ps1, subagent-statusline.ps1
+docs/solutions/  documented fixes and practices, by category, with YAML frontmatter (module, tags, problem_type) -- relevant when debugging or implementing in an area one of them covers
 ```
 
 - `notify.*` -- sound notification handler, triggered by hooks on permission requests and task completion
