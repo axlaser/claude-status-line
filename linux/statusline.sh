@@ -202,7 +202,9 @@ effort_color_for() {  # reasoning effort level -> ladder color
     # Unknown values (including the integer form agent frontmatter allows) fall
     # through to WHITE rather than being rejected.
 # @parity:effort-ladder-begin
-    case "${1:-}" in
+    # Lowercased before matching so this agrees with PowerShell's switch, which is
+    # case-insensitive by default (same idiom as sa_status_is_active).
+    case "${1,,}" in
         low)    printf '%s' "$GRAY" ;;
         medium) printf '%s' "$WHITE" ;;
         high)   printf '%s' "$CYAN" ;;
@@ -929,7 +931,7 @@ if [[ -n "$sa_sid_safe" && "$_oc_ffresh" == "1" ]]; then
             [[ -n "$ft_cache" ]] && sl_write_ok "$ft_cache" && printf '%s|%s|%s|%s|%s|%s|%s' "$ft_tok" "$ft_ctx" "$ft_model" "$ft_disp" "$ft_done" "$ft_start" "$ft_effort" > "$ft_cache" 2>/dev/null
             [[ "$ft_state" == "done" ]] && (( sa_now - ft_done > DONE_LINGER )) && continue
             feed_candidates+=("${ft_start}"$'\x1f'"${ft_id}"$'\x1f'"${ft_tok}"$'\x1f'"${ft_ctx}"$'\x1f'"${ft_model}"$'\x1f'"${ft_disp}"$'\x1f'"${ft_state}"$'\x1f'"${ft_effort}")
-        done < <(printf '%s' "$_oc_fjson" | jq -r '(.tasks // [])[] | select(type == "object") | [((.id // "") | tostring), (first([.description, .type, .name][] | (. // "") | tostring | gsub("[\\x00-\\x1f\\x7f|]"; " ") | gsub("^ +| +$"; "") | select(. != "")) // ""), ((.status // "") | tostring), ((.model // "") | tostring | gsub("[\\x00-\\x1f\\x7f|]"; " ")), ((.contextWindowSize // "") | tostring), ((.tokenCount // 0) | tostring), ((.startTime // "") | tostring), ((.effort // "") | tostring | gsub("[\\x00-\\x1f\\x7f|]"; " "))] | join("\u001f")' 2>/dev/null)
+        done < <(printf '%s' "$_oc_fjson" | jq -r '(.tasks // [])[] | select(type == "object") | [((.id // "") | tostring), (first([.description, .type, .name][] | (. // "") | tostring | gsub("[\\x00-\\x1f\\x7f|]"; " ") | gsub("^ +| +$"; "") | select(. != "")) // ""), ((.status // "") | tostring), ((.model // "") | tostring | gsub("[\\x00-\\x1f\\x7f|]"; " ")), ((.contextWindowSize // "") | tostring), ((.tokenCount // 0) | tostring), ((.startTime // "") | tostring | gsub("[\\x00-\\x1f\\x7f|]"; " ")), ((.effort // "") | tostring | gsub("[\\x00-\\x1f\\x7f|]"; " "))] | join("\u001f")' 2>/dev/null)
 
         # A cached task id missing from a fresh feed is a done signal: stamp
         # done_ts on first observation, linger, then drop the cache entry.

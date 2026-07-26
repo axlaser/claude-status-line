@@ -747,7 +747,13 @@ function Build-SubagentRow($used, $ctxSize, $model, $disp, $state, $effort) {
     # a record written by an older version. No real level exceeds 6 characters, so
     # this never truncates a legitimate value.
     $effort = "$(Format-SaTitle $effort)"
-    if ($effort.Length -gt 16) { $effort = $effort.Substring(0, 16) }
+    if ($effort.Length -gt 16) {
+        # Cut to 16 UTF-16 units, one less if that would split a surrogate pair
+        # (same guard as the title cut below).
+        $eCut = 16
+        if ([char]::IsHighSurrogate($effort[15])) { $eCut = 15 }
+        $effort = $effort.Substring(0, $eCut)
+    }
     # Bar/pct clamp at 100%; the token label keeps the raw used value.
     $saPctInt = [int][Math]::Truncate(($u * 100.0) / $w)
     if ($saPctInt -lt 0) { $saPctInt = 0 }
@@ -807,7 +813,9 @@ if ($_ocFfresh -eq 1 -and $_ocFjson) {
                 # Absent unless the task carried an explicit override, and absence
                 # is what suppresses the segment — do not default it to anything.
                 $ftEffort = Format-SaTitle $t.effort
-                $ftStart  = if ($null -ne $t.startTime) { "$($t.startTime)" } else { '' }
+                # Scrubbed like model/effort: it is no longer the trailing field, so a
+                # separator here would shift the split and land in the rendered effort.
+                $ftStart  = Format-SaTitle $t.startTime
                 if (-not ($ftId -or $ftDisp -or $ftStatus -or $ftModel)) { continue }
                 $ftIdSafe = $ftId -replace '[^a-zA-Z0-9_-]', ''
                 if ($ftIdSafe) { $feedSeen[$ftIdSafe] = $true }
