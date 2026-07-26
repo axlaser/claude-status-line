@@ -24,15 +24,21 @@ $BAR_EMPTY = Ansi '38;5;242'
 # --- Read stdin + debug log ---
 # Always exit 0 — any non-zero exit makes Claude Code hide the status line entirely.
 $logPath = "$env:USERPROFILE\.claude\statusline-debug.log"
+# PowerShell evaluates call arguments before the callee's guard runs, so any
+# Write-Log site whose argument does real work must also be gated on $DBG at
+# the call site — the in-function guard alone cannot prevent the evaluation.
+$DBG = [bool]$env:STATUSLINE_DEBUG
 function Write-Log([string]$msg) {
-    if (-not $env:STATUSLINE_DEBUG) { return }
+    if (-not $DBG) { return }
     try { Add-Content -LiteralPath $logPath -Value ("[{0:yyyy-MM-dd HH:mm:ss}] {1}" -f (Get-Date), $msg) -Encoding utf8 } catch {}
 }
-Write-Log "=== invoked, PSVersion=$($PSVersionTable.PSVersion) PID=$PID ==="
+if ($DBG) { Write-Log "=== invoked, PSVersion=$($PSVersionTable.PSVersion) PID=$PID ===" }
 try {
     $raw  = [Console]::In.ReadToEnd()
-    Write-Log ("stdin bytes={0}" -f ($raw | Measure-Object -Character).Characters)
-    Write-Log ("stdin head: " + ($(if ($raw.Length -gt 400) { $raw.Substring(0,400) } else { $raw }) -replace "`r?`n",' '))
+    if ($DBG) {
+        Write-Log ("stdin bytes={0}" -f $raw.Length)
+        Write-Log ("stdin head: " + ($(if ($raw.Length -gt 400) { $raw.Substring(0,400) } else { $raw }) -replace "`r?`n",' '))
+    }
     $json = $raw | ConvertFrom-Json
     Write-Log "json parse: OK"
 } catch {
@@ -48,15 +54,6 @@ trap {
     exit 0
 }
 # --- Helpers ---
-function Get-Val($obj, [string[]]$path, $default = $null) {  # dotted-path lookup with default
-    $cur = $obj
-    foreach ($p in $path) {
-        if ($null -eq $cur) { return $default }
-        $cur = $cur.$p
-    }
-    if ($null -eq $cur) { return $default }
-    return $cur
-}
 function Format-Tokens($n) {  # 1234567 -> "1.2M"; "0" for empty
     if ($null -eq $n) { return $null }
     $v = [double]$n
@@ -189,29 +186,34 @@ function Build-Bar([int]$pct, [string]$color) {  # filled/empty bar over barWidt
 }
 
 # @parity:json-extract-begin
-$sessionId        = Get-Val $json @('session_id')
-$cwdRaw           = Get-Val $json @('workspace','current_dir')
-$cwdFallback      = Get-Val $json @('cwd')
-$modelDisplay     = Get-Val $json @('model','display_name')
-$ctxSize          = Get-Val $json @('context_window','context_window_size')
-$usedPct          = Get-Val $json @('context_window','used_percentage')
-$totalInputTokens = Get-Val $json @('context_window','total_input_tokens')
-$effortLevel      = Get-Val $json @('effort','level')
-$gitCwd           = Get-Val $json @('workspace','current_dir')
-$totalCost        = Get-Val $json @('cost','total_cost_usd')
-$totalCostLegacy  = Get-Val $json @('total_cost_usd')
-$durationMs       = Get-Val $json @('cost','total_duration_ms')
-$durationMsL1     = Get-Val $json @('total_duration_ms')
-$durationMsL2     = Get-Val $json @('duration_ms')
-$transcriptPath   = Get-Val $json @('transcript_path')
-$fivePct          = Get-Val $json @('rate_limits','five_hour','used_percentage')
-$fiveRes          = Get-Val $json @('rate_limits','five_hour','resets_at')
-$sevenPct         = Get-Val $json @('rate_limits','seven_day','used_percentage')
-$sevenRes         = Get-Val $json @('rate_limits','seven_day','resets_at')
-$agentName        = Get-Val $json @('agent','name')
-$agentIn          = Get-Val $json @('context_window','current_usage','input_tokens') 0
-$agentOut         = Get-Val $json @('context_window','current_usage','output_tokens') 0
-$modelId          = Get-Val $json @('model','id')
+# Direct property chains: with StrictMode off, a missing member anywhere in the
+# chain yields $null — same result as the old Get-Val walker at ~1 ms per 23
+# lookups instead of ~19 ms of function-call overhead. Do not enable StrictMode.
+$sessionId        = $json.session_id
+$cwdRaw           = $json.workspace.current_dir
+$cwdFallback      = $json.cwd
+$modelDisplay     = $json.model.display_name
+$ctxSize          = $json.context_window.context_window_size
+$usedPct          = $json.context_window.used_percentage
+$totalInputTokens = $json.context_window.total_input_tokens
+$effortLevel      = $json.effort.level
+$gitCwd           = $json.workspace.current_dir
+$totalCost        = $json.cost.total_cost_usd
+$totalCostLegacy  = $json.total_cost_usd
+$durationMs       = $json.cost.total_duration_ms
+$durationMsL1     = $json.total_duration_ms
+$durationMsL2     = $json.duration_ms
+$transcriptPath   = $json.transcript_path
+$fivePct          = $json.rate_limits.five_hour.used_percentage
+$fiveRes          = $json.rate_limits.five_hour.resets_at
+$sevenPct         = $json.rate_limits.seven_day.used_percentage
+$sevenRes         = $json.rate_limits.seven_day.resets_at
+$agentName        = $json.agent.name
+$agentIn          = $json.context_window.current_usage.input_tokens
+if ($null -eq $agentIn) { $agentIn = 0 }
+$agentOut         = $json.context_window.current_usage.output_tokens
+if ($null -eq $agentOut) { $agentOut = 0 }
+$modelId          = $json.model.id
 # @parity:json-extract-end
 
 # @parity:temp-guards-begin
@@ -320,11 +322,13 @@ $_ocKey = [BitConverter]::ToString([Security.Cryptography.SHA256]::Create().Comp
 
 if ($_ocPath -and (Test-TrustedFile $_ocPath)) {
     try {
-        $ocLines = [System.IO.File]::ReadAllLines($_ocPath)
-        if ($ocLines.Count -ge 2 -and $ocLines[0] -eq $_ocKey) {
+        # Single read + substring instead of ReadAllLines + a Select-Object pipeline;
+        # the record is "<key>`n<output>" with no trailing newline (see the write site).
+        $ocText = [System.IO.File]::ReadAllText($_ocPath)
+        $ocNl = $ocText.IndexOf("`n")
+        if ($ocNl -gt 0 -and $ocText.Length -gt ($ocNl + 1) -and $ocText.Substring(0, $ocNl) -eq $_ocKey) {
             Write-Log "output cache HIT"
-            $cachedOutput = ($ocLines | Select-Object -Skip 1) -join "`n"
-            Write-Host $cachedOutput -NoNewline
+            [Console]::Write($ocText.Substring($ocNl + 1))
             exit 0
         }
     } catch {
@@ -888,12 +892,19 @@ if ($_ocFfresh -eq 1 -and $_ocFjson) {
             # A cached task id missing from a fresh feed is a done signal: stamp
             # done_ts on first observation, linger, then drop the cache entry.
             $taskCachePrefix = "statusline-sa-$_ocSafeId-task-"
-            foreach ($cf in @(Get-ChildItem -Path (Join-Path $env:TEMP "$taskCachePrefix*.txt") -ErrorAction SilentlyContinue)) {
-                if ($cf.BaseName.Length -le $taskCachePrefix.Length) { continue }
-                $cfId = $cf.BaseName.Substring($taskCachePrefix.Length)
+            # Directory.GetFiles avoids the Get-ChildItem provider pipeline (~15 ms).
+            # The EndsWith guard restores exact '*.txt' semantics — the Win32 search
+            # pattern also matches extensions that merely start with 'txt'.
+            $cfAll = @()
+            try { $cfAll = [System.IO.Directory]::GetFiles($env:TEMP, "$taskCachePrefix*.txt") } catch {}
+            foreach ($cf in $cfAll) {
+                if (-not $cf.EndsWith('.txt', [System.StringComparison]::OrdinalIgnoreCase)) { continue }
+                $cfName = [System.IO.Path]::GetFileNameWithoutExtension($cf)
+                if ($cfName.Length -le $taskCachePrefix.Length) { continue }
+                $cfId = $cfName.Substring($taskCachePrefix.Length)
                 if ($feedSeen.ContainsKey($cfId)) { continue }
-                if (-not (Test-TrustedFile $cf.FullName)) { continue }
-                $fcRaw = Get-Content -LiteralPath $cf.FullName -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
+                if (-not (Test-TrustedFile $cf)) { continue }
+                $fcRaw = Get-Content -LiteralPath $cf -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
                 if (-not $fcRaw) { continue }
                 $fcParts = $fcRaw.TrimEnd() -split '\|'
                 if ($fcParts.Count -lt 6) { continue }
@@ -904,10 +915,10 @@ if ($_ocFfresh -eq 1 -and $_ocFjson) {
                 $fcDone = 0L
                 if (-not [long]::TryParse($fcParts[4], [ref]$fcDone) -or $fcDone -le 0) {
                     $fcDone = $saNow
-                    try { [System.IO.File]::WriteAllText($cf.FullName, "$($fcParts[0])|$($fcParts[1])|$($fcParts[2])|$($fcParts[3])|$fcDone|$($fcParts[5])|$fcEffort", (New-Object System.Text.UTF8Encoding $false)) } catch {}
+                    try { [System.IO.File]::WriteAllText($cf, "$($fcParts[0])|$($fcParts[1])|$($fcParts[2])|$($fcParts[3])|$fcDone|$($fcParts[5])|$fcEffort", (New-Object System.Text.UTF8Encoding $false)) } catch {}
                 }
                 if (($saNow - $fcDone) -gt $DONE_LINGER) {
-                    try { Remove-Item -LiteralPath $cf.FullName -Force -ErrorAction SilentlyContinue } catch {}
+                    try { Remove-Item -LiteralPath $cf -Force -ErrorAction SilentlyContinue } catch {}
                     continue
                 }
                 $feedCandidates += @{ start = "$($fcParts[5])"; id = $cfId; used = $fcParts[0]; ctx = $fcParts[1]; model = $fcParts[2]; disp = $fcParts[3]; state = 'done'; effort = $fcEffort }
@@ -1217,12 +1228,12 @@ if ($_ocSafeId) {
     }
 }
 
-Write-Log ("about to write: lines={0} chars={1}" -f $output.Count, $finalOutput.Length)
+if ($DBG) { Write-Log ("about to write: lines={0} chars={1}" -f $output.Count, $finalOutput.Length) }
 if ($_ocPath -and (Test-WriteOk $_ocPath)) {
     try {
         [System.IO.File]::WriteAllText($_ocPath, "$_ocKey`n$finalOutput", (New-Object System.Text.UTF8Encoding $false))
     } catch {}
 }
-Write-Host $finalOutput -NoNewline
-Write-Log "stdout write: OK (via Write-Host)"
+[Console]::Write($finalOutput)
+Write-Log "stdout write: OK (via Console.Write)"
 exit 0
