@@ -56,8 +56,13 @@ Every refresh is a **brand-new process**. That single fact drives everything:
   state matrix (§4). If output must change, it is not a performance change — split the PR.
 
 **Windows (PowerShell)**
-- Prefer .NET calls over pipeline cmdlets on hot paths: `[IO.File]::ReadAllText`,
-  `[IO.Directory]::GetFiles`, `[Console]::Write`, `$s.Length`, `.StartsWith()`.
+- The region before the output-cache hit exit is a **zero-cmdlet zone**, not a style
+  preference: the first cmdlet call in a fresh process pays ~80 ms of one-time
+  command-discovery init, so a single `Get-Item` or `Test-Path` added there re-adds
+  everything the deferred parse saved. Grep the pre-hit region for cmdlet names before
+  merging. Elsewhere on hot paths, prefer .NET calls over pipeline cmdlets:
+  `[IO.File]::ReadAllText`, `[IO.Directory]::GetFiles`, `[Console]::Write`, `$s.Length`,
+  `.StartsWith()`.
 - Debug logging must never evaluate expensive arguments when disabled — PowerShell evaluates
   arguments *before* the callee's guard. Wrap call sites: `if ($DBG) { Write-Log ... }`.
 - Do not switch to `pwsh` 7 for the spawned process (measured slower to start: 198 vs 124 ms).
@@ -124,8 +129,10 @@ HEAD, omits `# branch.ab` when no upstream, omits `# stash` at zero.
 
 Implementation order when performance work is picked up:
 
-1. Tier 1 quick wins (Windows): guard log call sites, `Write-Host` → `[Console]::Write`,
-   `ReadAllText` cache read, direct property access, `GetFiles` glob.
+1. Tier 1 quick wins (Windows) — **done** (`461e89a`): guard log call sites, `Write-Host` →
+   `[Console]::Write`, `ReadAllText` cache read, direct property access, `GetFiles` glob.
+   The JSON-parse deferral landed with it (`b8ecec6`): raw-string key fields plus a
+   zero-cmdlet pre-hit path — measured hit 427.6 → 333.7 ms, miss +2.8 ms.
 2. Git 6 → 2 consolidation (all platforms) — with the §4 state matrix per platform, the
    `(initial)` guard per current platform behaviour, and `.StartsWith('? ')`.
 3. Incremental transcript parse (all platforms) — offset of last complete line, size-shrink

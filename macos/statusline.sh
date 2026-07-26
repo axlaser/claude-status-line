@@ -39,6 +39,10 @@ log_msg "stdin bytes=${#raw}"
 log_msg "stdin head: ${raw:0:400}"
 
 # @parity:json-extract-begin
+# Position note: windows/statusline.ps1 relocated its json-extract block to
+# after the output-cache check (deferred-parse optimization, PowerShell-specific
+# -- see docs/performance.md). The marker names still pair across platforms;
+# the position deliberately does not.
 # Single jq pass: the in-filter type check replaces the old standalone
 # validity probe (one process spawn per refresh instead of two). Parse
 # errors and non-object input both yield zero output lines.

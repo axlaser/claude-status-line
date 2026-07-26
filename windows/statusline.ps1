@@ -248,12 +248,14 @@ function Format-SaTitle($s) {  # replace "|" and control chars with spaces, trim
 # The output-cache key needs only these three fields, so they are pulled from
 # the raw string and ConvertFrom-Json (~90 ms) is deferred past the cache
 # check — a hit never parses. The authoritative values are re-extracted from
-# the parsed object right after the cache check; these raw ones only choose
-# which temp/state files the key probes. A wrong extraction cannot false-hit:
-# the raw payload itself is part of the key. Escape-aware: the regex value
-# class steps over backslash escapes and Convert-JsonString decodes them, so
-# escaped Windows paths stat the real file.
-function Convert-JsonString([string]$s) {
+# the parsed object right after the cache check; the raw ones feed the key's
+# file probes plus the oc/feed cache paths, and every other per-session file
+# path is re-derived from the parsed session_id after the parse (see the
+# recompute below @parity:json-extract-end). A wrong extraction cannot
+# false-hit: the raw payload itself is part of the key. Escape-aware: the
+# value scan steps over backslash escapes and ConvertFrom-JsonString decodes
+# them, so escaped Windows paths stat the real file.
+function ConvertFrom-JsonString([string]$s) {
     if (-not $s -or $s.IndexOf('\') -lt 0) { return $s }
     $sb = [System.Text.StringBuilder]::new($s.Length)
     for ($i = 0; $i -lt $s.Length; $i++) {
@@ -302,7 +304,7 @@ function Get-RawJsonField([string]$payload, [string]$name) {
                 while ($i -lt $payload.Length) {
                     $ch = $payload[$i]
                     if ($ch -eq '\') { $i += 2; continue }
-                    if ($ch -eq '"') { return (Convert-JsonString $payload.Substring($start, $i - $start)) }
+                    if ($ch -eq '"') { return (ConvertFrom-JsonString $payload.Substring($start, $i - $start)) }
                     $i++
                 }
                 return $null
@@ -317,6 +319,7 @@ try {
     $transcriptPath = Get-RawJsonField $raw 'transcript_path'
     $gitCwd         = Get-RawJsonField $raw 'current_dir'
 } catch {}
+if ($DBG) { Write-Log ("raw-extract: sid={0} transcript={1} cwd={2}" -f $sessionId, $transcriptPath, $gitCwd) }
 # @parity:raw-extract-end
 
 # --- Output cache: skip re-render when all inputs are unchanged ---
@@ -328,22 +331,33 @@ $_ocTmt = ''
 # command-discovery/module init, so a single Get-Item or Test-Path here would
 # silently re-add the cost the deferred parse removed. File.GetLastWriteTimeUtc
 # does not need -Force: hidden files (like .git\index) are visible to it.
-if ($transcriptPath -and [System.IO.File]::Exists($transcriptPath)) {
-    $_ocTmt = [System.IO.File]::GetLastWriteTimeUtc($transcriptPath).Ticks
-}
-$_ocGmt = ''
-$_ocGitCwd = if ($gitCwd) { $gitCwd } else { [System.IO.Directory]::GetCurrentDirectory() }
-$_ocGidx = [System.IO.Path]::Combine($_ocGitCwd, '.git\index')
-if ([System.IO.File]::Exists($_ocGidx)) {
-    $_ocGmt = [System.IO.File]::GetLastWriteTimeUtc($_ocGidx).Ticks
-}
-$_ocSmt = ''
-if ($transcriptPath) {
-    $_ocSdir = [System.IO.Path]::Combine([System.IO.Path]::GetDirectoryName($transcriptPath), [System.IO.Path]::GetFileNameWithoutExtension($transcriptPath), 'subagents')
-    if ([System.IO.Directory]::Exists($_ocSdir)) {
-        $_ocSmt = [System.IO.Directory]::GetLastWriteTimeUtc($_ocSdir).Ticks
+# Each probe sits in its own try/catch: .NET Framework's Path.Combine and
+# GetDirectoryName throw on Windows-illegal path characters where the old
+# Join-Path/Split-Path tolerated them, and a pathological path field must
+# degrade to an empty probe value (same as "file not present"), never reach
+# the trap's error banner.
+try {
+    if ($transcriptPath -and [System.IO.File]::Exists($transcriptPath)) {
+        $_ocTmt = [System.IO.File]::GetLastWriteTimeUtc($transcriptPath).Ticks
     }
-}
+} catch {}
+$_ocGmt = ''
+try {
+    $_ocGitCwd = if ($gitCwd) { $gitCwd } else { [System.IO.Directory]::GetCurrentDirectory() }
+    $_ocGidx = [System.IO.Path]::Combine($_ocGitCwd, '.git\index')
+    if ([System.IO.File]::Exists($_ocGidx)) {
+        $_ocGmt = [System.IO.File]::GetLastWriteTimeUtc($_ocGidx).Ticks
+    }
+} catch {}
+$_ocSmt = ''
+try {
+    if ($transcriptPath) {
+        $_ocSdir = [System.IO.Path]::Combine([System.IO.Path]::GetDirectoryName($transcriptPath), [System.IO.Path]::GetFileNameWithoutExtension($transcriptPath), 'subagents')
+        if ([System.IO.Directory]::Exists($_ocSdir)) {
+            $_ocSmt = [System.IO.Directory]::GetLastWriteTimeUtc($_ocSdir).Ticks
+        }
+    }
+} catch {}
 # Feed content+freshness and the learned-map mtime join the key so subagent
 # tier switches and learned window changes invalidate the render cache. The
 # handler rewrites the feed file every tick, so keying on its mtime would
@@ -406,8 +420,7 @@ try {
 # Direct property chains: with StrictMode off, a missing member anywhere in the
 # chain yields $null — same result as the old Get-Val walker at ~1 ms per 23
 # lookups instead of ~19 ms of function-call overhead. Do not enable StrictMode.
-# sessionId/transcriptPath/gitCwd are re-assigned here authoritatively; the
-# raw-extract values above exist only for the cache key's file probes.
+# sessionId/transcriptPath/gitCwd are re-assigned here authoritatively.
 $sessionId        = $json.session_id
 $cwdRaw           = $json.workspace.current_dir
 $cwdFallback      = $json.cwd
@@ -434,6 +447,12 @@ $agentOut         = $json.context_window.current_usage.output_tokens
 if ($null -eq $agentOut) { $agentOut = 0 }
 $modelId          = $json.model.id
 # @parity:json-extract-end
+
+# Re-derive the per-session file id from the parsed session_id: it names every
+# cache/state file below (transcript cache, task caches, subagent caches, git
+# cache, notify latches). $_ocPath and $_ocFeed keep their pre-parse binding so
+# the output-cache check above and the write at the bottom stay coherent.
+$_ocSafeId = if ($sessionId) { $sessionId -replace '[^a-zA-Z0-9_-]', '' } else { $null }
 
 # --- 1. CWD ---
 $cwd = $cwdRaw
@@ -540,9 +559,9 @@ $gitPart = ''
 try {
     if (-not $gitCwd) { $gitCwd = (Get-Location).Path }
     $gitIndex = Join-Path $gitCwd '.git\index'
-    if (Test-Path -LiteralPath $gitIndex) {
+    if (Test-Path -LiteralPath $gitIndex -ErrorAction SilentlyContinue) {
         $gitIndexMt = (Get-Item -LiteralPath $gitIndex -Force).LastWriteTimeUtc.Ticks
-        $safeSessionId = if ($sessionId) { $sessionId -replace '[^a-zA-Z0-9_-]', '' } else { $null }
+        $safeSessionId = $_ocSafeId
         $gitCachePath = if ($safeSessionId) { Join-Path $env:TEMP "statusline-git-$safeSessionId.txt" } else { $null }
         $gitUseCache = $false
         $branch = $null; $insertions = 0; $deletions = 0; $untracked = 0; $ahead = 0; $behind = 0; $stash = 0
@@ -1041,7 +1060,7 @@ if (-not $feedTier -and $sessionId -and $transcriptPath) {
     $projectDir   = Split-Path -Parent $transcriptPath
     $sessionBase  = [System.IO.Path]::GetFileNameWithoutExtension($transcriptPath)
     $subagentsDir = Join-Path $projectDir (Join-Path $sessionBase 'subagents')
-    if (Test-Path -LiteralPath $subagentsDir) {
+    if (Test-Path -LiteralPath $subagentsDir -ErrorAction SilentlyContinue) {
         Write-Log "subagents: fallback tier (feed absent/stale)"
         $saFiles = Get-ChildItem -LiteralPath $subagentsDir -Filter 'agent-*.jsonl' -ErrorAction SilentlyContinue |
                    Sort-Object Name
