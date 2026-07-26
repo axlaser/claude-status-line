@@ -199,8 +199,17 @@ function Test-TrustedFile([string]$path) {
     try {
         $item = Get-Item -LiteralPath $path -Force -ErrorAction Stop
         if ($item.PSIsContainer -or ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) { return $false }
-        $me = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
-        return ((Get-Acl -LiteralPath $path -ErrorAction Stop).GetOwner([System.Security.Principal.SecurityIdentifier]) -eq $me)
+        # Owner is defense-in-depth on a per-user %TEMP%; the reparse-point rejection
+        # above is the load-bearing guard. Resolve it off the FileInfo rather than via
+        # Get-Acl: that cmdlet is NOT available in the child process Claude Code spawns
+        # for the statusline (module auto-loading is off there), so depending on it
+        # made this return $false for every file -- silently disabling every read-side
+        # cache and re-firing threshold alerts on every refresh. Tolerate an
+        # undeterminable owner, matching what Test-WriteOk already does.
+        $owner = $null
+        try { $owner = $item.GetAccessControl().GetOwner([System.Security.Principal.SecurityIdentifier]) } catch {}
+        if ($null -eq $owner) { return $true }
+        return ($owner -eq [System.Security.Principal.WindowsIdentity]::GetCurrent().User)
     } catch { return $false }
 }
 function Test-WriteOk([string]$path) {
@@ -211,8 +220,9 @@ function Test-WriteOk([string]$path) {
             $bad = [bool]($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint)
             if (-not $bad) {
                 try {
+                    # Off the FileInfo, not Get-Acl -- see Test-TrustedFile above.
                     $me = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
-                    $bad = ((Get-Acl -LiteralPath $path -ErrorAction Stop).GetOwner([System.Security.Principal.SecurityIdentifier]) -ne $me)
+                    $bad = ($item.GetAccessControl().GetOwner([System.Security.Principal.SecurityIdentifier]) -ne $me)
                 } catch { $bad = $false }
             }
             if ($bad) { Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue }
@@ -1093,13 +1103,27 @@ if ($_ocSafeId) {
     $_notifyState = Join-Path $env:TEMP "statusline-notify-$_ocSafeId.json"
     $_nsCtx = $false; $_nsRate = $false; $_nsRateResets = ''
 
-    if (Test-TrustedFile $_notifyState) {
-        try {
-            $_nsData = Get-Content -LiteralPath $_notifyState -Raw -Encoding UTF8 | ConvertFrom-Json
-            $_nsCtx = if ($_nsData.notified_context_high -eq $true) { $true } else { $false }
-            $_nsRate = if ($_nsData.notified_rate_limit -eq $true) { $true } else { $false }
-            $_nsRateResets = if ($_nsData.last_rate_resets_at) { $_nsData.last_rate_resets_at } else { '' }
-        } catch {}
+    # Fail closed when the state file exists but cannot be read. An empty or torn
+    # read yields $null, and $null -eq $true is false, so the latches would look
+    # like "never notified" and re-fire the alert on every refresh for as long as
+    # the collision lasts. A missing file legitimately means "never notified".
+    $_nsUsable = $true
+    if (Test-Path -LiteralPath $_notifyState) {
+        # It exists, so the latch must actually be read. Anything that stops us --
+        # an untrusted file, a torn read, unparseable JSON -- means we cannot know
+        # whether we already alerted, and guessing "no" re-fires every refresh.
+        $_nsUsable = $false
+        if (Test-TrustedFile $_notifyState) {
+            try {
+                $_nsData = Get-Content -LiteralPath $_notifyState -Raw -Encoding UTF8 | ConvertFrom-Json
+                if ($null -ne $_nsData -and $null -ne $_nsData.notified_context_high) {
+                    $_nsCtx = if ($_nsData.notified_context_high -eq $true) { $true } else { $false }
+                    $_nsRate = if ($_nsData.notified_rate_limit -eq $true) { $true } else { $false }
+                    $_nsRateResets = if ($_nsData.last_rate_resets_at) { $_nsData.last_rate_resets_at } else { '' }
+                    $_nsUsable = $true
+                }
+            } catch {}
+        }
     }
 
     $_ctxThresh = 70; $_rateThresh = 80
@@ -1127,7 +1151,7 @@ if ($_ocSafeId) {
     $_nsChanged = $false
     $notifyScript = "$env:USERPROFILE\.claude\notify.ps1"
 
-    if ($_ctxPct -ge $_ctxThresh -and -not $_nsCtx) {
+    if ($_nsUsable -and $_ctxPct -ge $_ctxThresh -and -not $_nsCtx) {
         if (Test-Path $notifyScript) { Start-Process -WindowStyle Hidden -FilePath 'powershell' -ArgumentList "-NoProfile -File `"$notifyScript`" context_high $_ctxPct" }
         $_nsCtx = $true; $_nsChanged = $true
         Write-Log "notify: context_high fired at ${_ctxPct}%"
@@ -1136,21 +1160,33 @@ if ($_ocSafeId) {
         Write-Log "notify: context_high reset (${_ctxPct}% < ${_ctxThresh}%)"
     }
 
-    if ($_rateResetsNow -ne $_nsRateResets) {
+    # Compared as strings on both sides: the stored value is JSON text, so an
+    # untyped comparison can never settle and would rewrite the file every refresh,
+    # widening the window a concurrent reader can tear.
+    if ("$_rateResetsNow" -ne "$_nsRateResets") {
         $_nsRate = $false; $_nsChanged = $true
         Write-Log "notify: rate_limit reset (resets_at changed)"
     }
-    if ($_rateMax -ge $_rateThresh -and -not $_nsRate) {
+    if ($_nsUsable -and $_rateMax -ge $_rateThresh -and -not $_nsRate) {
         if (Test-Path $notifyScript) { Start-Process -WindowStyle Hidden -FilePath 'powershell' -ArgumentList "-NoProfile -File `"$notifyScript`" rate_limit $_rateMax" }
         $_nsRate = $true; $_nsChanged = $true
         Write-Log "notify: rate_limit fired at ${_rateMax}%"
     }
 
-    if ($_nsChanged -and (Test-WriteOk $_notifyState)) {
+    if ($_nsUsable -and $_nsChanged -and (Test-WriteOk $_notifyState)) {
         $nsCtxStr  = if ($_nsCtx)  { 'true' } else { 'false' }
         $nsRateStr = if ($_nsRate) { 'true' } else { 'false' }
         $nsJson = "{`"notified_context_high`":$nsCtxStr,`"notified_rate_limit`":$nsRateStr,`"last_rate_resets_at`":`"$_rateResetsNow`"}"
-        try { [System.IO.File]::WriteAllText($_notifyState, $nsJson, (New-Object System.Text.UTF8Encoding $false)) } catch {}
+        # Atomic write: temp file then rename, so a concurrent refresh never observes
+        # a truncated latch file. WriteAllText truncates in place, which left the file
+        # momentarily empty on every refresh (mirrors subagent-statusline.ps1).
+        $nsTmp = "$_notifyState.tmp.$PID"
+        try {
+            [System.IO.File]::WriteAllText($nsTmp, $nsJson, (New-Object System.Text.UTF8Encoding $false))
+            Move-Item -LiteralPath $nsTmp -Destination $_notifyState -Force -ErrorAction Stop
+        } catch {
+            if (Test-Path -LiteralPath $nsTmp) { Remove-Item -LiteralPath $nsTmp -Force -ErrorAction SilentlyContinue }
+        }
     }
 }
 

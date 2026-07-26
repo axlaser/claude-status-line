@@ -1159,12 +1159,17 @@ output+=$'\n'"$bot_rule"
 # --- Threshold notifications ---
 if [[ -n "$J_SESSION_ID" ]]; then
     _notify_state="${TMPDIR:-/tmp}/statusline-notify-${J_SESSION_ID//[^a-zA-Z0-9_-]/}.json"
-    _ns_ctx=false _ns_rate=false _ns_rate_resets=""
+    _ns_ctx=false _ns_rate=false _ns_rate_resets="" _ns_usable=true
 
     if sl_trusted_file "$_notify_state" && command -v jq &>/dev/null; then
         _ns_ctx=$(jq -r '.notified_context_high // false' "$_notify_state" 2>/dev/null)
         _ns_rate=$(jq -r '.notified_rate_limit // false' "$_notify_state" 2>/dev/null)
         _ns_rate_resets=$(jq -r '.last_rate_resets_at // ""' "$_notify_state" 2>/dev/null)
+        # Fail closed when the file exists but cannot be parsed: a torn read leaves
+        # these empty, and empty != "true", so the latches would look like "never
+        # notified" and re-fire the alert on every refresh while the collision lasts.
+        # Skip notifying this refresh instead; the next one reads a whole file.
+        [[ "$_ns_ctx" == "true" || "$_ns_ctx" == "false" ]] || _ns_usable=false
     fi
 
     _ctx_thresh=70 _rate_thresh=80
@@ -1187,7 +1192,7 @@ if [[ -n "$J_SESSION_ID" ]]; then
     _ns_changed=false
     NOTIFY_SCRIPT="$HOME/.claude/notify.sh"
 
-    if (( _ctx_pct >= _ctx_thresh )) && [[ "$_ns_ctx" != "true" ]]; then
+    if [[ "$_ns_usable" == true ]] && (( _ctx_pct >= _ctx_thresh )) && [[ "$_ns_ctx" != "true" ]]; then
         [[ -x "$NOTIFY_SCRIPT" ]] && "$NOTIFY_SCRIPT" context_high "$_ctx_pct" &
         _ns_ctx=true; _ns_changed=true
         log_msg "notify: context_high fired at ${_ctx_pct}%"
@@ -1200,15 +1205,23 @@ if [[ -n "$J_SESSION_ID" ]]; then
         _ns_rate=false; _ns_changed=true
         log_msg "notify: rate_limit reset (resets_at changed)"
     fi
-    if (( _rate_max >= _rate_thresh )) && [[ "$_ns_rate" != "true" ]]; then
+    if [[ "$_ns_usable" == true ]] && (( _rate_max >= _rate_thresh )) && [[ "$_ns_rate" != "true" ]]; then
         [[ -x "$NOTIFY_SCRIPT" ]] && "$NOTIFY_SCRIPT" rate_limit "$_rate_max" &
         _ns_rate=true; _ns_changed=true
         log_msg "notify: rate_limit fired at ${_rate_max}%"
     fi
 
-    if [[ "$_ns_changed" == true ]] && sl_write_ok "$_notify_state"; then
-        printf '{"notified_context_high":%s,"notified_rate_limit":%s,"last_rate_resets_at":"%s"}' \
-            "$_ns_ctx" "$_ns_rate" "$_rate_resets_now" > "$_notify_state" 2>/dev/null
+    if [[ "$_ns_usable" == true && "$_ns_changed" == true ]] && sl_write_ok "$_notify_state"; then
+        # Atomic write: temp file then rename, so a concurrent refresh never observes
+        # a truncated latch file. A plain redirect truncates in place, which left the
+        # file momentarily empty on every refresh (mirrors subagent-statusline.sh).
+        _ns_tmp="${_notify_state}.tmp.$$"
+        if printf '{"notified_context_high":%s,"notified_rate_limit":%s,"last_rate_resets_at":"%s"}' \
+            "$_ns_ctx" "$_ns_rate" "$_rate_resets_now" > "$_ns_tmp" 2>/dev/null; then
+            mv -f "$_ns_tmp" "$_notify_state" 2>/dev/null || rm -f "$_ns_tmp" 2>/dev/null
+        else
+            rm -f "$_ns_tmp" 2>/dev/null
+        fi
     fi
 fi
 
