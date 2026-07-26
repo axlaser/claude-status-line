@@ -2,8 +2,8 @@
 # Claude Code statusLine for Windows PowerShell.
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 
-# @parity:constant CACHE_VERSION=1
-$CacheVersion = "1"
+# @parity:constant CACHE_VERSION=2
+$CacheVersion = "2"
 
 # @parity:colors-begin
 $ESC  = [char]27
@@ -688,20 +688,42 @@ if ($transcriptPath -and (Test-Path -LiteralPath $transcriptPath -ErrorAction Si
         $prevOut        = [long]0
         $prevCacheWrite = [long]0
         $prevCacheRead  = [long]0
+        # v2 record fields (consumed-byte offset + first-4KB head checksum);
+        # $cV2Ok gates both the cache hit and the incremental-scan path.
+        $cV2Ok = $false
+        $cOff  = [long]0
+        $cSz   = [long]0
+        $cSum  = $null
+        $parts = $null
         if ($cachePath -and (Test-TrustedFile $cachePath)) {
             $cacheLine = Get-Content -LiteralPath $cachePath -Raw -ErrorAction SilentlyContinue
             if ($cacheLine) {
                 $parts = $cacheLine.Trim().Split('|')
-                if ($parts[0] -eq $CacheVersion -and $parts.Length -ge 8) {
+                # Prev-totals harvest is version-agnostic (field positions are
+                # unchanged since v1) so the delta/burn baselines survive a
+                # CACHE_VERSION upgrade tick; numeric validation mirrors bash.
+                if ($parts.Length -ge 8 -and $parts[7] -match '^-?\d+$') {
                     $prevWorkingStart = [long]$parts[7]
                 }
-                if ($parts[0] -eq $CacheVersion -and $parts.Length -ge 10) {
-                    $prevIn         = [long]$parts[5]
-                    $prevOut        = [long]$parts[6]
-                    $prevCacheWrite = [long]$parts[8]
-                    $prevCacheRead  = [long]$parts[9]
+                if ($parts.Length -ge 10) {
+                    if ($parts[5] -match '^-?\d+$') { $prevIn         = [long]$parts[5] }
+                    if ($parts[6] -match '^-?\d+$') { $prevOut        = [long]$parts[6] }
+                    if ($parts[8] -match '^-?\d+$') { $prevCacheWrite = [long]$parts[8] }
+                    if ($parts[9] -match '^-?\d+$') { $prevCacheRead  = [long]$parts[9] }
                 }
-                if (($parts.Length -ge 14) -and $parts[0] -eq $CacheVersion -and $parts[1] -eq "$transcriptMt" -and $parts[2] -eq "$transcriptSz") {
+                # Strict v2 structural validation: exactly 16 fields, integer
+                # offset within [0, stored size], 64-hex checksum (case is
+                # normalized). Any failure -> untrusted record -> full-rescan miss.
+                if ($parts.Length -eq 16 -and $parts[0] -eq $CacheVersion -and
+                    $parts[2] -match '^\d+$' -and $parts[3] -match '^\d+$' -and
+                    ($parts[4] -eq 'True' -or $parts[4] -eq 'False') -and
+                    $parts[14] -match '^\d+$' -and $parts[15] -match '^[0-9a-fA-F]{64}$') {
+                    $cSz  = [long]$parts[2]
+                    $cOff = [long]$parts[14]
+                    $cSum = $parts[15].ToLowerInvariant()
+                    if ($cOff -le $cSz) { $cV2Ok = $true }
+                }
+                if ($cV2Ok -and $parts[1] -eq "$transcriptMt" -and $parts[2] -eq "$transcriptSz") {
                     $msgCount                = [int]$parts[3]
                     $claudeIsIdle            = [bool]::Parse($parts[4])
                     $sessionInTokens         = [long]$parts[5]
@@ -719,37 +741,132 @@ if ($transcriptPath -and (Test-Path -LiteralPath $transcriptPath -ErrorAction Si
         }
         if (-not $useCache) {
             if ($transcriptSz -gt 0) {
-                # Single streaming pass (parity with the one-pass awk on macOS/Linux):
-                # counts real user messages, sums token buckets, and tracks the LAST
-                # non-synthetic user/assistant line for the idle-vs-working verdict --
-                # without materializing the whole transcript in memory.
-                $msgCount = 0
-                foreach ($ln in [System.IO.File]::ReadLines($transcriptPath)) {
-                    if ([string]::IsNullOrWhiteSpace($ln)) { continue }
-                    if ($ln -match '"type"\s*:\s*"assistant"') {
-                        # Cumulative tokens by usage bucket across every assistant turn.
-                        if ($ln -match '"input_tokens"\s*:\s*(\d+)')                { $sessionInTokens         += [long]$Matches[1] }
-                        if ($ln -match '"cache_creation_input_tokens"\s*:\s*(\d+)') { $sessionCacheWriteTokens += [long]$Matches[1] }
-                        if ($ln -match '"cache_read_input_tokens"\s*:\s*(\d+)')    { $sessionCacheReadTokens  += [long]$Matches[1] }
-                        if ($ln -match '"output_tokens"\s*:\s*(\d+)')              { $sessionOutTokens        += [long]$Matches[1] }
-                        # Idle vs working: latest REAL entry decides; synthetic lines don't vote.
-                        if ($ln -notmatch '"isMeta"\s*:\s*true' -and $ln -notmatch '<command-name>' -and
-                            $ln -notmatch '<local-command-' -and $ln -notmatch '"toolUseResult"') {
-                            $claudeIsIdle = ($ln -match '"stop_reason"\s*:\s*"end_turn"')
-                        }
-                    } elseif ($ln -match '"type"\s*:\s*"user"') {
-                        # Real user messages = user-type lines that are NOT synthetic. Filter with
-                        # AND per-line; summing independent counters over-subtracts when markers
-                        # like `<command-name>` co-occur with `"toolUseResult"` on the same line.
-                        if ($ln -notmatch '"toolUseResult"' -and $ln -notmatch '"isMeta"\s*:\s*true' -and
-                            $ln -notmatch '<command-name>' -and $ln -notmatch '<local-command-stdout>') {
-                            $msgCount++
-                        }
-                        if ($ln -notmatch '"isMeta"\s*:\s*true' -and $ln -notmatch '<command-name>' -and
-                            $ln -notmatch '<local-command-' -and $ln -notmatch '"toolUseResult"') {
-                            $claudeIsIdle = if ($ln -match 'Request interrupted by user') { $true } else { $false }
-                        }
+                # Single streaming pass over raw bytes (parity with the one-pass awk
+                # on macOS/Linux): counts real user messages, sums token buckets, and
+                # tracks the LAST non-synthetic user/assistant line for the
+                # idle-vs-working verdict -- without materializing the whole
+                # transcript in memory. Bytes (not StreamReader lines) keep the
+                # consumed offset exact: each complete line advances it by its
+                # encoded UTF-8 byte count plus its newline bytes (\n or \r\n), and
+                # a trailing line without a newline is left unconsumed so the next
+                # tick re-reads it. With a valid v2 record whose head checksum still
+                # matches, the scan starts at the stored offset and accumulates onto
+                # the cached totals; truncation (stored size > current) or a head
+                # rewrite (checksum mismatch) forces a full rescan.
+                $msgCount  = 0
+                $scanStart = [long]0
+                $headSum   = $null
+                $fs = $null
+                try {
+                    $fs = [System.IO.FileStream]::new($transcriptPath,
+                        [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read,
+                        ([System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete))
+                    # Head checksum of the current file over min(4KB, size) bytes:
+                    # compared against a valid v2 record to catch head rewrites, and
+                    # stored (lowercase hex) in the record written below.
+                    $headLen  = [int][Math]::Min([long]4096, $transcriptSz)
+                    $headBuf  = New-Object byte[] $headLen
+                    $headRead = 0
+                    while ($headRead -lt $headLen) {
+                        $n = $fs.Read($headBuf, $headRead, $headLen - $headRead)
+                        if ($n -le 0) { break }
+                        $headRead += $n
                     }
+                    $sha = [Security.Cryptography.SHA256]::Create()
+                    $headSum = [BitConverter]::ToString($sha.ComputeHash($headBuf, 0, $headRead)).Replace('-','').ToLowerInvariant()
+                    if ($cV2Ok -and $cSz -le $transcriptSz -and $cOff -le $transcriptSz) {
+                        # The stored checksum covers min(4KB, stored size) bytes;
+                        # hash the same span of the current head for the comparison.
+                        $cmpLen = [int][Math]::Min([long]4096, $cSz)
+                        $cmpSum = if ($cmpLen -eq $headRead) { $headSum } else {
+                            [BitConverter]::ToString($sha.ComputeHash($headBuf, 0, [Math]::Min($cmpLen, $headRead))).Replace('-','').ToLowerInvariant()
+                        }
+                        if ($cmpSum -eq $cSum) {
+                            # Incremental: consume only bytes appended after the
+                            # stored offset, on top of the cached totals; the cached
+                            # verdict carries unless the delta contains a voting line.
+                            $scanStart               = $cOff
+                            $msgCount                = [int]$parts[3]
+                            $claudeIsIdle            = [bool]::Parse($parts[4])
+                            $sessionInTokens         = $prevIn
+                            $sessionOutTokens        = $prevOut
+                            $sessionCacheWriteTokens = $prevCacheWrite
+                            $sessionCacheReadTokens  = $prevCacheRead
+                            if ($DBG) { Write-Log ("transcript: incremental from offset={0} (+{1} bytes)" -f $cOff, ($transcriptSz - $cOff)) }
+                        } else {
+                            if ($DBG) { Write-Log "transcript: head checksum mismatch -> full rescan" }
+                        }
+                    } elseif ($cV2Ok) {
+                        if ($DBG) { Write-Log "transcript: stored size/offset beyond current size -> full rescan" }
+                    }
+                    # Chunked read aligned to newline boundaries: each chunk is
+                    # decoded once (never splitting a multibyte char -- chunk
+                    # strings start and end at \n) and Split into lines; the
+                    # trailing partial line's bytes move to the buffer front for
+                    # the next read. Offset accounting is per-chunk: $chunkStart
+                    # tracks the absolute position after the last consumed \n.
+                    $fs.Position = $scanStart
+                    $remaining  = $transcriptSz - $scanStart
+                    $buf  = New-Object byte[] 65536
+                    $fill = 0                      # leftover partial-line bytes at buf[0]
+                    $chunkStart = $scanStart       # absolute position of $buf[0]
+                    $utf8 = [System.Text.Encoding]::UTF8
+                    while ($true) {
+                        $space = $buf.Length - $fill
+                        if ($space -eq 0) {
+                            # single line larger than the buffer: grow it
+                            $nb = New-Object byte[] ($buf.Length * 2)
+                            [Buffer]::BlockCopy($buf, 0, $nb, 0, $fill)
+                            $buf = $nb
+                            $space = $buf.Length - $fill
+                        }
+                        $want = if ($remaining -lt $space) { [int]$remaining } else { $space }
+                        $n = 0
+                        if ($want -gt 0) { $n = $fs.Read($buf, $fill, $want) }
+                        if ($n -le 0) { break }
+                        $remaining -= $n
+                        $dataLen = $fill + $n
+                        $lastNl = [System.Array]::LastIndexOf($buf, [byte]10, $dataLen - 1, $dataLen)
+                        if ($lastNl -lt 0) { $fill = $dataLen; continue }
+                        $chunkStr = $utf8.GetString($buf, 0, $lastNl)
+                        $hasCr = $chunkStr.IndexOf([char]13) -ge 0
+                        foreach ($ln in $chunkStr.Split("`n")) {
+                            if ($hasCr -and $ln.Length -gt 0 -and $ln[$ln.Length - 1] -eq [char]13) { $ln = $ln.Substring(0, $ln.Length - 1) }
+                            if ([string]::IsNullOrWhiteSpace($ln)) { continue }
+                            if ($ln -match '"type"\s*:\s*"assistant"') {
+                                # Cumulative tokens by usage bucket across every assistant turn.
+                                if ($ln -match '"input_tokens"\s*:\s*(\d+)')                { $sessionInTokens         += [long]$Matches[1] }
+                                if ($ln -match '"cache_creation_input_tokens"\s*:\s*(\d+)') { $sessionCacheWriteTokens += [long]$Matches[1] }
+                                if ($ln -match '"cache_read_input_tokens"\s*:\s*(\d+)')    { $sessionCacheReadTokens  += [long]$Matches[1] }
+                                if ($ln -match '"output_tokens"\s*:\s*(\d+)')              { $sessionOutTokens        += [long]$Matches[1] }
+                                # Idle vs working: latest REAL entry decides; synthetic lines don't vote.
+                                if ($ln -notmatch '"isMeta"\s*:\s*true' -and $ln -notmatch '<command-name>' -and
+                                    $ln -notmatch '<local-command-' -and $ln -notmatch '"toolUseResult"') {
+                                    $claudeIsIdle = ($ln -match '"stop_reason"\s*:\s*"end_turn"')
+                                }
+                            } elseif ($ln -match '"type"\s*:\s*"user"') {
+                                # Real user messages = user-type lines that are NOT synthetic. Filter with
+                                # AND per-line; summing independent counters over-subtracts when markers
+                                # like `<command-name>` co-occur with `"toolUseResult"` on the same line.
+                                if ($ln -notmatch '"toolUseResult"' -and $ln -notmatch '"isMeta"\s*:\s*true' -and
+                                    $ln -notmatch '<command-name>' -and $ln -notmatch '<local-command-stdout>') {
+                                    $msgCount++
+                                }
+                                if ($ln -notmatch '"isMeta"\s*:\s*true' -and $ln -notmatch '<command-name>' -and
+                                    $ln -notmatch '<local-command-' -and $ln -notmatch '"toolUseResult"') {
+                                    $claudeIsIdle = if ($ln -match 'Request interrupted by user') { $true } else { $false }
+                                }
+                            }
+                        }
+                        $chunkStart += $lastNl + 1
+                        $fill = $dataLen - ($lastNl + 1)
+                        if ($fill -gt 0) { [Buffer]::BlockCopy($buf, $lastNl + 1, $buf, 0, $fill) }
+                    }
+                    # Leftover $fill bytes are a torn trailing line: not consumed,
+                    # not counted -- the next tick re-reads them from the offset.
+                    $newOffset = $chunkStart
+                } finally {
+                    if ($fs) { $fs.Dispose() }
                 }
                 # workingStartOutTokens: -1 when idle; otherwise preserve any prior baseline or set it now.
                 $deltaIn         = [Math]::Max(0, $sessionInTokens - $prevIn)
@@ -767,7 +884,7 @@ if ($transcriptPath -and (Test-Path -LiteralPath $transcriptPath -ErrorAction Si
                     try {
                         [System.IO.File]::WriteAllText(
                             $cachePath,
-                            ("{0}|{1}|{2}|{3}|{4}|{5}|{6}|{7}|{8}|{9}|{10}|{11}|{12}|{13}" -f $CacheVersion, $transcriptMt, $transcriptSz, $msgCount, $claudeIsIdle, $sessionInTokens, $sessionOutTokens, $workingStartOutTokens, $sessionCacheWriteTokens, $sessionCacheReadTokens, $deltaIn, $deltaOut, $deltaCacheWrite, $deltaCacheRead),
+                            ("{0}|{1}|{2}|{3}|{4}|{5}|{6}|{7}|{8}|{9}|{10}|{11}|{12}|{13}|{14}|{15}" -f $CacheVersion, $transcriptMt, $transcriptSz, $msgCount, $claudeIsIdle, $sessionInTokens, $sessionOutTokens, $workingStartOutTokens, $sessionCacheWriteTokens, $sessionCacheReadTokens, $deltaIn, $deltaOut, $deltaCacheWrite, $deltaCacheRead, $newOffset, $headSum),
                             (New-Object System.Text.UTF8Encoding $false))
                     } catch {}
                 }

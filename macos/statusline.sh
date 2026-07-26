@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Claude Code statusLine script for macOS.
 
-# @parity:constant CACHE_VERSION=1
-CACHE_VERSION="1"
+# @parity:constant CACHE_VERSION=2
+CACHE_VERSION="2"
 
 if ! command -v jq &>/dev/null; then
     printf '\033[31m[statusline: jq not found — run: brew install jq]\033[0m'
@@ -622,10 +622,11 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
     prev_cache_write=0
     prev_cache_read=0
     prev_out=0
+    c_v2_ok=false
 
     # Read prior cache even on miss — needed for workingStart + deltas.
     if [[ -n "$cache_path" ]] && sl_trusted_file "$cache_path"; then
-        IFS='|' read -r c_ver c_mt c_sz c_msg c_idle c_in c_out c_wstart c_cwrite c_cread c_din c_dout c_dcw c_dcr < "$cache_path"
+        IFS='|' read -r c_ver c_mt c_sz c_msg c_idle c_in c_out c_wstart c_cwrite c_cread c_din c_dout c_dcw c_dcr c_off c_sum c_extra < "$cache_path"
         # Validate all numeric cache fields to prevent arithmetic injection
         [[ "$c_in" =~ ^-?[0-9]+$ ]] || c_in=0
         [[ "$c_out" =~ ^-?[0-9]+$ ]] || c_out=0
@@ -642,7 +643,18 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
         [[ -n "$c_cwrite" ]] && prev_cache_write="$c_cwrite"
         [[ -n "$c_cread" ]] && prev_cache_read="$c_cread"
 
-        if [[ "$c_ver" == "$CACHE_VERSION" && -n "$c_dcr" && "$c_mt" == "$transcript_mt" && "$c_sz" == "$transcript_sz" ]]; then
+        # Strict v2 structural validation: exactly 16 fields, integer offset
+        # within [0, stored size], 64-hex head checksum (case-normalized). Any
+        # failure -> untrusted record -> full-rescan miss. Gates both the cache
+        # hit and the incremental-scan path.
+        c_sum="${c_sum,,}"
+        if [[ "$c_ver" == "$CACHE_VERSION" && -z "$c_extra" && "$c_msg" =~ ^[0-9]+$ && \
+              ( "$c_idle" == "true" || "$c_idle" == "false" ) && "$c_sz" =~ ^[0-9]+$ && \
+              "$c_off" =~ ^[0-9]+$ && "$c_sum" =~ ^[0-9a-f]{64}$ ]] && (( c_off <= c_sz )); then
+            c_v2_ok=true
+        fi
+
+        if [[ "$c_v2_ok" == true && "$c_mt" == "$transcript_mt" && "$c_sz" == "$transcript_sz" ]]; then
             msg_count="$c_msg"
             claude_is_idle="$c_idle"
             session_in_tokens="$c_in"
@@ -668,66 +680,138 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
             # index()/substr() instead of copy+sub+sub regex chains; the LAST
             # "key": occurrence wins, with the same whitespace tolerance the old
             # greedy regexes had.
-            read -r msg_count session_in_tokens session_cache_write_tokens session_cache_read_tokens session_out_tokens claude_is_idle < <(
-                awk '
-                    function wskip(s, p, n) {  # first non-whitespace position at/after p
-                        while (p <= n && index(" \t\n\r\f\v", substr(s, p, 1)) > 0) p++
-                        return p
-                    }
-                    function tok(s, k,   n, off, i, p, c, v) {
-                        # digits after the LAST `key\s*:\s*` occurrence ("" -> 0)
-                        v = ""; n = length(s); off = 0
-                        i = index(s, k)
-                        while (i > 0) {
-                            off += i
-                            p = wskip(s, off + length(k), n)
-                            if (substr(s, p, 1) == ":") {
-                                p = wskip(s, p + 1, n)
-                                v = ""
-                                while (p <= n) {
-                                    c = substr(s, p, 1)
-                                    if (index("0123456789", c) == 0) break
-                                    v = v c; p++
-                                }
+            # Incremental parse (v2 record): a trusted record whose stored head
+            # checksum still matches lets the scan start at the stored byte
+            # offset and accumulate onto the cached totals. Stored size > current
+            # size (truncation) or a head mismatch (rewrite) forces a full
+            # rescan. awk runs under LC_ALL=C so length() counts bytes --
+            # offsets must stay byte-accurate on multibyte transcripts -- and a
+            # trailing line without a newline is left unconsumed (gated on
+            # total) for the next tick to re-read.
+            scan_start=0
+            scan_len=-1            # <0 -> no byte gating (size unknown)
+            scan_init_idle=true
+            scan_base_msg=0 scan_base_in=0 scan_base_cw=0 scan_base_cr=0 scan_base_out=0
+            cmp_sum="" cmp_len=-1
+            sz_ok=false
+            [[ "$transcript_sz" =~ ^[0-9]+$ ]] && { sz_ok=true; scan_len="$transcript_sz"; }
+            if [[ "$c_v2_ok" == true && "$sz_ok" == true ]] && (( c_sz <= transcript_sz && c_off <= transcript_sz )); then
+                # The stored checksum covers min(4096, stored size) bytes; hash
+                # the same span of the current file for the comparison.
+                cmp_len=$(( c_sz < 4096 ? c_sz : 4096 ))
+                read -r cmp_sum _ < <(head -c "$cmp_len" "$transcript_path" 2>/dev/null | shasum -a 256 2>/dev/null)
+                if [[ -n "$cmp_sum" && "$cmp_sum" == "$c_sum" ]]; then
+                    # Incremental: consume only bytes appended after the stored
+                    # offset, on top of the cached totals; the cached verdict
+                    # carries unless the delta contains a voting line.
+                    scan_start="$c_off"
+                    scan_len=$(( transcript_sz - c_off ))
+                    scan_init_idle="$c_idle"
+                    scan_base_msg="$c_msg"
+                    scan_base_in="$prev_in"
+                    scan_base_cw="$prev_cache_write"
+                    scan_base_cr="$prev_cache_read"
+                    scan_base_out="$prev_out"
+                    log_msg "transcript: incremental from offset=$c_off (+$scan_len bytes)"
+                else
+                    log_msg "transcript: head checksum mismatch -> full rescan"
+                fi
+            elif [[ "$c_v2_ok" == true ]]; then
+                log_msg "transcript: stored size/offset beyond current size -> full rescan"
+            fi
+            sl_awk_prog='
+                function wskip(s, p, n) {  # first non-whitespace position at/after p
+                    while (p <= n && index(" \t\n\r\f\v", substr(s, p, 1)) > 0) p++
+                    return p
+                }
+                function tok(s, k,   n, off, i, p, c, v) {
+                    # digits after the LAST `key\s*:\s*` occurrence ("" -> 0)
+                    v = ""; n = length(s); off = 0
+                    i = index(s, k)
+                    while (i > 0) {
+                        off += i
+                        p = wskip(s, off + length(k), n)
+                        if (substr(s, p, 1) == ":") {
+                            p = wskip(s, p + 1, n)
+                            v = ""
+                            while (p <= n) {
+                                c = substr(s, p, 1)
+                                if (index("0123456789", c) == 0) break
+                                v = v c; p++
                             }
-                            i = index(substr(s, off + 1), k)
                         }
-                        return v + 0
+                        i = index(substr(s, off + 1), k)
                     }
-                    /"type"[[:space:]]*:[[:space:]]*"user"/ {
-                        if ($0 !~ /"toolUseResult"/ &&
-                            $0 !~ /"isMeta"[[:space:]]*:[[:space:]]*true/ &&
-                            $0 !~ /<command-name>/ &&
-                            $0 !~ /<local-command-stdout>/) mc++
+                    return v + 0
+                }
+                {
+                    # Byte accounting: a line is consumed only when it fits inside
+                    # the sampled size (total); the first line that does not fit is
+                    # a torn or racing tail and stops consumption for the rest of
+                    # the scan so the offset always covers an unbroken prefix.
+                    if (total >= 0) {
+                        rec = length($0) + 1
+                        if (stop || pos + rec > total) { stop = 1; next }
+                        pos += rec
+                    } else pos += length($0) + 1
+                }
+                /"type"[[:space:]]*:[[:space:]]*"user"/ {
+                    if ($0 !~ /"toolUseResult"/ &&
+                        $0 !~ /"isMeta"[[:space:]]*:[[:space:]]*true/ &&
+                        $0 !~ /<command-name>/ &&
+                        $0 !~ /<local-command-stdout>/) mc++
+                }
+                /"type"[[:space:]]*:[[:space:]]*"assistant"/ {
+                    if ((v = tok($0, "\"input_tokens\"")) > 0) inp += v
+                    if ((v = tok($0, "\"cache_creation_input_tokens\"")) > 0) cw += v
+                    if ((v = tok($0, "\"cache_read_input_tokens\"")) > 0) cr += v
+                    if ((v = tok($0, "\"output_tokens\"")) > 0) out += v
+                }
+                $0 !~ /"isMeta"/ && $0 !~ /<command-name>/ &&
+                $0 !~ /<local-command-/ && $0 !~ /toolUseResult/ {
+                    # Last surviving entry votes -- the forward equivalent of the
+                    # old reverse scan, keeping its bash-glob semantics exactly:
+                    # no colon required after "type", isMeta filtered whatever
+                    # its value, filters tested before entry type.
+                    if ($0 ~ /"type".*"assistant"/) {
+                        if ($0 ~ /"stop_reason".*"end_turn"/) idle = "true"
+                        else idle = "false"
+                    } else if ($0 ~ /"type".*"user"/) {
+                        if ($0 ~ /Request interrupted by user/) idle = "true"
+                        else idle = "false"
                     }
-                    /"type"[[:space:]]*:[[:space:]]*"assistant"/ {
-                        if ((v = tok($0, "\"input_tokens\"")) > 0) inp += v
-                        if ((v = tok($0, "\"cache_creation_input_tokens\"")) > 0) cw += v
-                        if ((v = tok($0, "\"cache_read_input_tokens\"")) > 0) cr += v
-                        if ((v = tok($0, "\"output_tokens\"")) > 0) out += v
-                    }
-                    $0 !~ /"isMeta"/ && $0 !~ /<command-name>/ &&
-                    $0 !~ /<local-command-/ && $0 !~ /toolUseResult/ {
-                        # Last surviving entry votes -- the forward equivalent of the
-                        # old reverse scan, keeping its bash-glob semantics exactly:
-                        # no colon required after "type", isMeta filtered whatever
-                        # its value, filters tested before entry type.
-                        if ($0 ~ /"type".*"assistant"/) {
-                            if ($0 ~ /"stop_reason".*"end_turn"/) idle = "true"
-                            else idle = "false"
-                        } else if ($0 ~ /"type".*"user"/) {
-                            if ($0 ~ /Request interrupted by user/) idle = "true"
-                            else idle = "false"
-                        }
-                    }
-                    END {
-                        if (idle == "") idle = "true"
-                        print mc+0, inp+0, cw+0, cr+0, out+0, idle
-                    }
-                ' "$transcript_path" 2>/dev/null
-            )
-            [[ -z "$msg_count" ]] && msg_count=0
-            [[ -z "$claude_is_idle" ]] && claude_is_idle=true
+                }
+                END {
+                    # No voting entry in the scanned span -> the caller-provided
+                    # verdict (cached on incremental, idle default on full) holds.
+                    if (idle == "") idle = initidle
+                    print mc+0, inp+0, cw+0, cr+0, out+0, idle, pos+0
+                }
+            '
+            if (( scan_start > 0 )); then
+                read -r a_mc a_in a_cw a_cr a_out a_idle a_pos < <(
+                    tail -c +"$(( scan_start + 1 ))" "$transcript_path" 2>/dev/null |
+                        LC_ALL=C awk -v total="$scan_len" -v initidle="$scan_init_idle" "$sl_awk_prog" 2>/dev/null
+                )
+            else
+                read -r a_mc a_in a_cw a_cr a_out a_idle a_pos < <(
+                    LC_ALL=C awk -v total="$scan_len" -v initidle="$scan_init_idle" "$sl_awk_prog" "$transcript_path" 2>/dev/null
+                )
+            fi
+            [[ "$a_mc" =~ ^[0-9]+$ ]] || a_mc=0
+            [[ "$a_in" =~ ^[0-9]+$ ]] || a_in=0
+            [[ "$a_cw" =~ ^[0-9]+$ ]] || a_cw=0
+            [[ "$a_cr" =~ ^[0-9]+$ ]] || a_cr=0
+            [[ "$a_out" =~ ^[0-9]+$ ]] || a_out=0
+            [[ "$a_idle" == "true" || "$a_idle" == "false" ]] || a_idle="$scan_init_idle"
+            [[ "$a_pos" =~ ^[0-9]+$ ]] || a_pos=0
+            msg_count=$(( scan_base_msg + a_mc ))
+            session_in_tokens=$(( scan_base_in + a_in ))
+            session_cache_write_tokens=$(( scan_base_cw + a_cw ))
+            session_cache_read_tokens=$(( scan_base_cr + a_cr ))
+            session_out_tokens=$(( scan_base_out + a_out ))
+            claude_is_idle="$a_idle"
+            new_offset=$(( scan_start + a_pos ))
 
             delta_in=$(( session_in_tokens - prev_in ))
             delta_out=$(( session_out_tokens - prev_out ))
@@ -747,12 +831,26 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
             fi
 
             if [[ -n "$cache_path" ]] && sl_write_ok "$cache_path"; then
-                printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s' \
+                # Head checksum for the new record: min(4096, current size)
+                # bytes, reusing this tick's comparison hash when it already
+                # covers the same span. An unknown size stores an empty checksum,
+                # which fails v2 validation next tick -> full rescan (safe).
+                head_sum=""
+                if [[ "$sz_ok" == true ]]; then
+                    store_len=$(( transcript_sz < 4096 ? transcript_sz : 4096 ))
+                    if [[ -n "$cmp_sum" && "$cmp_len" == "$store_len" ]]; then
+                        head_sum="$cmp_sum"
+                    else
+                        read -r head_sum _ < <(head -c "$store_len" "$transcript_path" 2>/dev/null | shasum -a 256 2>/dev/null)
+                    fi
+                fi
+                printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s' \
                     "$CACHE_VERSION" "$transcript_mt" "$transcript_sz" "$msg_count" "$claude_is_idle" \
                     "$session_in_tokens" "$session_out_tokens" \
                     "$working_start_out_tokens" "$session_cache_write_tokens" \
                     "$session_cache_read_tokens" "$delta_in" "$delta_out" \
-                    "$delta_cache_write" "$delta_cache_read" > "$cache_path" 2>/dev/null
+                    "$delta_cache_write" "$delta_cache_read" \
+                    "$new_offset" "$head_sum" > "$cache_path" 2>/dev/null
             fi
         fi
     fi
