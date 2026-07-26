@@ -131,6 +131,15 @@ indistinguishable from real detached HEAD in porcelain v2, so it renders as the 
 commit hash instead of the name. Disambiguating would cost a subprocess on a pathological
 case; the sentinel collision is inherent to the v2 format.
 
+Accepted behavioral fix (2026-07-26, found by the combined pre-plan-vs-final bash run):
+under a UTF-8 locale, gawk's greedy-regex token extraction silently corrupted on
+assistant lines containing an astral-plane character (emoji) — those lines' tokens
+counted as 0. The `LC_ALL=C` pin (`09849e2`, added for byte-accurate offsets) fixes the
+extraction, so token totals on emoji-bearing transcripts are now *higher and correct*
+where the pre-plan script under-counted. Verified against GNU gawk 5.0; BSD awk on real
+macOS is unverified either way (the known R14 limit). This is the single deliberate
+rendered-output divergence from the pre-optimization scripts.
+
 ## 5. PR checklist for statusline hot-path changes
 
 - [ ] Process/fork delta stated (hit and miss paths), per platform.
