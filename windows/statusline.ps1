@@ -78,6 +78,19 @@ function Get-NormalizedModelId([string]$id) {  # strip trailing -YYYYMMDD date s
     return ($id -replace '-\d{8}$', '')
 }
 
+# @parity:base-id-begin
+# Same-model comparison ONLY -- never a storage key and never a resolver-tier input.
+# Get-NormalizedModelId is deliberately left narrow: its output is the learned map's
+# key AND the string the variant-marker tier matches on, so teaching it to strip
+# "[1m]" would rewrite every stored key and make that tier unreachable.
+function Get-ModelBaseId([string]$id) {
+    $b = Get-NormalizedModelId $id
+    $b = $b -replace '\[1m\]$', ''
+    $b = $b -replace '-1m$', ''
+    return $b.ToLowerInvariant()
+}
+# @parity:base-id-end
+
 function Get-PrettyModelName([string]$id) {  # claude-sonnet-5 -> "Sonnet 5"; unknown -> cleaned id
     $clean = (Get-NormalizedModelId $id) -replace '^claude-', ''
     if ($clean -match '^(fable|opus|sonnet|haiku)-(\d+(?:-\d+)*)') {
@@ -104,8 +117,22 @@ $ModelWindowSeeds = @{
 }
 # @parity:seed-table-end
 
-function Get-SubagentCtxSize([string]$model) {  # tiered: learned map -> seed table -> 1m marker -> 200K default
+function Get-SubagentCtxSize([string]$model) {  # tiered: session -> learned map -> seed table -> 1m marker -> 200K default
     $norm = Get-NormalizedModelId $model
+    # Session inheritance leads: a subagent running the session's own model has the
+    # session's window, which is live truth for this session -- it outranks a learned
+    # entry, which is a historical observation that may have come from elsewhere or
+    # been wrong when written. Compared on base ids so "[1m]" and the bare id match;
+    # $norm keeps its suffix for the marker tier below. Skipped entirely when the
+    # session window is missing or non-positive, so nothing new can fail here.
+    if ($model -and $modelId) {
+        $sessWin = 0L
+        if ([long]::TryParse("$ctxSize", [ref]$sessWin) -and $sessWin -gt 0 -and
+            (Get-ModelBaseId $model) -eq (Get-ModelBaseId $modelId)) {
+            Write-Log "sa ctx: $norm -> $sessWin (session)"
+            return $sessWin
+        }
+    }
     if ($ModelWindowsMap) {
         $prop = $ModelWindowsMap.PSObject.Properties[$norm]
         if ($prop) {

@@ -229,6 +229,20 @@ normalize_model_id() {  # strip trailing -YYYYMMDD date suffix
     printf '%s' "$id"
 }
 
+# @parity:base-id-begin
+# Same-model comparison ONLY -- never a storage key and never a resolver-tier input.
+# normalize_model_id is deliberately left narrow: its output is the learned map's key
+# AND the string the variant-marker tier matches on, so teaching it to strip "[1m]"
+# would rewrite every stored key and make that tier unreachable.
+model_base_id() {
+    local b
+    b=$(normalize_model_id "$1")
+    b="${b%\[1m\]}"
+    b="${b%-1m}"
+    printf '%s' "${b,,}"
+}
+# @parity:base-id-end
+
 prettify_model_id() {  # claude-sonnet-5 -> "Sonnet 5"; unknown -> cleaned id
     local id
     id=$(normalize_model_id "$1")
@@ -253,9 +267,21 @@ seed_window_for_model() {  # normalized model id -> window size or ""
 }
 # @parity:seed-table-end
 
-sa_ctx_for_model() {  # tiered: learned map -> seed table -> 1m marker -> 200K default
+sa_ctx_for_model() {  # tiered: session -> learned map -> seed table -> 1m marker -> 200K default
     local norm win=""
     norm=$(normalize_model_id "$1")
+    # Session inheritance leads: a subagent running the session's own model has the
+    # session's window, which is live truth for this session -- it outranks a learned
+    # entry, which is a historical observation that may have come from elsewhere or
+    # been wrong when written. Compared on base ids so "[1m]" and the bare id match;
+    # norm keeps its suffix for the marker tier below. Skipped entirely when the
+    # session window is missing or non-positive, so nothing new can fail here.
+    if [[ -n "$1" && -n "$J_MODEL_ID" && "$J_CTX_SIZE" =~ ^[0-9]+$ && "$J_CTX_SIZE" -gt 0 ]] \
+        && [[ "$(model_base_id "$1")" == "$(model_base_id "$J_MODEL_ID")" ]]; then
+        log_msg "sa ctx: ${norm} -> ${J_CTX_SIZE} (session)"
+        echo "$J_CTX_SIZE"
+        return
+    fi
     [[ -n "$norm" ]] && win="${MODEL_WINDOWS_MAP[$norm]:-}"
     if [[ "$win" =~ ^[0-9]+$ ]]; then
         log_msg "sa ctx: ${norm} -> ${win} (learned)"
