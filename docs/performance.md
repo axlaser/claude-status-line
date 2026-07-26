@@ -5,8 +5,8 @@ status: standing
 component: statusline
 scope: all-platforms
 sources:
-  - performance-audit-master.md
-  - performance-audit-verification.md
+  - performance-audit-master.md (local working document, not committed)
+  - performance-audit-verification.md (local working document, not committed)
 tags:
   - performance
   - process-startup
@@ -18,9 +18,10 @@ tags:
 # Performance Practices
 
 Standing rules for writing and reviewing statusline code. Grounded in the verified findings
-of [`performance-audit-master.md`](performance-audit-master.md) (checked by
-[`performance-audit-verification.md`](performance-audit-verification.md)). CLAUDE.md's
-Performance rules section points here; this document is the detail behind it.
+of the 2026-07-26 performance audits (`performance-audit-master.md` and its verification
+record — local working documents, not committed; the load-bearing numbers are restated
+here). CLAUDE.md's Performance rules section points here; this document is the detail
+behind it.
 
 ## 1. The cost model — what is actually expensive here
 
@@ -84,8 +85,10 @@ process per tick, so measurements must too.
   "saves X ms" claim.
 - **Bash on Git Bash: process counts are portable, milliseconds are not** (emulated fork is
   ~20–50× a real one). Report counts, not Git Bash ms, for macOS/Linux claims.
-- Do not re-test the ruled-out hypotheses in master §7 (temp-glob scaling, pre-compiled
-  regex, ACL-check removal, pwsh 7, script-size/parse cost) without new evidence.
+- Do not re-test the ruled-out hypotheses without new evidence: temp-glob scaling with
+  file count (false — flat; the cost is one-time provider load), pre-compiled `[regex]`
+  (slower), ACL-check removal (load-bearing), `pwsh` 7 (slower start), script-size/parse
+  cost (~10 ms, not the problem).
 
 ## 4. Equivalence verification (required for hot-path refactors)
 
@@ -117,9 +120,9 @@ HEAD, omits `# branch.ab` when no upstream, omits `# stash` at zero.
 - [ ] `CACHE_VERSION` bumped if any cache record format changed.
 - [ ] No debug-log call site evaluates expensive arguments when logging is off.
 
-## 6. Current agreed direction (from the master audit)
+## 6. Current agreed direction (from the 2026-07-26 audits)
 
-Implementation order when performance work is picked up — see master §4 for full detail:
+Implementation order when performance work is picked up:
 
 1. Tier 1 quick wins (Windows): guard log call sites, `Write-Host` → `[Console]::Write`,
    `ReadAllText` cache read, direct property access, `GetFiles` glob.
