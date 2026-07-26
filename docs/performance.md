@@ -1,27 +1,12 @@
----
-module: statusline
-doc_type: performance_practices
-status: standing
-component: statusline
-scope: all-platforms
-sources:
-  - performance-audit-master.md (local working document, not committed)
-  - performance-audit-verification.md (local working document, not committed)
-tags:
-  - performance
-  - process-startup
-  - caching
-  - benchmarking
-  - review-checklist
----
-
 # Performance Practices
 
-Standing rules for writing and reviewing statusline code. Grounded in the verified findings
-of the 2026-07-26 performance audits (`performance-audit-master.md` and its verification
-record — local working documents, not committed; the load-bearing numbers are restated
-here). CLAUDE.md's Performance rules section points here; this document is the detail
-behind it.
+Standing performance doctrine for the statusline scripts. CLAUDE.md's Performance rules
+section binds every hot-path change to this file; this document is the detail behind it.
+
+**This is a living document.** Update it whenever something new is established: a cost is
+measured, a hypothesis is ruled out, a behavioral divergence is accepted, a design
+decision is made, or the reference numbers in §6 change. A claim in this file should
+always reflect the current scripts.
 
 ## 1. The cost model — what is actually expensive here
 
@@ -33,19 +18,19 @@ Every refresh is a **brand-new process**. That single fact drives everything:
    tick. Anything touching the pipeline (`Measure-Object`, `Select-Object`, `Get-ChildItem`,
    `Write-Host`) pays a load cost that a warm benchmark will never show you.
 3. **Work scales with session length only in the transcript.** The transcript scan is linear
-   (~12.5–17.5 ms/MB); everything else is roughly constant. Incremental parsing (landed
-   `09849e2`) bounds it: a changed transcript re-parses only appended bytes.
+   (~12.5–17.5 ms/MB); everything else is roughly constant. The incremental parser bounds
+   it: a changed transcript re-parses only appended bytes.
 4. **The output cache hits at idle and misses during work** (its key hashes the raw payload,
    which changes every tick while Claude works). Treat the cache-miss path as the common
    case during active use — and keep the pre-cache-check region as thin as possible,
    because it runs on every tick regardless. (A rendered-value second key tier was
-   designed and measured no-go — see §6.)
+   designed and measured no-go — see the decision record in §7.)
 5. **Per-item micro-costs do not sum.** The first cmdlet call in a process pays ~80 ms of
    one-time command-discovery init that every later cmdlet rides; removing N cmdlet calls
    saves one init plus small marginal costs, not N first-call measurements. The same holds
-   for pipeline/module/assembly loads. Corollary: "ConvertFrom-Json costs ~90 ms" really
-   meant "the first cmdlet costs ~90 ms" — deferring the parse only paid off once the
-   whole pre-hit region became cmdlet-free. Always attribute a saving with an end-to-end
+   for pipeline/module/assembly loads. Corollary: "the JSON parse costs ~90 ms" really
+   means "the first cmdlet costs ~90 ms" — deferring the parse only pays off when the
+   whole pre-hit region is cmdlet-free. Always attribute a saving with an end-to-end
    before/after median, never a sum of isolated probes.
 
 ## 2. Hard rules (enforced in review)
@@ -53,12 +38,11 @@ Every refresh is a **brand-new process**. That single fact drives everything:
 **All platforms**
 - No new subprocess / fork on any per-tick path. State the process-count delta (hit path and
   miss path) in the PR description for any hot-path change. Current baselines to stay under
-  (post-2026-07-26 optimizations): bash 5 execs/hit, 14/miss; git block 2 subprocesses
-  (3 on detached HEAD); Windows hit path zero cmdlets before the cache-hit exit.
+  (§6): bash 5 execs/hit, 14/miss; git block 2 subprocesses (3 on detached HEAD); Windows
+  hit path zero cmdlets before the cache-hit exit.
 - No new work before the output-cache check. Anything added there is paid on every tick,
   cache hit or not.
-- Never read a file twice in one refresh when one pass can serve (the bash forward-awk +
-  reverse-tac transcript read was this violation; fixed in `a0875bf`).
+- Never read a file twice in one refresh when one pass can serve.
 - Cache format changes bump `CACHE_VERSION` and keep the `@parity:cache` markers in sync
   across all three platforms.
 - Rendered output is sacred: a performance change must be byte-identical on the standard
@@ -78,25 +62,33 @@ Every refresh is a **brand-new process**. That single fact drives everything:
 - Do not pre-compile `[regex]` objects (construction dominates; measured slower than `-match`).
 
 **Bash (macOS/Linux)**
-- New helpers return values via `printf -v` / nameref out-variables, not `$( )` command
-  substitution — every substitution forks a subshell.
+- Helpers return values via `printf -v` out-variables, not `$( )` command substitution —
+  every substitution forks a subshell. The format string is always a fixed literal; data is
+  never the format operand.
 - Prefer builtins over binaries: parameter expansion over `dirname`/`basename`/`cut`,
   `${EPOCHSECONDS:-$(date +%s)}` over bare `date +%s` (bash-4 fallback required), batched
-  `stat` over per-file calls.
-- awk hot loops: `index()`/`substr()` extraction over whole-line `sub()` chains.
+  `stat` (mapped back by filename) over per-file calls.
+- awk hot loops: `index()`/`substr()` extraction over whole-line `sub()` chains, and always
+  `LC_ALL=C` for byte-oriented scanning — a UTF-8 locale both breaks byte-offset math and
+  corrupts gawk's regex extraction on astral-plane characters (see §4).
 
 ## 3. Measurement methodology (how numbers must be produced)
 
-The central lesson of the audits: **warm-loop micro-benchmarks are systematically wrong for
-this codebase** — they understate first-call costs by up to 100×. Production spawns a fresh
+The central lesson: **warm-loop micro-benchmarks are systematically wrong for this
+codebase** — they understate first-call costs by up to 100×. Production spawns a fresh
 process per tick, so measurements must too.
 
 - **One fresh process per probe.** Never loop a probe inside a warm host to average it.
 - **Median of ≥ 7 runs**; state machine, OS, and PowerShell/bash version alongside numbers.
 - **Isolated numbers do not sum and must not be used for claims.** Removing one first-call
-  cost shifts load onto the next operation (fixing eager logging makes the JSON parse look
-  more expensive). Only **end-to-end before/after** medians of the real script justify a
-  "saves X ms" claim.
+  cost shifts load onto the next operation. Only **end-to-end before/after** medians of the
+  real script justify a "saves X ms" claim.
+- **Isolate the environment.** Every harness run points `TEMP`/`TMP` *and*
+  `USERPROFILE`/`HOME` at a scratch directory (with a `.claude` subdir) and warms the
+  learned-model map before sampling — otherwise the harness fights live sessions over a
+  cache-key input and "hit" samples silently measure misses. When a benchmark claims to
+  measure the hit path, verify hit-ness (cache-file mtime unchanged, or the debug log's
+  HIT line); see `docs/solutions/workflow-issues/` and `docs/solutions/best-practices/`.
 - **Bash on Git Bash: process counts are portable, milliseconds are not** (emulated fork is
   ~20–50× a real one). Report counts, not Git Bash ms, for macOS/Linux claims.
 - Do not re-test the ruled-out hypotheses without new evidence: temp-glob scaling with
@@ -115,30 +107,32 @@ byte-for-byte across:
   (Windows renders `HEAD`, bash renders no git segment), so "matches current behaviour" is a
   per-platform statement.
 - **Payload states**: full payload, minimal payload (missing optional fields), empty stdin,
-  malformed JSON (all must exit 0, no stderr).
+  malformed JSON (all must exit 0, no stderr), plus adversarial variants: Windows-illegal
+  path characters, overlong paths, decoy field names inside string values, astral-plane
+  characters in string fields.
 - **Transcript states**: absent, empty, large (≥ 4 MB real transcript), plus the incremental
-  parser's edges (landed `09849e2`): truncated/rotated and same-size-rewritten files fall
-  back to a full rescan (size-shrink check + head checksum), torn trailing lines are re-read
-  next tick, and a malformed/corrupt v2 cache record (wrong field count, out-of-range or
-  oversized-digit offset, non-hex checksum) degrades to a full rescan on all three platforms.
+  parser's edges: truncated/rotated and same-size-rewritten files fall back to a full rescan
+  (size-shrink check + head checksum), torn trailing lines are re-read next tick, and a
+  malformed/corrupt v2 cache record (wrong field count, out-of-range or oversized-digit
+  offset, non-hex checksum) degrades to a full rescan on all three platforms. Multibyte
+  fixtures must include a 4-byte (astral-plane) character, not just CJK.
 
 Known parsing traps that this matrix exists to catch: PowerShell `-like '? *'` treats `?` as
 a wildcard (use `.StartsWith('? ')`); porcelain v2 emits `# branch.oid (initial)` on unborn
 HEAD, omits `# branch.ab` when no upstream, omits `# stash` at zero.
 
-Documented divergence (accepted 2026-07-26): a branch literally *named* `(detached)` is
-indistinguishable from real detached HEAD in porcelain v2, so it renders as the short
-commit hash instead of the name. Disambiguating would cost a subprocess on a pathological
-case; the sentinel collision is inherent to the v2 format.
+**Accepted divergences** (deliberate, documented — add new entries here when one is accepted):
 
-Accepted behavioral fix (2026-07-26, found by the combined pre-plan-vs-final bash run):
-under a UTF-8 locale, gawk's greedy-regex token extraction silently corrupted on
-assistant lines containing an astral-plane character (emoji) — those lines' tokens
-counted as 0. The `LC_ALL=C` pin (`09849e2`, added for byte-accurate offsets) fixes the
-extraction, so token totals on emoji-bearing transcripts are now *higher and correct*
-where the pre-plan script under-counted. Verified against GNU gawk 5.0; BSD awk on real
-macOS is unverified either way (the known R14 limit). This is the single deliberate
-rendered-output divergence from the pre-optimization scripts.
+- *2026-07-26:* a branch literally *named* `(detached)` is indistinguishable from real
+  detached HEAD in porcelain v2, so it renders as the short commit hash instead of the name.
+  Disambiguating would cost a subprocess on a pathological case; the sentinel collision is
+  inherent to the v2 format.
+- *2026-07-26:* under a UTF-8 locale, gawk's old greedy-regex token extraction silently
+  zeroed the token counts of assistant lines containing an astral-plane character (emoji).
+  The `LC_ALL=C` pin fixes the extraction, so token totals on emoji-bearing transcripts are
+  higher — and correct — compared to earlier releases. Verified on GNU gawk 5.0; BSD awk
+  unverified either way (no native macOS test hardware). See
+  `docs/solutions/logic-errors/gawk-utf8-locale-zeroes-astral-plane-extraction.md`.
 
 ## 5. PR checklist for statusline hot-path changes
 
@@ -153,67 +147,51 @@ rendered-output divergence from the pre-optimization scripts.
 - [ ] Cross-platform parity: all three platforms updated or the divergence justified.
 - [ ] `CACHE_VERSION` bumped if any cache record format changed.
 - [ ] No debug-log call site evaluates expensive arguments when logging is off.
+- [ ] §6 reference numbers updated if the change moves them.
 
-## 6. Current agreed direction (from the 2026-07-26 audits)
+## 6. Reference numbers (update when a hot-path change moves them)
 
-**Landed results (2026-07-26, measured end-to-end, fresh-process medians on the
-maintainer's machine; equivalence: byte-identical to the pre-optimization scripts across
-the full §4 matrix on all platforms):**
+End-to-end fresh-process medians, measured 2026-07-26 on the maintainer's machine
+(Windows 11, Windows PowerShell 5.1; bash numbers are MSYS shape-only). These are the
+baselines the §2 rules hold changes against.
 
-| Path | Before | After |
-|---|---|---|
-| Windows cache hit | ~396–428 ms | ~326–334 ms |
-| Windows miss, 13.4 MB transcript unchanged content | 1387 ms | 542 ms |
-| Windows miss, 13.4 MB transcript +100-line growth tick | 1387 ms | 568 ms |
-| Windows cold full rescan (once per session) | 1367 ms | 1468 ms |
-| Windows miss, git cache expired | 721 ms | 614 ms |
-| bash hit (MSYS shape-only) | 404 ms | 249 ms |
-| bash miss (MSYS shape-only) | 1617 ms | 1124 ms |
-| bash execs hit / miss | 12 / 27 | 5 / 14 |
-| bash forks, 6-row feed miss | 162 | 39 |
+| Path | Cost |
+|---|---|
+| Windows cache hit | ~326–334 ms |
+| Windows miss, 13.4 MB transcript, unchanged content | 542 ms |
+| Windows miss, 13.4 MB transcript, +100-line growth tick | 568 ms |
+| Windows cold full rescan (once per session) | ~1470 ms |
+| Windows miss, git cache expired | 614 ms |
+| bash hit / miss (MSYS shape-only) | 249 / 1124 ms |
+| bash external processes, hit / miss | 5 / 14 |
+| bash forks, six-row subagent render | 39 |
+| Interpreter floor (`powershell.exe -NoProfile`, empty script) | ~124 ms |
 
-Implementation order when performance work is picked up:
+## 7. Decision record (settled design questions — do not re-litigate without new evidence)
 
-1. Tier 1 quick wins (Windows) — **done** (`461e89a`): guard log call sites, `Write-Host` →
-   `[Console]::Write`, `ReadAllText` cache read, direct property access, `GetFiles` glob.
-   The JSON-parse deferral landed with it (`b8ecec6`): raw-string key fields plus a
-   zero-cmdlet pre-hit path — measured hit 427.6 → 333.7 ms, miss +2.8 ms.
-2. Git 6 → 2 consolidation (all platforms) — **done** (`d5407f8`): one
-   `status --porcelain=v2 --branch --show-stash` + `diff --shortstat`; 13-state matrix
-   byte-identical; miss median −107 ms. Floor: git ≥ 2.15.
-3. Incremental transcript parse (all platforms) — **done** (`a0875bf` single pass,
-   `09849e2` incremental v2 record with `CACHE_VERSION` 1 → 2).
-4. Bash fork reductions — **done** (`d378ed4` printf -v helpers, `94bdbda` shell-out and
-   notify jq consolidation).
-5. Config: align `refreshInterval` deliberately across platforms — **done** (`a76e1b0`):
-   all installers ship 2.
+### Rendered-value cache key — no change (2026-07-26)
 
-Every item above is landed; the two former open design questions (rendered-value cache
-key, subagent tee) are resolved as recorded no-gos below, each with reopen conditions.
-
-### Rendered-value cache key decision (2026-07-26, U9 design gate) — no change
-
-The design resolved cleanly (two-tier key: today's raw-level key as tier 1, a
-rendered-value key checked after display inputs are computed as tier 2; tier 2 needs no
-time bucket because visible countdown labels self-invalidate; threshold notifications
-are safe where they are because rendered percentages and configured thresholds are both
-integers, so every crossing changes the key). It fails on the measured benefit bar:
+The design resolved cleanly (two-tier key: the raw-level key as tier 1, a rendered-value
+key checked after display inputs are computed as tier 2; tier 2 needs no time bucket
+because visible countdown labels self-invalidate; threshold notifications are safe on the
+miss path because rendered percentages and configured thresholds are both integers, so
+every crossing changes the key). It fails on the measured benefit bar:
 
 - A tier-2 hit still pays everything before the render — measured 501 ms of a 538.6 ms
   forced-miss tick — because those stages produce the tier-2 key's inputs.
 - The render tail (box assembly, notifications, cache write, emit) is **37.6 ms**: the
   per-hit ceiling, ~7% of tick cost, against a permanent second key tier in three
   scripts whose completeness failure mode is a silently stale display.
-- Root cause: the audits priced this idea against pre-optimization misses (0.7–1.4 s).
-  The git consolidation and incremental transcript parse moved that work behind their
-  own caches, leaving the rendered-value key nothing expensive to skip.
+- Root cause: the idea was priced against pre-optimization misses (0.7–1.4 s). The git
+  consolidation and incremental transcript parse moved that work behind their own caches,
+  leaving the rendered-value key nothing expensive to skip.
 
-Reopen condition: a future change that makes the render tail expensive again (or a
-requirement to eliminate the idle 5 s re-render entirely, which additionally needs a
-replacement idle recompute driver for ref-only git changes — see the plan's U9 gate
-questions for the full analysis).
+Reopen condition: a future change that makes the render tail expensive again, or a hard
+requirement to eliminate the idle 5 s re-render entirely — which additionally needs a
+replacement idle recompute driver for ref-only git changes (`git fetch` touches
+`FETCH_HEAD`/`packed-refs`, not `.git/index`, so no existing key probe observes it).
 
-### Subagent tee decision (2026-07-26, U10 design gate) — no change
+### Cheaper subagent tee — no change (2026-07-26)
 
 Measured (fresh-process medians, 11+ samples): current handler ~266 ms; interpreter floor
 ~142 ms; raw-tee + .NET-only I/O prototype ~172 ms (−35.5%, the only variant clearing the
@@ -221,7 +199,7 @@ pre-registered ≥30% bar); cmdlet-swap-only ~249 ms (−6.9%, byte-identical ou
 
 The bar-clearing variant does not ship, because it fails the bar's contract half:
 
-- **Malformed-tick isolation is lost.** Today a broken payload throws in `ConvertFrom-Json`
+- **Malformed-tick isolation is lost.** Today a broken payload throws in the JSON parse
   and writes nothing — the last good feed survives. A raw tee writes the garbage over it,
   silently dropping the feed tier for that session until the next good tick.
 - **Raw retention feeds `tokenSamples` (an accumulating per-task array) and other
@@ -232,4 +210,4 @@ The bar-clearing variant does not ship, because it fails the bar's contract half
 Reopen conditions: a live multi-tick capture confirming raw field/order stability and no
 idle-tick key churn, plus a structural guard (trimmed payload starts `{` and ends `}`)
 re-measured to confirm the mechanism still clears 30%. The −6.9% cmdlet swap remains a
-zero-risk fallback but does not meet this unit's bar on its own.
+zero-risk fallback but does not meet the bar on its own.
