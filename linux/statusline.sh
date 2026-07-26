@@ -926,7 +926,7 @@ if [[ -n "$sa_sid_safe" && "$_oc_ffresh" == "1" ]]; then
                 [[ "$ft_prev_done" =~ ^[0-9]+$ ]] && ft_done="$ft_prev_done"
                 [[ -z "$ft_done" ]] && ft_done="$sa_now"
             fi
-            [[ -n "$ft_cache" ]] && sl_write_ok "$ft_cache" && printf '%s|%s|%s|%s|%s|%s' "$ft_tok" "$ft_ctx" "$ft_model" "$ft_disp" "$ft_done" "$ft_start" > "$ft_cache" 2>/dev/null
+            [[ -n "$ft_cache" ]] && sl_write_ok "$ft_cache" && printf '%s|%s|%s|%s|%s|%s|%s' "$ft_tok" "$ft_ctx" "$ft_model" "$ft_disp" "$ft_done" "$ft_start" "$ft_effort" > "$ft_cache" 2>/dev/null
             [[ "$ft_state" == "done" ]] && (( sa_now - ft_done > DONE_LINGER )) && continue
             feed_candidates+=("${ft_start}"$'\x1f'"${ft_id}"$'\x1f'"${ft_tok}"$'\x1f'"${ft_ctx}"$'\x1f'"${ft_model}"$'\x1f'"${ft_disp}"$'\x1f'"${ft_state}"$'\x1f'"${ft_effort}")
         done < <(printf '%s' "$_oc_fjson" | jq -r '(.tasks // [])[] | select(type == "object") | [((.id // "") | tostring), (first([.description, .type, .name][] | (. // "") | tostring | gsub("[\\x00-\\x1f\\x7f|]"; " ") | gsub("^ +| +$"; "") | select(. != "")) // ""), ((.status // "") | tostring), ((.model // "") | tostring | gsub("[\\x00-\\x1f\\x7f|]"; " ")), ((.contextWindowSize // "") | tostring), ((.tokenCount // 0) | tostring), ((.startTime // "") | tostring), ((.effort // "") | tostring | gsub("[\\x00-\\x1f\\x7f|]"; " "))] | join("\u001f")' 2>/dev/null)
@@ -938,17 +938,20 @@ if [[ -n "$sa_sid_safe" && "$_oc_ffresh" == "1" ]]; then
             fc_id="${fc_file##*-task-}"
             fc_id="${fc_id%.txt}"
             [[ "$feed_seen_ids" == *$'\n'"${fc_id}"$'\n'* ]] && continue
-            fc_used=""; fc_win=""; fc_model=""; fc_disp=""; fc_done=""; fc_start=""
-            { IFS='|' read -r fc_used fc_win fc_model fc_disp fc_done fc_start < "$fc_file"; } 2>/dev/null
+            # Pre-clear every field: the read below can fail after sl_trusted_file
+            # already passed, and a variable left unset would inherit the previous
+            # iteration's cache file, attributing one task's effort to another.
+            fc_used=""; fc_win=""; fc_model=""; fc_disp=""; fc_done=""; fc_start=""; fc_effort=""
+            { IFS='|' read -r fc_used fc_win fc_model fc_disp fc_done fc_start fc_effort < "$fc_file"; } 2>/dev/null
             if [[ ! "$fc_done" =~ ^[0-9]+$ ]]; then
                 fc_done="$sa_now"
-                printf '%s|%s|%s|%s|%s|%s' "$fc_used" "$fc_win" "$fc_model" "$fc_disp" "$fc_done" "$fc_start" > "$fc_file" 2>/dev/null
+                printf '%s|%s|%s|%s|%s|%s|%s' "$fc_used" "$fc_win" "$fc_model" "$fc_disp" "$fc_done" "$fc_start" "$fc_effort" > "$fc_file" 2>/dev/null
             fi
             if (( sa_now - fc_done > DONE_LINGER )); then
                 rm -f "$fc_file" 2>/dev/null
                 continue
             fi
-            feed_candidates+=("${fc_start}"$'\x1f'"${fc_id}"$'\x1f'"${fc_used}"$'\x1f'"${fc_win}"$'\x1f'"${fc_model}"$'\x1f'"${fc_disp}"$'\x1f'"done")
+            feed_candidates+=("${fc_start}"$'\x1f'"${fc_id}"$'\x1f'"${fc_used}"$'\x1f'"${fc_win}"$'\x1f'"${fc_model}"$'\x1f'"${fc_disp}"$'\x1f'"done"$'\x1f'"${fc_effort}")
         done
 
         log_msg "subagents: feed tier, ${#feed_candidates[@]} row(s)"

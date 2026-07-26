@@ -835,7 +835,7 @@ if ($_ocFfresh -eq 1 -and $_ocFjson) {
                     if (-not $ftDone) { $ftDone = "$saNow" }
                 }
                 if ($ftCache -and (Test-WriteOk $ftCache)) {
-                    try { [System.IO.File]::WriteAllText($ftCache, "$ftTok|$ftCtx|$ftModel|$ftDisp|$ftDone|$ftStart", (New-Object System.Text.UTF8Encoding $false)) } catch {}
+                    try { [System.IO.File]::WriteAllText($ftCache, "$ftTok|$ftCtx|$ftModel|$ftDisp|$ftDone|$ftStart|$ftEffort", (New-Object System.Text.UTF8Encoding $false)) } catch {}
                 }
                 if ($ftState -eq 'done' -and ($saNow - [long]$ftDone) -gt $DONE_LINGER) { continue }
                 $feedCandidates += @{ start = $ftStart; id = $ftId; used = $ftTok; ctx = $ftCtx; model = $ftModel; disp = $ftDisp; state = $ftState; effort = $ftEffort }
@@ -852,16 +852,20 @@ if ($_ocFfresh -eq 1 -and $_ocFjson) {
                 if (-not $fcRaw) { continue }
                 $fcParts = $fcRaw.TrimEnd() -split '\|'
                 if ($fcParts.Count -lt 6) { continue }
+                # Lenient on the appended 7th field: a record written before effort
+                # existed stays valid and simply renders no segment, which is
+                # indistinguishable from the legitimate no-override state.
+                $fcEffort = if ($fcParts.Count -ge 7) { $fcParts[6] } else { '' }
                 $fcDone = 0L
                 if (-not [long]::TryParse($fcParts[4], [ref]$fcDone) -or $fcDone -le 0) {
                     $fcDone = $saNow
-                    try { [System.IO.File]::WriteAllText($cf.FullName, "$($fcParts[0])|$($fcParts[1])|$($fcParts[2])|$($fcParts[3])|$fcDone|$($fcParts[5])", (New-Object System.Text.UTF8Encoding $false)) } catch {}
+                    try { [System.IO.File]::WriteAllText($cf.FullName, "$($fcParts[0])|$($fcParts[1])|$($fcParts[2])|$($fcParts[3])|$fcDone|$($fcParts[5])|$fcEffort", (New-Object System.Text.UTF8Encoding $false)) } catch {}
                 }
                 if (($saNow - $fcDone) -gt $DONE_LINGER) {
                     try { Remove-Item -LiteralPath $cf.FullName -Force -ErrorAction SilentlyContinue } catch {}
                     continue
                 }
-                $feedCandidates += @{ start = "$($fcParts[5])"; id = $cfId; used = $fcParts[0]; ctx = $fcParts[1]; model = $fcParts[2]; disp = $fcParts[3]; state = 'done' }
+                $feedCandidates += @{ start = "$($fcParts[5])"; id = $cfId; used = $fcParts[0]; ctx = $fcParts[1]; model = $fcParts[2]; disp = $fcParts[3]; state = 'done'; effort = $fcEffort }
             }
             Write-Log "subagents: feed tier, $($feedCandidates.Count) row(s)"
             # Deterministic order: startTime (ISO string sort), tiebreak id.
