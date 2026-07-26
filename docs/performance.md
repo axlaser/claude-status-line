@@ -146,6 +146,10 @@ rendered-output divergence from the pre-optimization scripts.
 - [ ] Nothing new runs before the output-cache check (or the addition is justified).
 - [ ] End-to-end before/after medians measured per §3 (fresh process, ≥ 7 runs).
 - [ ] Byte-identical output across the §4 matrix, on every platform touched.
+- [ ] If the change touches a trust-checked cache read or an output-cache key input:
+  observed hit/miss verified (oc-file mtime unchanged on a hit, or the debug log's HIT
+  line) — byte-diffing alone cannot see a hit-rate regression (see
+  `docs/solutions/best-practices/byte-diff-cannot-see-cache-hit-regressions.md`).
 - [ ] Cross-platform parity: all three platforms updated or the divergence justified.
 - [ ] `CACHE_VERSION` bumped if any cache record format changed.
 - [ ] No debug-log call site evaluates expensive arguments when logging is off.
