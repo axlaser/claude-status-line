@@ -68,6 +68,8 @@ Sound alerts and native OS toast notifications fire on permission requests, task
 
 > **Note:** The installer will ask before overwriting any existing `statusLine` or `subagentStatusLine` configuration.
 > Restart Claude Code after installing or updating.
+>
+> The git status segment requires git >= 2.15 (2017, when `git status --show-stash` and its porcelain `# stash` header were added). On older git the status line still works — it just renders no git segment.
 
 ---
 
@@ -133,7 +135,7 @@ curl -fsSL https://raw.githubusercontent.com/axlaser/claude-statusline/master/ma
      "statusLine": {
        "type": "command",
        "command": "~/.claude/statusline.sh",
-       "refreshInterval": 1
+       "refreshInterval": 2
      },
      "subagentStatusLine": {
        "type": "command",
@@ -244,7 +246,7 @@ curl -fsSL https://raw.githubusercontent.com/axlaser/claude-statusline/master/li
      "statusLine": {
        "type": "command",
        "command": "~/.claude/statusline.sh",
-       "refreshInterval": 1
+       "refreshInterval": 2
      },
      "subagentStatusLine": {
        "type": "command",
@@ -410,19 +412,19 @@ To update, `git pull` and re-run the install script. To uninstall, run the unins
 
 ### Refresh Interval
 
-By default the status line updates after each assistant message. To also refresh on a timer (useful for keeping the clock and git status current), add `refreshInterval` to your settings:
+By default the status line updates after each assistant message. To also refresh on a timer (useful for keeping the clock and git status current), add `refreshInterval` to your settings. The installer sets this to `2` on every platform:
 
 ```json
 {
   "statusLine": {
     "type": "command",
     "command": "~/.claude/statusline.sh",
-    "refreshInterval": 1
+    "refreshInterval": 2
   }
 }
 ```
 
-This refreshes every 1 second (minimum 1). On **Windows**, use `refreshInterval: 2` — PowerShell's startup overhead makes 1-second intervals unreliable. The Windows installer sets this automatically.
+This refreshes every 2 seconds. On **Windows**, `refreshInterval: 2` is required — PowerShell's startup overhead makes 1-second intervals unreliable. On **macOS/Linux** you can lower it to `1` (the minimum) for faster updates, at the cost of spawning the script twice as often.
 
 ### Padding
 
