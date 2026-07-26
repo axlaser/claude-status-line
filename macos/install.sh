@@ -152,7 +152,7 @@ echo ""
 
 # --- Configure settings.json ---
 step "Configuring Claude Code settings"
-STATUSLINE_ENTRY='{"statusLine":{"type":"command","command":"~/.claude/statusline.sh","refreshInterval":1}}'
+STATUSLINE_ENTRY='{"statusLine":{"type":"command","command":"~/.claude/statusline.sh","refreshInterval":2}}'
 
 if [[ -f "$SETTINGS_PATH" ]]; then
     _skip_statusline=false

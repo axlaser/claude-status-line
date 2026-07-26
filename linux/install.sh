@@ -200,7 +200,7 @@ echo ""
 # --- Configure settings.json ---
 # /dev/tty so read works when install.sh is piped via curl.
 step "Configuring Claude Code settings"
-STATUSLINE_ENTRY='{"statusLine":{"type":"command","command":"~/.claude/statusline.sh","refreshInterval":1}}'
+STATUSLINE_ENTRY='{"statusLine":{"type":"command","command":"~/.claude/statusline.sh","refreshInterval":2}}'
 
 if [[ -f "$SETTINGS_PATH" ]]; then
     _skip_statusline=false
