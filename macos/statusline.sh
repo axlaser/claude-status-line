@@ -501,24 +501,46 @@ if [[ -f "$git_index" ]]; then
     fi
 
     if [[ "$git_use_cache" != true ]]; then
-        if git --no-optional-locks -C "$git_cwd" rev-parse --is-inside-work-tree &>/dev/null; then
-            branch=$(git --no-optional-locks -C "$git_cwd" rev-parse --abbrev-ref HEAD 2>/dev/null) || branch=""
-            if [[ "$branch" == "HEAD" ]]; then
-                branch=$(git --no-optional-locks -C "$git_cwd" rev-parse --short HEAD 2>/dev/null) || branch="HEAD"
-            fi
-            if [[ -n "$branch" ]]; then
-                diff_stat=$(git --no-optional-locks -C "$git_cwd" diff --shortstat HEAD 2>/dev/null)
-                if [[ -n "$diff_stat" ]]; then
-                    [[ "$diff_stat" =~ ([0-9]+)\ insertion ]] && insertions="${BASH_REMATCH[1]}"
-                    [[ "$diff_stat" =~ ([0-9]+)\ deletion ]]  && deletions="${BASH_REMATCH[1]}"
-                fi
-                untracked=$(git --no-optional-locks -C "$git_cwd" status --porcelain 2>/dev/null | grep -c '^??' || true)
-                ab_count=$(git --no-optional-locks -C "$git_cwd" rev-list --left-right --count HEAD...@{upstream} 2>/dev/null)
-                if [[ -n "$ab_count" ]]; then
-                    read -r ahead behind <<< "$ab_count"
-                fi
-                stash=$(git --no-optional-locks -C "$git_cwd" stash list 2>/dev/null | wc -l)
-                stash=$(( stash + 0 ))
+        # One porcelain-v2 call covers branch, ahead/behind, stash, and untracked
+        # (git >= 2.15 for --show-stash; on older git the call fails and the git
+        # segment renders empty via the existing degradation path).
+        branch=""
+        head_oid=""
+        v2_status=$(git --no-optional-locks -C "$git_cwd" status --porcelain=v2 --branch --show-stash 2>/dev/null) || v2_status=""
+        if [[ -n "$v2_status" ]]; then
+            while IFS= read -r v2_line; do
+                case "$v2_line" in
+                    '? '*) untracked=$(( untracked + 1 )) ;;
+                    '# branch.head '*) branch="${v2_line#'# branch.head '}" ;;
+                    '# branch.oid '*)  head_oid="${v2_line#'# branch.oid '}" ;;
+                    '# branch.ab '*)
+                        ab_rest="${v2_line#'# branch.ab '}"
+                        ahead="${ab_rest%% *}"; ahead="${ahead#+}"
+                        behind="${ab_rest##* }"; behind="${behind#-}"
+                        ;;
+                    '# stash '*) stash="${v2_line#'# stash '}" ;;
+                esac
+            done <<< "$v2_status"
+            # Validate numerics before they reach arithmetic/render.
+            [[ "$ahead"  =~ ^[0-9]+$ ]] || ahead=0
+            [[ "$behind" =~ ^[0-9]+$ ]] || behind=0
+            [[ "$stash"  =~ ^[0-9]+$ ]] || stash=0
+        fi
+        if [[ "$branch" == "(detached)" ]]; then
+            # Ask git for the abbreviation so the hash length always matches what
+            # git would print (it lengthens abbreviations for uniqueness).
+            branch=$(git --no-optional-locks -C "$git_cwd" rev-parse --short HEAD 2>/dev/null) || branch=""
+            [[ -z "$branch" ]] && branch="HEAD"
+        elif [[ "$head_oid" == "(initial)" ]]; then
+            # Unborn HEAD: keep this platform's existing behaviour — no git segment
+            # (Windows renders the literal 'HEAD') — do not reconcile.
+            branch=""
+        fi
+        if [[ -n "$branch" ]]; then
+            diff_stat=$(git --no-optional-locks -C "$git_cwd" diff --shortstat HEAD 2>/dev/null)
+            if [[ -n "$diff_stat" ]]; then
+                [[ "$diff_stat" =~ ([0-9]+)\ insertion ]] && insertions="${BASH_REMATCH[1]}"
+                [[ "$diff_stat" =~ ([0-9]+)\ deletion ]]  && deletions="${BASH_REMATCH[1]}"
             fi
         fi
         sl_write_ok "$git_cache_path" && printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s' "$git_index_mt" "$branch" "$insertions" "$deletions" "$untracked" "$ahead" "$behind" "$stash" > "$git_cache_path" 2>/dev/null

@@ -582,14 +582,33 @@ try {
         }
 
         if (-not $gitUseCache) {
-            $branch = $null
-            $isWorkTree = & git --no-optional-locks -C $gitCwd rev-parse --is-inside-work-tree 2>$null
-            if ($isWorkTree -eq 'true') {
-                $branch = & git --no-optional-locks -C $gitCwd rev-parse --abbrev-ref HEAD 2>$null
-                if ($branch -eq 'HEAD') {
-                    $short = & git --no-optional-locks -C $gitCwd rev-parse --short HEAD 2>$null
-                    if ($short) { $branch = $short }
+            # One porcelain-v2 call covers branch, ahead/behind, stash, and untracked
+            # (git >= 2.15 for --show-stash; on older git the call fails and the git
+            # segment renders empty via the existing degradation path).
+            $branch = $null; $headOid = $null
+            $untracked = 0; $ahead = 0; $behind = 0; $stash = 0
+            $gitLines = @(& git --no-optional-locks -C $gitCwd status --porcelain=v2 --branch --show-stash 2>$null)
+            foreach ($gitLine in $gitLines) {
+                if ($null -eq $gitLine) { continue }
+                # .StartsWith, never -like '? *' — -like treats '?' as a wildcard.
+                if ($gitLine.StartsWith('? ')) { $untracked++ }
+                elseif ($gitLine.StartsWith('# branch.head ')) { $branch = $gitLine.Substring(14) }
+                elseif ($gitLine.StartsWith('# branch.oid '))  { $headOid = $gitLine.Substring(13) }
+                elseif ($gitLine.StartsWith('# branch.ab ')) {
+                    $abParts = $gitLine.Substring(12) -split ' '
+                    if ($abParts.Count -ge 2) { $ahead = [int]$abParts[0].TrimStart('+'); $behind = [int]$abParts[1].TrimStart('-') }
                 }
+                elseif ($gitLine.StartsWith('# stash ')) { $stash = [int]$gitLine.Substring(8) }
+            }
+            if ($branch -eq '(detached)') {
+                # Ask git for the abbreviation so the hash length always matches
+                # what git would print (it lengthens abbreviations for uniqueness).
+                $short = & git --no-optional-locks -C $gitCwd rev-parse --short HEAD 2>$null
+                $branch = if ($short) { $short } else { 'HEAD' }
+            } elseif ($headOid -eq '(initial)') {
+                # Unborn HEAD: the old rev-parse path rendered the literal 'HEAD' on
+                # Windows (bash renders no segment) — preserve that divergence.
+                $branch = 'HEAD'
             }
             if ($branch) {
                 $diffStat = & git --no-optional-locks -C $gitCwd diff --shortstat HEAD 2>$null
@@ -598,15 +617,7 @@ try {
                     if ($diffStat -match '(\d+) insertion') { $insertions = [int]$Matches[1] }
                     if ($diffStat -match '(\d+) deletion')  { $deletions  = [int]$Matches[1] }
                 }
-                $porcelain = & git --no-optional-locks -C $gitCwd status --porcelain 2>$null
-                $untracked = @($porcelain | Where-Object { $_ -match '^\?\?' }).Count
-                $abRaw = & git --no-optional-locks -C $gitCwd rev-list --left-right --count "HEAD...@{upstream}" 2>$null
-                if ($abRaw -and $abRaw.Trim() -ne '') {
-                    $abParts = $abRaw.Trim() -split '\s+'
-                    if ($abParts.Count -ge 2) { $ahead = [int]$abParts[0]; $behind = [int]$abParts[1] }
-                }
-                $stash = @(& git --no-optional-locks -C $gitCwd stash list 2>$null).Count
-            } else { $branch = $null }
+            }
             if ($gitCachePath -and (Test-WriteOk $gitCachePath)) { try { $d = [char]0x1F; [System.IO.File]::WriteAllText($gitCachePath, "$gitIndexMt$d$branch$d$insertions$d$deletions$d$untracked$d$ahead$d$behind$d$stash", (New-Object System.Text.UTF8Encoding $false)) } catch {} }
         }
 
