@@ -58,7 +58,7 @@ Every refresh is a **brand-new process**. That single fact drives everything:
 - No new work before the output-cache check. Anything added there is paid on every tick,
   cache hit or not.
 - Never read a file twice in one refresh when one pass can serve (the bash forward-awk +
-  reverse-tac transcript read is a known violation being fixed, not a pattern to copy).
+  reverse-tac transcript read was this violation; fixed in `a0875bf`).
 - Cache format changes bump `CACHE_VERSION` and keep the `@parity:cache` markers in sync
   across all three platforms.
 - Rendered output is sacred: a performance change must be byte-identical on the standard
@@ -116,13 +116,20 @@ byte-for-byte across:
   per-platform statement.
 - **Payload states**: full payload, minimal payload (missing optional fields), empty stdin,
   malformed JSON (all must exit 0, no stderr).
-- **Transcript states**: absent, empty, large (≥ 4 MB real transcript), and — once
-  incremental parsing ships — truncated/rotated and same-size-rewritten files must fall back
-  to a full rescan (size-shrink check + head checksum).
+- **Transcript states**: absent, empty, large (≥ 4 MB real transcript), plus the incremental
+  parser's edges (landed `09849e2`): truncated/rotated and same-size-rewritten files fall
+  back to a full rescan (size-shrink check + head checksum), torn trailing lines are re-read
+  next tick, and a malformed/corrupt v2 cache record (wrong field count, out-of-range or
+  oversized-digit offset, non-hex checksum) degrades to a full rescan on all three platforms.
 
 Known parsing traps that this matrix exists to catch: PowerShell `-like '? *'` treats `?` as
 a wildcard (use `.StartsWith('? ')`); porcelain v2 emits `# branch.oid (initial)` on unborn
 HEAD, omits `# branch.ab` when no upstream, omits `# stash` at zero.
+
+Documented divergence (accepted 2026-07-26): a branch literally *named* `(detached)` is
+indistinguishable from real detached HEAD in porcelain v2, so it renders as the short
+commit hash instead of the name. Disambiguating would cost a subprocess on a pathological
+case; the sentinel collision is inherent to the v2 format.
 
 ## 5. PR checklist for statusline hot-path changes
 
@@ -144,6 +151,8 @@ the full §4 matrix on all platforms):**
 |---|---|---|
 | Windows cache hit | ~396–428 ms | ~326–334 ms |
 | Windows miss, 13.4 MB transcript unchanged content | 1387 ms | 542 ms |
+| Windows miss, 13.4 MB transcript +100-line growth tick | 1387 ms | 568 ms |
+| Windows cold full rescan (once per session) | 1367 ms | 1468 ms |
 | Windows miss, git cache expired | 721 ms | 614 ms |
 | bash hit (MSYS shape-only) | 404 ms | 249 ms |
 | bash miss (MSYS shape-only) | 1617 ms | 1124 ms |
@@ -159,15 +168,15 @@ Implementation order when performance work is picked up:
 2. Git 6 → 2 consolidation (all platforms) — **done** (`d5407f8`): one
    `status --porcelain=v2 --branch --show-stash` + `diff --shortstat`; 13-state matrix
    byte-identical; miss median −107 ms. Floor: git ≥ 2.15.
-3. Incremental transcript parse (all platforms) — offset of last complete line, size-shrink
-   rescan, head checksum, carried idle verdict, `CACHE_VERSION` bump.
-4. Bash fork reductions: single-pass idle detection, nameref helpers, jq consolidation,
-   `get_vis` hoist, builtin substitutions.
+3. Incremental transcript parse (all platforms) — **done** (`a0875bf` single pass,
+   `09849e2` incremental v2 record with `CACHE_VERSION` 1 → 2).
+4. Bash fork reductions — **done** (`d378ed4` printf -v helpers, `94bdbda` shell-out and
+   notify jq consolidation).
 5. Config: align `refreshInterval` deliberately across platforms — **done** (`a76e1b0`):
    all installers ship 2.
 
-Open design questions (unowned, highest leverage): keying the output cache on rendered
-values instead of raw payload; taking the 5 s bucket out of the key.
+Every item above is landed; the two former open design questions (rendered-value cache
+key, subagent tee) are resolved as recorded no-gos below, each with reopen conditions.
 
 ### Rendered-value cache key decision (2026-07-26, U9 design gate) — no change
 

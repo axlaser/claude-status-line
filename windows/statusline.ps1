@@ -645,7 +645,9 @@ $costPart = ''
 $durationPart = ''
 if ($null -eq $totalCost) { $totalCost = $totalCostLegacy }
 if ($null -ne $totalCost) {
-    $costFmt  = '${0:F4}' -f [double]$totalCost
+    # Invariant culture: '-f' honors the OS culture, so a de-DE machine rendered
+    # '$1,5000' -- same bug class the bash side pins with LC_ALL=C.
+    $costFmt  = '$' + ([double]$totalCost).ToString('F4', [System.Globalization.CultureInfo]::InvariantCulture)
     # @parity:threshold COST_WARN=0.50
     $costColor = if ([double]$totalCost -gt 0.50) { $YELLOW } else { $GREEN }
     $costPart = "${costColor}${costFmt}${RESET}"
@@ -702,27 +704,40 @@ if ($transcriptPath -and (Test-Path -LiteralPath $transcriptPath -ErrorAction Si
                 # Prev-totals harvest is version-agnostic (field positions are
                 # unchanged since v1) so the delta/burn baselines survive a
                 # CACHE_VERSION upgrade tick; numeric validation mirrors bash.
-                if ($parts.Length -ge 8 -and $parts[7] -match '^-?\d+$') {
+                if ($parts.Length -ge 8 -and $parts[7] -match '^-?\d{1,18}$') {
                     $prevWorkingStart = [long]$parts[7]
                 }
                 if ($parts.Length -ge 10) {
-                    if ($parts[5] -match '^-?\d+$') { $prevIn         = [long]$parts[5] }
-                    if ($parts[6] -match '^-?\d+$') { $prevOut        = [long]$parts[6] }
-                    if ($parts[8] -match '^-?\d+$') { $prevCacheWrite = [long]$parts[8] }
-                    if ($parts[9] -match '^-?\d+$') { $prevCacheRead  = [long]$parts[9] }
+                    if ($parts[5] -match '^-?\d{1,18}$') { $prevIn         = [long]$parts[5] }
+                    if ($parts[6] -match '^-?\d{1,18}$') { $prevOut        = [long]$parts[6] }
+                    if ($parts[8] -match '^-?\d{1,18}$') { $prevCacheWrite = [long]$parts[8] }
+                    if ($parts[9] -match '^-?\d{1,18}$') { $prevCacheRead  = [long]$parts[9] }
                 }
                 # Strict v2 structural validation: exactly 16 fields, integer
                 # offset within [0, stored size], 64-hex checksum (case is
-                # normalized). Any failure -> untrusted record -> full-rescan miss.
-                if ($parts.Length -eq 16 -and $parts[0] -eq $CacheVersion -and
-                    $parts[2] -match '^\d+$' -and $parts[3] -match '^\d+$' -and
+                # normalized). Digit runs are length-bounded ({1,18} for [long],
+                # {1,9} for [int]) so a planted record cannot overflow the casts
+                # below. Any failure -> untrusted record -> full-rescan miss.
+                # Field map -- @parity:cache TRANSCRIPT_RECORD=v2/16-fields:
+                # 0 ver | 1 mt | 2 sz | 3 msg | 4 idle | 5 in | 6 out | 7 wstart |
+                # 8 cwrite | 9 cread | 10 din | 11 dout | 12 dcw | 13 dcr |
+                # 14 offset | 15 headsum
+                $cNumOk = $true
+                if ($parts.Length -eq 16) {
+                    foreach ($cIdx in 5, 6, 8, 9, 10, 11, 12, 13) {
+                        if ($parts[$cIdx] -notmatch '^-?\d{1,18}$') { $cNumOk = $false }
+                    }
+                }
+                if ($parts.Length -eq 16 -and $parts[0] -eq $CacheVersion -and $cNumOk -and
+                    $parts[2] -match '^\d{1,18}$' -and $parts[3] -match '^\d{1,9}$' -and
                     ($parts[4] -eq 'True' -or $parts[4] -eq 'False') -and
-                    $parts[14] -match '^\d+$' -and $parts[15] -match '^[0-9a-fA-F]{64}$') {
+                    $parts[14] -match '^\d{1,18}$' -and $parts[15] -match '^[0-9a-fA-F]{64}$') {
                     $cSz  = [long]$parts[2]
                     $cOff = [long]$parts[14]
                     $cSum = $parts[15].ToLowerInvariant()
                     if ($cOff -le $cSz) { $cV2Ok = $true }
                 }
+                if (-not $cV2Ok -and $DBG) { Write-Log "transcript cache: record failed v2 validation -> full rescan" }
                 if ($cV2Ok -and $parts[1] -eq "$transcriptMt" -and $parts[2] -eq "$transcriptSz") {
                     $msgCount                = [int]$parts[3]
                     $claudeIsIdle            = [bool]::Parse($parts[4])

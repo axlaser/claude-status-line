@@ -137,13 +137,17 @@ sl_dirname() {  # out-var, path
     local _dn_p="$2"
     _dn_p="${_dn_p%"${_dn_p##*[!/]}"}"    # strip trailing slashes
     if [[ -z "$_dn_p" ]]; then
-        # "" -> "."; all-slashes ("/", "//", ...) -> "/"
-        if [[ -n "$2" ]]; then printf -v "$1" '%s' '/'; else printf -v "$1" '%s' '.'; fi
+        # "" -> "."; "//" (exactly two slashes) stays "//" per GNU's
+        # double-slash root; any other all-slashes run ("/", "///") -> "/"
+        if [[ "$2" == '//' ]]; then printf -v "$1" '%s' '//'
+        elif [[ -n "$2" ]]; then printf -v "$1" '%s' '/'
+        else printf -v "$1" '%s' '.'; fi
         return
     fi
     if [[ "$_dn_p" != */* ]]; then printf -v "$1" '%s' '.'; return; fi
     _dn_p="${_dn_p%/*}"                    # drop the last component
     _dn_p="${_dn_p%"${_dn_p##*[!/]}"}"    # strip the separator run before it
+    [[ -z "$_dn_p" && "$2" == //[!/]* ]] && _dn_p='//'   # "//x" -> "//" (GNU)
     printf -v "$1" '%s' "${_dn_p:-/}"
 }
 
@@ -151,8 +155,11 @@ sl_basename() {  # out-var, path, optional suffix (not stripped when it is the w
     local _bn_p="$2" _bn_s="${3-}"
     _bn_p="${_bn_p%"${_bn_p##*[!/]}"}"    # strip trailing slashes
     if [[ -z "$_bn_p" ]]; then
-        # "" -> ""; all-slashes -> "/"
-        if [[ -n "$2" ]]; then printf -v "$1" '%s' '/'; else printf -v "$1" '%s' ''; fi
+        # "" -> ""; "//" (exactly two slashes) stays "//" per GNU; any other
+        # all-slashes run -> "/"
+        if [[ "$2" == '//' ]]; then printf -v "$1" '%s' '//'
+        elif [[ -n "$2" ]]; then printf -v "$1" '%s' '/'
+        else printf -v "$1" '%s' ''; fi
         return
     fi
     _bn_p="${_bn_p##*/}"
@@ -236,6 +243,10 @@ fi
 # command substitution -- every substitution forks a subshell, and these run on
 # every tick and every subagent row. The format string is always a fixed
 # literal; untrusted data is only ever a %s/%d argument, never the format.
+# Each helper's locals carry a unique short prefix (_ft_, _dn_, ...) that no
+# other helper reuses: printf -v "$1" writes into whatever name the caller
+# passed, and a same-named local in scope would shadow it and silently drop
+# the caller's write.
 format_tokens() {  # 1234567 -> "1.2M"
     local _ft_n=$2
     [[ -z "$_ft_n" || "$_ft_n" == "0" ]] && { printf -v "$1" '%s' '0'; return; }
@@ -728,16 +739,19 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
     # Read prior cache even on miss — needed for workingStart + deltas.
     if [[ -n "$cache_path" ]] && sl_trusted_file "$cache_path"; then
         IFS='|' read -r c_ver c_mt c_sz c_msg c_idle c_in c_out c_wstart c_cwrite c_cread c_din c_dout c_dcw c_dcr c_off c_sum c_extra < "$cache_path"
-        # Validate all numeric cache fields to prevent arithmetic injection
-        [[ "$c_in" =~ ^-?[0-9]+$ ]] || c_in=0
-        [[ "$c_out" =~ ^-?[0-9]+$ ]] || c_out=0
-        [[ "$c_wstart" =~ ^-?[0-9]+$ ]] || c_wstart=-1
-        [[ "$c_cwrite" =~ ^-?[0-9]+$ ]] || c_cwrite=0
-        [[ "$c_cread" =~ ^-?[0-9]+$ ]] || c_cread=0
-        [[ "$c_din" =~ ^-?[0-9]+$ ]] || c_din=0
-        [[ "$c_dout" =~ ^-?[0-9]+$ ]] || c_dout=0
-        [[ "$c_dcw" =~ ^-?[0-9]+$ ]] || c_dcw=0
-        [[ "$c_dcr" =~ ^-?[0-9]+$ ]] || c_dcr=0
+        # Validate all numeric cache fields to prevent arithmetic injection.
+        # Digit runs are length-bounded ({1,18}) so a planted value cannot
+        # wrap 64-bit bash arithmetic (2^63 digits would pass an unbounded
+        # match, wrap negative, and defeat the offset<=size bound below).
+        [[ "$c_in" =~ ^-?[0-9]{1,18}$ ]] || c_in=0
+        [[ "$c_out" =~ ^-?[0-9]{1,18}$ ]] || c_out=0
+        [[ "$c_wstart" =~ ^-?[0-9]{1,18}$ ]] || c_wstart=-1
+        [[ "$c_cwrite" =~ ^-?[0-9]{1,18}$ ]] || c_cwrite=0
+        [[ "$c_cread" =~ ^-?[0-9]{1,18}$ ]] || c_cread=0
+        [[ "$c_din" =~ ^-?[0-9]{1,18}$ ]] || c_din=0
+        [[ "$c_dout" =~ ^-?[0-9]{1,18}$ ]] || c_dout=0
+        [[ "$c_dcw" =~ ^-?[0-9]{1,18}$ ]] || c_dcw=0
+        [[ "$c_dcr" =~ ^-?[0-9]{1,18}$ ]] || c_dcr=0
         [[ -n "$c_wstart" ]] && prev_working_start="$c_wstart"
         [[ -n "$c_in" ]] && prev_in="$c_in"
         [[ -n "$c_out" ]] && prev_out="$c_out"
@@ -748,11 +762,15 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
         # within [0, stored size], 64-hex head checksum (case-normalized). Any
         # failure -> untrusted record -> full-rescan miss. Gates both the cache
         # hit and the incremental-scan path.
+        # Field map -- @parity:cache TRANSCRIPT_RECORD=v2/16-fields:
+        # ver|mt|sz|msg|idle|in|out|wstart|cwrite|cread|din|dout|dcw|dcr|offset|headsum
         c_sum="${c_sum,,}"
-        if [[ "$c_ver" == "$CACHE_VERSION" && -z "$c_extra" && "$c_msg" =~ ^[0-9]+$ && \
-              ( "$c_idle" == "true" || "$c_idle" == "false" ) && "$c_sz" =~ ^[0-9]+$ && \
-              "$c_off" =~ ^[0-9]+$ && "$c_sum" =~ ^[0-9a-f]{64}$ ]] && (( c_off <= c_sz )); then
+        if [[ "$c_ver" == "$CACHE_VERSION" && -z "$c_extra" && "$c_msg" =~ ^[0-9]{1,9}$ && \
+              ( "$c_idle" == "true" || "$c_idle" == "false" ) && "$c_sz" =~ ^[0-9]{1,18}$ && \
+              "$c_off" =~ ^[0-9]{1,18}$ && "$c_sum" =~ ^[0-9a-f]{64}$ ]] && (( c_off <= c_sz )); then
             c_v2_ok=true
+        else
+            log_msg "transcript cache: record failed v2 validation -> full rescan"
         fi
 
         if [[ "$c_v2_ok" == true && "$c_mt" == "$transcript_mt" && "$c_sz" == "$transcript_sz" ]]; then
@@ -1455,7 +1473,7 @@ if [[ -n "$J_SESSION_ID" ]]; then
         # newline cannot shift fields -- the feed-tier record convention),
         # consumed by one read. A non-object or unparseable file emits
         # nothing, leaving every field blank like the old per-field calls.
-        { IFS=$'\x1f' read -r _ns_ctx _ns_rate _ns_rate_resets < <(jq -r 'if type != "object" then error("not a JSON object") else [((.notified_context_high // false) | tostring), ((.notified_rate_limit // false) | tostring), ((.last_rate_resets_at // "") | tostring | gsub("[\\x00-\\x1f\\x7f]"; " "))] | join("\u001f") end' "$_notify_state" 2>/dev/null); } 2>/dev/null
+        { IFS=$'\x1f' read -r _ns_ctx _ns_rate _ns_rate_resets < <(jq -r 'if type != "object" then error("not a JSON object") else [((.notified_context_high // false) | tostring | gsub("[\\x00-\\x1f\\x7f]"; " ")), ((.notified_rate_limit // false) | tostring | gsub("[\\x00-\\x1f\\x7f]"; " ")), ((.last_rate_resets_at // "") | tostring | gsub("[\\x00-\\x1f\\x7f]"; " "))] | join("\u001f") end' "$_notify_state" 2>/dev/null); } 2>/dev/null
         # Fail closed when the file exists but cannot be parsed: a torn read leaves
         # these empty, and empty != "true", so the latches would look like "never
         # notified" and re-fire the alert on every refresh while the collision lasts.
@@ -1469,7 +1487,7 @@ if [[ -n "$J_SESSION_ID" ]]; then
         # per-field error (e.g. .context_high is a number) scoped to that
         # field -- the old per-call layout defaulted only the broken field,
         # and one shared call must not widen that blast radius.
-        { IFS=$'\x1f' read -r _ct _rt < <(jq -r 'if type != "object" then error("not a JSON object") else [((.context_high.threshold? // 70) | tostring), ((.rate_limit.threshold? // 80) | tostring)] | join("\u001f") end' "$HOME/.claude/notify-config.json" 2>/dev/null); } 2>/dev/null
+        { IFS=$'\x1f' read -r _ct _rt < <(jq -r 'if type != "object" then error("not a JSON object") else [((.context_high.threshold? // 70) | tostring | gsub("[\\x00-\\x1f\\x7f]"; " ")), ((.rate_limit.threshold? // 80) | tostring | gsub("[\\x00-\\x1f\\x7f]"; " "))] | join("\u001f") end' "$HOME/.claude/notify-config.json" 2>/dev/null); } 2>/dev/null
         [[ "$_ct" =~ ^[0-9]+$ ]] && _ctx_thresh=$_ct
         [[ "$_rt" =~ ^[0-9]+$ ]] && _rate_thresh=$_rt
     fi
