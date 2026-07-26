@@ -135,6 +135,22 @@ function Get-PctColor([int]$pct) {  # context percentage -> threshold color
     if ($pct -ge 85) { return $RED } elseif ($pct -ge 60) { return $YELLOW } else { return $GREEN }
 }
 
+function Get-EffortColor([string]$level) {  # reasoning effort level -> ladder color
+    # Shared by the model row and every subagent row so the two can never drift.
+    # Unknown values (including the integer form agent frontmatter allows) fall
+    # through to WHITE rather than being rejected.
+# @parity:effort-ladder-begin
+    switch ($level) {
+        'low'    { $GRAY }
+        'medium' { $WHITE }
+        'high'   { $CYAN }
+        'xhigh'  { $YELLOW }
+        'max'    { $RED }
+        default  { $WHITE }
+    }
+# @parity:effort-ladder-end
+}
+
 function Build-Bar([int]$pct, [string]$color) {  # filled/empty bar over barWidth cells
     if ($pct -lt 0) { $pct = 0 } elseif ($pct -gt 100) { $pct = 100 }
     $filled = [int][Math]::Truncate(($barWidth * $pct + 50) / 100)
@@ -377,15 +393,7 @@ if ($modelId -and $null -ne $ctxSize -and [long]::TryParse("$ctxSize", [ref]$mwW
 # --- 3. Reasoning effort ---
 $effortPart  = ''
 if ($effortLevel) {
-    $effortColor = switch ($effortLevel) {
-        'low'    { $GRAY }
-        'medium' { $WHITE }
-        'high'   { $CYAN }
-        'xhigh'  { $YELLOW }
-        'max'    { $RED }
-        default  { $WHITE }
-    }
-    $effortPart = "${effortColor}${effortLevel} effort${RESET}"
+    $effortPart = "$(Get-EffortColor $effortLevel)${effortLevel} effort${RESET}"
 }
 # --- 4. Git status ---
 $gitPart = ''
@@ -724,16 +732,22 @@ $SaTerminalStatuses = @('completed', 'complete', 'done', 'finished', 'failed', '
 # Transcript stop reasons that mean "done" — single place to adjust.
 $SaTerminalStopReasons = @('end_turn', 'max_tokens', 'refusal', 'model_context_window_exceeded', 'stop_sequence')
 
-function Build-SubagentRow($used, $ctxSize, $model, $disp, $state) {
+function Build-SubagentRow($used, $ctxSize, $model, $disp, $state, $effort) {
     $u = 0L
     if (-not [long]::TryParse("$used", [ref]$u) -or $u -lt 0) { $u = 0L }
     $w = 0L
     if (-not [long]::TryParse("$ctxSize", [ref]$w) -or $w -le 0) { $w = 200000L }
-    # Render-sink scrub: strip control/escape bytes from the two untrusted display
+    # Render-sink scrub: strip control/escape bytes from the three untrusted display
     # fields so no source path (feed-live, feed-read-back, transcript-fallback) can
-    # emit a terminal escape planted via a cache file.
+    # emit a terminal escape planted via a cache file. The sink scrubs only the
+    # fields it names, so a newly added field inherits nothing automatically.
     $model = Format-SaTitle $model
     $disp = Format-SaTitle $disp
+    # Bounded here rather than at ingest so every source path is capped, including
+    # a record written by an older version. No real level exceeds 6 characters, so
+    # this never truncates a legitimate value.
+    $effort = "$(Format-SaTitle $effort)"
+    if ($effort.Length -gt 16) { $effort = $effort.Substring(0, 16) }
     # Bar/pct clamp at 100%; the token label keeps the raw used value.
     $saPctInt = [int][Math]::Truncate(($u * 100.0) / $w)
     if ($saPctInt -lt 0) { $saPctInt = 0 }
@@ -748,6 +762,9 @@ function Build-SubagentRow($used, $ctxSize, $model, $disp, $state) {
     $saSep = " ${GRAY}$([char]0x00B7)${RESET} "
     $row = "${saBar} ${saColor}${saPctInt}%${RESET}${saSep}${WHITE}${saUsedLbl}${RESET}${GRAY}/${saCtxLbl}${RESET}"
     if ($model) { $row += "${saSep}${MAGENTA}$(Get-PrettyModelName $model)${RESET}" }
+    # Present only when the feed reported an override; absence is meaningful, so
+    # nothing is inferred from the session's own effort here.
+    if ($effort) { $row += "${saSep}$(Get-EffortColor $effort)${effort} effort${RESET}" }
     $disp = "$disp"
     if ($disp.Length -gt 40) {
         # Cut to 39 UTF-16 units, one less if that would split a surrogate pair.
@@ -787,6 +804,9 @@ if ($_ocFfresh -eq 1 -and $_ocFjson) {
                 # Scrub control chars / "|" from model before it enters the
                 # pipe-delimited cache record (mirrors the title's ingest scrub).
                 $ftModel  = Format-SaTitle $t.model
+                # Absent unless the task carried an explicit override, and absence
+                # is what suppresses the segment — do not default it to anything.
+                $ftEffort = Format-SaTitle $t.effort
                 $ftStart  = if ($null -ne $t.startTime) { "$($t.startTime)" } else { '' }
                 if (-not ($ftId -or $ftDisp -or $ftStatus -or $ftModel)) { continue }
                 $ftIdSafe = $ftId -replace '[^a-zA-Z0-9_-]', ''
@@ -818,7 +838,7 @@ if ($_ocFfresh -eq 1 -and $_ocFjson) {
                     try { [System.IO.File]::WriteAllText($ftCache, "$ftTok|$ftCtx|$ftModel|$ftDisp|$ftDone|$ftStart", (New-Object System.Text.UTF8Encoding $false)) } catch {}
                 }
                 if ($ftState -eq 'done' -and ($saNow - [long]$ftDone) -gt $DONE_LINGER) { continue }
-                $feedCandidates += @{ start = $ftStart; id = $ftId; used = $ftTok; ctx = $ftCtx; model = $ftModel; disp = $ftDisp; state = $ftState }
+                $feedCandidates += @{ start = $ftStart; id = $ftId; used = $ftTok; ctx = $ftCtx; model = $ftModel; disp = $ftDisp; state = $ftState; effort = $ftEffort }
             }
             # A cached task id missing from a fresh feed is a done signal: stamp
             # done_ts on first observation, linger, then drop the cache entry.
@@ -846,7 +866,7 @@ if ($_ocFfresh -eq 1 -and $_ocFjson) {
             Write-Log "subagents: feed tier, $($feedCandidates.Count) row(s)"
             # Deterministic order: startTime (ISO string sort), tiebreak id.
             foreach ($c in ($feedCandidates | Sort-Object -Property @{ Expression = { "$($_.start)" } }, @{ Expression = { "$($_.id)" } })) {
-                $subagentRows += @{ s = 1; label = 'agent'; content = (Build-SubagentRow $c.used $c.ctx $c.model $c.disp $c.state) }
+                $subagentRows += @{ s = 1; label = 'agent'; content = (Build-SubagentRow $c.used $c.ctx $c.model $c.disp $c.state $c.effort) }
             }
         }
     } catch {
