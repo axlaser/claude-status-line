@@ -33,19 +33,28 @@ Every refresh is a **brand-new process**. That single fact drives everything:
    tick. Anything touching the pipeline (`Measure-Object`, `Select-Object`, `Get-ChildItem`,
    `Write-Host`) pays a load cost that a warm benchmark will never show you.
 3. **Work scales with session length only in the transcript.** The transcript scan is linear
-   (~12.5–17.5 ms/MB); everything else is roughly constant. Incremental parsing is the only
-   fix whose value grows over time.
+   (~12.5–17.5 ms/MB); everything else is roughly constant. Incremental parsing (landed
+   `09849e2`) bounds it: a changed transcript re-parses only appended bytes.
 4. **The output cache hits at idle and misses during work** (its key hashes the raw payload,
-   which changes every tick while Claude works). Until that is redesigned, treat the
-   cache-miss path as the common case during active use — and keep the pre-cache-check
-   region as thin as possible, because it runs on every tick regardless.
+   which changes every tick while Claude works). Treat the cache-miss path as the common
+   case during active use — and keep the pre-cache-check region as thin as possible,
+   because it runs on every tick regardless. (A rendered-value second key tier was
+   designed and measured no-go — see §6.)
+5. **Per-item micro-costs do not sum.** The first cmdlet call in a process pays ~80 ms of
+   one-time command-discovery init that every later cmdlet rides; removing N cmdlet calls
+   saves one init plus small marginal costs, not N first-call measurements. The same holds
+   for pipeline/module/assembly loads. Corollary: "ConvertFrom-Json costs ~90 ms" really
+   meant "the first cmdlet costs ~90 ms" — deferring the parse only paid off once the
+   whole pre-hit region became cmdlet-free. Always attribute a saving with an end-to-end
+   before/after median, never a sum of isolated probes.
 
 ## 2. Hard rules (enforced in review)
 
 **All platforms**
 - No new subprocess / fork on any per-tick path. State the process-count delta (hit path and
-  miss path) in the PR description for any hot-path change. Current baselines to stay under:
-  bash 11 execs/hit, 34/miss; git block ≤ its current 6 (target 2 after consolidation).
+  miss path) in the PR description for any hot-path change. Current baselines to stay under
+  (post-2026-07-26 optimizations): bash 5 execs/hit, 14/miss; git block 2 subprocesses
+  (3 on detached HEAD); Windows hit path zero cmdlets before the cache-hit exit.
 - No new work before the output-cache check. Anything added there is paid on every tick,
   cache hit or not.
 - Never read a file twice in one refresh when one pass can serve (the bash forward-awk +
@@ -126,6 +135,20 @@ HEAD, omits `# branch.ab` when no upstream, omits `# stash` at zero.
 - [ ] No debug-log call site evaluates expensive arguments when logging is off.
 
 ## 6. Current agreed direction (from the 2026-07-26 audits)
+
+**Landed results (2026-07-26, measured end-to-end, fresh-process medians on the
+maintainer's machine; equivalence: byte-identical to the pre-optimization scripts across
+the full §4 matrix on all platforms):**
+
+| Path | Before | After |
+|---|---|---|
+| Windows cache hit | ~396–428 ms | ~326–334 ms |
+| Windows miss, 13.4 MB transcript unchanged content | 1387 ms | 542 ms |
+| Windows miss, git cache expired | 721 ms | 614 ms |
+| bash hit (MSYS shape-only) | 404 ms | 249 ms |
+| bash miss (MSYS shape-only) | 1617 ms | 1124 ms |
+| bash execs hit / miss | 12 / 27 | 5 / 14 |
+| bash forks, 6-row feed miss | 162 | 39 |
 
 Implementation order when performance work is picked up:
 
