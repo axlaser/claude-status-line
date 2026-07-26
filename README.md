@@ -25,7 +25,7 @@ showing context usage, git state, costs, rate limits, and more — all inside a 
 | Row | What it shows |
 |-----|---------------|
 | **repo** | Working directory (shortened relative to `$HOME`) and git branch with `↑ahead` / `↓behind` remote tracking, `+insertions` / `-deletions` / `~untracked`, and `⊟stash` count |
-| **agent** | Agent name with compact context % and in/out tokens (when running with `--agent` flag); each active subagent also gets its own `agent` row with context bar, `used/window` tokens, model, task title, and `○ working` / `✓ done` status |
+| **agent** | Agent name with compact context % and in/out tokens (when running with `--agent` flag); each active subagent also gets its own `agent` row with context bar, `used/window` tokens, model, reasoning effort (only when explicitly set), task title, and `○ working` / `✓ done` status |
 | **model** | Active model (e.g. `Opus 4.7`), reasoning effort level, and ready/working indicator |
 | **context** | Color-coded context bar with percentage and token count (green < 60%, yellow < 85%, red 85%+) |
 | **tokens** | Cumulative session breakdown — `in` (fresh input), `cache↑` (cache writes), `cache↓` (cache reads), `out` (output) |
@@ -52,6 +52,10 @@ When running with `--agent`, the agent row shows context usage as a percentage a
 
 ### Per-subagent context tracking
 Every active subagent gets its own row — context bar, `used/window` tokens, model, the task's title (e.g. `Apply README review fixes`; the agent type shows when no title is available), and live status (`○ working` while active, `✓ done` for 30 seconds after completion, then the row disappears). Long titles are truncated to 39 characters plus an ellipsis. Percentages are measured against each subagent's **real** context window — fed live by Claude Code or learned per model — so a 1M-window subagent isn't judged against a 200K bar.
+
+**Reasoning effort** shows on a subagent row only when that agent was dispatched with an explicit effort — from an agent definition's `effort:` frontmatter, for example. It uses the same wording and colours as the model row, so `low effort` on an agent row reads the same as it does above. An agent running at the session's own effort shows **no** effort segment at all, and that's deliberate: Claude Code reports the field only when there's an override, so absence means "same as the session" rather than "unknown". The status line never displays a level it wasn't told — if you expected to see one and don't, that agent didn't set it.
+
+> **Upgrading:** this feature spans two scripts — the status line and the subagent feed handler — so re-run the install command for your platform to pick it up. Updating only `statusline.*` leaves the handler filtering the field out, and the row then looks exactly like the no-override case.
 
 ### Never miss a prompt
 Sound alerts and native OS toast notifications fire on permission requests, task completion, context compaction, and rate limit warnings. Each event and channel (sound vs. visual) is independently toggleable — get pinged when Claude needs you, stay quiet when it doesn't.
