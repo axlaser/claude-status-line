@@ -27,7 +27,10 @@ safe_id="${session_id//[^a-zA-Z0-9_-]/}"
 
 # Keep only the per-task fields the statusline reader consumes; drop absent ones
 # (model/contextWindowSize are omitted until Claude Code >= v2.1.205 resolves them).
-state_json=$(printf '%s' "$input" | jq -c '{tasks: [(.tasks // [])[] | select(type == "object") | {id, name, type, description, status, model, contextWindowSize, tokenCount, startTime} | with_entries(select(.value != null))]}' 2>/dev/null)
+# effort is reported only when the task carries an explicit override, so an absent
+# key means "no override" — it must stay absent rather than become "", because the
+# statusline treats presence as the signal to render the segment at all.
+state_json=$(printf '%s' "$input" | jq -c '{tasks: [(.tasks // [])[] | select(type == "object") | {id, name, type, description, status, model, effort, contextWindowSize, tokenCount, startTime} | with_entries(select(.value != null))]}' 2>/dev/null)
 [[ -z "$state_json" ]] && exit 0
 
 # Atomic write: temp file in the same directory, then rename, so a concurrent

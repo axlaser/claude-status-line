@@ -29,7 +29,10 @@ if (-not $safeId) { exit 0 }
 
 # Keep only the per-task fields the statusline reader consumes; drop absent ones
 # (model/contextWindowSize are omitted until Claude Code >= v2.1.205 resolves them).
-$taskFields = 'id', 'name', 'type', 'description', 'status', 'model', 'contextWindowSize', 'tokenCount', 'startTime'
+# effort is reported only when the task carries an explicit override, so an absent
+# key means "no override" -- it must stay absent rather than become '', because the
+# statusline treats presence as the signal to render the segment at all.
+$taskFields = 'id', 'name', 'type', 'description', 'status', 'model', 'effort', 'contextWindowSize', 'tokenCount', 'startTime'
 $outTasks = @()
 foreach ($task in @($json.tasks)) {
     if ($null -eq $task) { continue }
