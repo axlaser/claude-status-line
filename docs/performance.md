@@ -133,15 +133,36 @@ Implementation order when performance work is picked up:
    `[Console]::Write`, `ReadAllText` cache read, direct property access, `GetFiles` glob.
    The JSON-parse deferral landed with it (`b8ecec6`): raw-string key fields plus a
    zero-cmdlet pre-hit path — measured hit 427.6 → 333.7 ms, miss +2.8 ms.
-2. Git 6 → 2 consolidation (all platforms) — with the §4 state matrix per platform, the
-   `(initial)` guard per current platform behaviour, and `.StartsWith('? ')`.
+2. Git 6 → 2 consolidation (all platforms) — **done** (`d5407f8`): one
+   `status --porcelain=v2 --branch --show-stash` + `diff --shortstat`; 13-state matrix
+   byte-identical; miss median −107 ms. Floor: git ≥ 2.15.
 3. Incremental transcript parse (all platforms) — offset of last complete line, size-shrink
    rescan, head checksum, carried idle verdict, `CACHE_VERSION` bump.
 4. Bash fork reductions: single-pass idle detection, nameref helpers, jq consolidation,
    `get_vis` hoist, builtin substitutions.
-5. Config: align `refreshInterval` deliberately across platforms (bash installers currently
-   ship 1 vs Windows' 2).
+5. Config: align `refreshInterval` deliberately across platforms — **done** (`a76e1b0`):
+   all installers ship 2.
 
 Open design questions (unowned, highest leverage): keying the output cache on rendered
-values instead of raw payload; taking the 5 s bucket out of the key; absorbing the
-subagent-statusline tee into a cheaper mechanism.
+values instead of raw payload; taking the 5 s bucket out of the key.
+
+### Subagent tee decision (2026-07-26, U10 design gate) — no change
+
+Measured (fresh-process medians, 11+ samples): current handler ~266 ms; interpreter floor
+~142 ms; raw-tee + .NET-only I/O prototype ~172 ms (−35.5%, the only variant clearing the
+pre-registered ≥30% bar); cmdlet-swap-only ~249 ms (−6.9%, byte-identical output).
+
+The bar-clearing variant does not ship, because it fails the bar's contract half:
+
+- **Malformed-tick isolation is lost.** Today a broken payload throws in `ConvertFrom-Json`
+  and writes nothing — the last good feed survives. A raw tee writes the garbage over it,
+  silently dropping the feed tier for that session until the next good tick.
+- **Raw retention feeds `tokenSamples` (an accumulating per-task array) and other
+  unfiltered fields into the statusline's output-cache key** (feed content is a key
+  input). Unverified tick-to-tick order/field stability risks re-introducing the
+  every-tick-miss behaviour the cache work exists to eliminate.
+
+Reopen conditions: a live multi-tick capture confirming raw field/order stability and no
+idle-tick key churn, plus a structural guard (trimmed payload starts `{` and ends `}`)
+re-measured to confirm the mechanism still clears 30%. The −6.9% cmdlet swap remains a
+zero-risk fallback but does not meet this unit's bar on its own.
