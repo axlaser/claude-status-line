@@ -113,6 +113,11 @@ The hot cost is process creation, not script logic: every refresh spawns a fresh
 - Debug-log call sites must not evaluate expensive arguments when logging is off (PowerShell evaluates arguments before the callee's guard).
 - Bump `CACHE_VERSION` whenever a cache record format changes.
 
+### Repo Skills and Branching
+
+- Every commit, sync, and pull request goes through the repo-local skills (`commit`, `sync`, `pr`) — never hand-written `git commit`, `git merge`, or `gh pr create`. The skills encode this repo's message style, two-tier flow, signing, and safety checks.
+- Never create a new branch without asking the user first — use `AskUserQuestion` when available, plain chat otherwise. This applies even when a plan, skill, or workflow suggests a branch: the user decides branch creation, every time.
+
 ### Never Commit
 
 - A hardcoded absolute personal path (`/Users/<name>/...`, `C:\Users\<name>\...`) where `$HOME` / `~` / `$env:USERPROFILE` belongs. This tool runs on other people's machines — a baked-in personal path is a shipped bug, not just a privacy leak.
