@@ -39,8 +39,6 @@ try {
         Write-Log ("stdin bytes={0}" -f $raw.Length)
         Write-Log ("stdin head: " + ($(if ($raw.Length -gt 400) { $raw.Substring(0,400) } else { $raw }) -replace "`r?`n",' '))
     }
-    $json = $raw | ConvertFrom-Json
-    Write-Log "json parse: OK"
 } catch {
     Write-Log ("READ/PARSE FAILED: " + $_.Exception.Message)
     [Console]::Write("${RED}[statusline: bad JSON]${RESET}")
@@ -185,37 +183,6 @@ function Build-Bar([int]$pct, [string]$color) {  # filled/empty bar over barWidt
     return "${color}${filledChars}${RESET}${BAR_EMPTY}${emptyChars}${RESET}"
 }
 
-# @parity:json-extract-begin
-# Direct property chains: with StrictMode off, a missing member anywhere in the
-# chain yields $null — same result as the old Get-Val walker at ~1 ms per 23
-# lookups instead of ~19 ms of function-call overhead. Do not enable StrictMode.
-$sessionId        = $json.session_id
-$cwdRaw           = $json.workspace.current_dir
-$cwdFallback      = $json.cwd
-$modelDisplay     = $json.model.display_name
-$ctxSize          = $json.context_window.context_window_size
-$usedPct          = $json.context_window.used_percentage
-$totalInputTokens = $json.context_window.total_input_tokens
-$effortLevel      = $json.effort.level
-$gitCwd           = $json.workspace.current_dir
-$totalCost        = $json.cost.total_cost_usd
-$totalCostLegacy  = $json.total_cost_usd
-$durationMs       = $json.cost.total_duration_ms
-$durationMsL1     = $json.total_duration_ms
-$durationMsL2     = $json.duration_ms
-$transcriptPath   = $json.transcript_path
-$fivePct          = $json.rate_limits.five_hour.used_percentage
-$fiveRes          = $json.rate_limits.five_hour.resets_at
-$sevenPct         = $json.rate_limits.seven_day.used_percentage
-$sevenRes         = $json.rate_limits.seven_day.resets_at
-$agentName        = $json.agent.name
-$agentIn          = $json.context_window.current_usage.input_tokens
-if ($null -eq $agentIn) { $agentIn = 0 }
-$agentOut         = $json.context_window.current_usage.output_tokens
-if ($null -eq $agentOut) { $agentOut = 0 }
-$modelId          = $json.model.id
-# @parity:json-extract-end
-
 # @parity:temp-guards-begin
 # Trust boundary for predictable temp files. %TEMP% is per-user, so a foreign
 # owner is unexpected here; we still check owner (SID) and reparse-point for
@@ -226,8 +193,13 @@ $modelId          = $json.model.id
 function Test-TrustedFile([string]$path) {
     if ([string]::IsNullOrEmpty($path)) { return $false }
     try {
-        $item = Get-Item -LiteralPath $path -Force -ErrorAction Stop
-        if ($item.PSIsContainer -or ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) { return $false }
+        # FileInfo directly, not Get-Item: keeps the pre-hit path cmdlet-free and
+        # needs no module at all — strictly safer than a cmdlet in the auto-loading-off
+        # child process (see the Get-Acl note below). Exists is false for a directory,
+        # preserving the old PSIsContainer rejection; -Force is moot (FileInfo sees
+        # hidden files).
+        $item = [System.IO.FileInfo]::new($path)
+        if (-not $item.Exists -or ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) { return $false }
         # Owner is defense-in-depth on a per-user %TEMP%; the reparse-point rejection
         # above is the load-bearing guard. Resolve it off the FileInfo rather than via
         # Get-Acl: that cmdlet is NOT available in the child process Claude Code spawns
@@ -272,38 +244,118 @@ function Format-SaTitle($s) {  # replace "|" and control chars with spaces, trim
 }
 # @parity:sanitize-title-end
 
+# @parity:raw-extract-begin
+# The output-cache key needs only these three fields, so they are pulled from
+# the raw string and ConvertFrom-Json (~90 ms) is deferred past the cache
+# check — a hit never parses. The authoritative values are re-extracted from
+# the parsed object right after the cache check; these raw ones only choose
+# which temp/state files the key probes. A wrong extraction cannot false-hit:
+# the raw payload itself is part of the key. Escape-aware: the regex value
+# class steps over backslash escapes and Convert-JsonString decodes them, so
+# escaped Windows paths stat the real file.
+function Convert-JsonString([string]$s) {
+    if (-not $s -or $s.IndexOf('\') -lt 0) { return $s }
+    $sb = [System.Text.StringBuilder]::new($s.Length)
+    for ($i = 0; $i -lt $s.Length; $i++) {
+        $ch = $s[$i]
+        if ($ch -ne '\' -or $i + 1 -ge $s.Length) { [void]$sb.Append($ch); continue }
+        $i++
+        switch ($s[$i]) {
+            '"' { [void]$sb.Append('"') }
+            '\' { [void]$sb.Append('\') }
+            '/' { [void]$sb.Append('/') }
+            'b' { [void]$sb.Append([char]8) }
+            'f' { [void]$sb.Append([char]12) }
+            'n' { [void]$sb.Append("`n") }
+            'r' { [void]$sb.Append("`r") }
+            't' { [void]$sb.Append("`t") }
+            'u' {
+                $cp = 0
+                if ($i + 4 -lt $s.Length -and [int]::TryParse($s.Substring($i + 1, 4), [System.Globalization.NumberStyles]::HexNumber, [System.Globalization.CultureInfo]::InvariantCulture, [ref]$cp)) {
+                    [void]$sb.Append([char]$cp); $i += 4
+                } else { [void]$sb.Append('u') }
+            }
+            default { [void]$sb.Append($s[$i]) }
+        }
+    }
+    return $sb.ToString()
+}
+function Get-RawJsonField([string]$payload, [string]$name) {
+    # Plain IndexOf/char scan, no regex: the three fields sit in the first few
+    # hundred bytes of the payload, so this costs ~nothing on every tick. An
+    # occurrence of the quoted name that is not followed by a colon (e.g. the
+    # name appearing inside another field's string value) is skipped.
+    if (-not $payload) { return $null }
+    $needle = '"' + $name + '"'
+    $pos = 0
+    while ($true) {
+        $k = $payload.IndexOf($needle, $pos, [System.StringComparison]::Ordinal)
+        if ($k -lt 0) { return $null }
+        $i = $k + $needle.Length
+        while ($i -lt $payload.Length -and [char]::IsWhiteSpace($payload[$i])) { $i++ }
+        if ($i -lt $payload.Length -and $payload[$i] -eq ':') {
+            $i++
+            while ($i -lt $payload.Length -and [char]::IsWhiteSpace($payload[$i])) { $i++ }
+            if ($i -lt $payload.Length -and $payload[$i] -eq '"') {
+                $i++
+                $start = $i
+                while ($i -lt $payload.Length) {
+                    $ch = $payload[$i]
+                    if ($ch -eq '\') { $i += 2; continue }
+                    if ($ch -eq '"') { return (Convert-JsonString $payload.Substring($start, $i - $start)) }
+                    $i++
+                }
+                return $null
+            }
+        }
+        $pos = $k + 1
+    }
+}
+$sessionId = $null; $transcriptPath = $null; $gitCwd = $null
+try {
+    $sessionId      = Get-RawJsonField $raw 'session_id'
+    $transcriptPath = Get-RawJsonField $raw 'transcript_path'
+    $gitCwd         = Get-RawJsonField $raw 'current_dir'
+} catch {}
+# @parity:raw-extract-end
+
 # --- Output cache: skip re-render when all inputs are unchanged ---
 $_ocSafeId = if ($sessionId) { $sessionId -replace '[^a-zA-Z0-9_-]', '' } else { $null }
-$_ocPath = if ($_ocSafeId) { Join-Path $env:TEMP "statusline-oc-$_ocSafeId.txt" } else { $null }
+$_ocPath = if ($_ocSafeId) { [System.IO.Path]::Combine($env:TEMP, "statusline-oc-$_ocSafeId.txt") } else { $null }
 $_ocTmt = ''
-if ($transcriptPath -and (Test-Path -LiteralPath $transcriptPath -ErrorAction SilentlyContinue)) {
-    $_ocTmt = (Get-Item -LiteralPath $transcriptPath).LastWriteTimeUtc.Ticks
+# Everything up to the cache-hit exit sticks to direct .NET calls — no cmdlets.
+# The first cmdlet call in a fresh powershell.exe pays ~80 ms of one-time
+# command-discovery/module init, so a single Get-Item or Test-Path here would
+# silently re-add the cost the deferred parse removed. File.GetLastWriteTimeUtc
+# does not need -Force: hidden files (like .git\index) are visible to it.
+if ($transcriptPath -and [System.IO.File]::Exists($transcriptPath)) {
+    $_ocTmt = [System.IO.File]::GetLastWriteTimeUtc($transcriptPath).Ticks
 }
 $_ocGmt = ''
-$_ocGitCwd = if ($gitCwd) { $gitCwd } else { (Get-Location).Path }
-$_ocGidx = Join-Path $_ocGitCwd '.git\index'
-if (Test-Path -LiteralPath $_ocGidx -ErrorAction SilentlyContinue) {
-    $_ocGmt = (Get-Item -LiteralPath $_ocGidx -Force).LastWriteTimeUtc.Ticks
+$_ocGitCwd = if ($gitCwd) { $gitCwd } else { [System.IO.Directory]::GetCurrentDirectory() }
+$_ocGidx = [System.IO.Path]::Combine($_ocGitCwd, '.git\index')
+if ([System.IO.File]::Exists($_ocGidx)) {
+    $_ocGmt = [System.IO.File]::GetLastWriteTimeUtc($_ocGidx).Ticks
 }
 $_ocSmt = ''
 if ($transcriptPath) {
-    $_ocSdir = Join-Path (Split-Path -Parent $transcriptPath) (Join-Path ([System.IO.Path]::GetFileNameWithoutExtension($transcriptPath)) 'subagents')
-    if (Test-Path -LiteralPath $_ocSdir -ErrorAction SilentlyContinue) {
-        $_ocSmt = (Get-Item -LiteralPath $_ocSdir -Force).LastWriteTimeUtc.Ticks
+    $_ocSdir = [System.IO.Path]::Combine([System.IO.Path]::GetDirectoryName($transcriptPath), [System.IO.Path]::GetFileNameWithoutExtension($transcriptPath), 'subagents')
+    if ([System.IO.Directory]::Exists($_ocSdir)) {
+        $_ocSmt = [System.IO.Directory]::GetLastWriteTimeUtc($_ocSdir).Ticks
     }
 }
 # Feed content+freshness and the learned-map mtime join the key so subagent
 # tier switches and learned window changes invalidate the render cache. The
 # handler rewrites the feed file every tick, so keying on its mtime would
 # defeat the output cache; mtime feeds only the freshness flag.
-$_ocFeed = if ($_ocSafeId) { Join-Path $env:TEMP "statusline-tasks-$_ocSafeId.json" } else { $null }
+$_ocFeed = if ($_ocSafeId) { [System.IO.Path]::Combine($env:TEMP, "statusline-tasks-$_ocSafeId.json") } else { $null }
 # @parity:cache FEED_TTL=10
 $FEED_TTL = 10
 $_ocFfresh = 0
 $_ocFjson = ''
 if ($_ocFeed -and (Test-TrustedFile $_ocFeed)) {
     try {
-        $_ocFeedAge = ([DateTimeOffset]::UtcNow - [DateTimeOffset](Get-Item -LiteralPath $_ocFeed -Force).LastWriteTimeUtc).TotalSeconds
+        $_ocFeedAge = ([DateTimeOffset]::UtcNow - [DateTimeOffset][System.IO.File]::GetLastWriteTimeUtc($_ocFeed)).TotalSeconds
         if ($_ocFeedAge -le $FEED_TTL) {
             $_ocFfresh = 1
             $_ocFjson = [System.IO.File]::ReadAllText($_ocFeed)
@@ -312,8 +364,8 @@ if ($_ocFeed -and (Test-TrustedFile $_ocFeed)) {
 }
 $_ocMwPath = "$env:USERPROFILE\.claude\statusline-model-windows.json"
 $_ocMwmt = ''
-if (Test-Path -LiteralPath $_ocMwPath -ErrorAction SilentlyContinue) {
-    try { $_ocMwmt = (Get-Item -LiteralPath $_ocMwPath -Force).LastWriteTimeUtc.Ticks } catch {}
+if ([System.IO.File]::Exists($_ocMwPath)) {
+    try { $_ocMwmt = [System.IO.File]::GetLastWriteTimeUtc($_ocMwPath).Ticks } catch {}
 }
 # @parity:cache OUTPUT_BUCKET=5
 $_ocNowBucket = [int]([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() / 5)
@@ -335,6 +387,53 @@ if ($_ocPath -and (Test-TrustedFile $_ocPath)) {
         Write-Log ("output cache read failed, re-rendering: " + $_.Exception.Message)
     }
 }
+
+# --- Parse (cache misses only) ---
+# Same error message and exit as the old read+parse site: a malformed payload
+# renders the bad-JSON notice on every tick — it can never false-hit the cache
+# above, because the raw string is part of the key and an error tick writes no
+# cache record.
+try {
+    $json = $raw | ConvertFrom-Json
+    Write-Log "json parse: OK"
+} catch {
+    Write-Log ("READ/PARSE FAILED: " + $_.Exception.Message)
+    [Console]::Write("${RED}[statusline: bad JSON]${RESET}")
+    exit 0
+}
+
+# @parity:json-extract-begin
+# Direct property chains: with StrictMode off, a missing member anywhere in the
+# chain yields $null — same result as the old Get-Val walker at ~1 ms per 23
+# lookups instead of ~19 ms of function-call overhead. Do not enable StrictMode.
+# sessionId/transcriptPath/gitCwd are re-assigned here authoritatively; the
+# raw-extract values above exist only for the cache key's file probes.
+$sessionId        = $json.session_id
+$cwdRaw           = $json.workspace.current_dir
+$cwdFallback      = $json.cwd
+$modelDisplay     = $json.model.display_name
+$ctxSize          = $json.context_window.context_window_size
+$usedPct          = $json.context_window.used_percentage
+$totalInputTokens = $json.context_window.total_input_tokens
+$effortLevel      = $json.effort.level
+$gitCwd           = $json.workspace.current_dir
+$totalCost        = $json.cost.total_cost_usd
+$totalCostLegacy  = $json.total_cost_usd
+$durationMs       = $json.cost.total_duration_ms
+$durationMsL1     = $json.total_duration_ms
+$durationMsL2     = $json.duration_ms
+$transcriptPath   = $json.transcript_path
+$fivePct          = $json.rate_limits.five_hour.used_percentage
+$fiveRes          = $json.rate_limits.five_hour.resets_at
+$sevenPct         = $json.rate_limits.seven_day.used_percentage
+$sevenRes         = $json.rate_limits.seven_day.resets_at
+$agentName        = $json.agent.name
+$agentIn          = $json.context_window.current_usage.input_tokens
+if ($null -eq $agentIn) { $agentIn = 0 }
+$agentOut         = $json.context_window.current_usage.output_tokens
+if ($null -eq $agentOut) { $agentOut = 0 }
+$modelId          = $json.model.id
+# @parity:json-extract-end
 
 # --- 1. CWD ---
 $cwd = $cwdRaw
