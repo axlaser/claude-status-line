@@ -657,9 +657,40 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
 
     if [[ "$use_cache" != true ]]; then
         if [[ -s "$transcript_path" ]]; then
-            # Single awk pass counts real user messages and sums all token fields.
-            read -r msg_count session_in_tokens session_cache_write_tokens session_cache_read_tokens session_out_tokens < <(
+            # Single awk pass: counts real user messages, sums all token fields,
+            # and decides idle-vs-working from the last real entry (synthetic
+            # lines -- isMeta / <command-name> / <local-command-* / toolUseResult
+            # -- do not vote; without that filter the detector stays stuck on
+            # "working" after slash commands). Token values are extracted with
+            # index()/substr() instead of copy+sub+sub regex chains; the LAST
+            # "key": occurrence wins, with the same whitespace tolerance the old
+            # greedy regexes had.
+            read -r msg_count session_in_tokens session_cache_write_tokens session_cache_read_tokens session_out_tokens claude_is_idle < <(
                 awk '
+                    function wskip(s, p, n) {  # first non-whitespace position at/after p
+                        while (p <= n && index(" \t\n\r\f\v", substr(s, p, 1)) > 0) p++
+                        return p
+                    }
+                    function tok(s, k,   n, off, i, p, c, v) {
+                        # digits after the LAST `key\s*:\s*` occurrence ("" -> 0)
+                        v = ""; n = length(s); off = 0
+                        i = index(s, k)
+                        while (i > 0) {
+                            off += i
+                            p = wskip(s, off + length(k), n)
+                            if (substr(s, p, 1) == ":") {
+                                p = wskip(s, p + 1, n)
+                                v = ""
+                                while (p <= n) {
+                                    c = substr(s, p, 1)
+                                    if (index("0123456789", c) == 0) break
+                                    v = v c; p++
+                                }
+                            }
+                            i = index(substr(s, off + 1), k)
+                        }
+                        return v + 0
+                    }
                     /"type"[[:space:]]*:[[:space:]]*"user"/ {
                         if ($0 !~ /"toolUseResult"/ &&
                             $0 !~ /"isMeta"[[:space:]]*:[[:space:]]*true/ &&
@@ -667,42 +698,33 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
                             $0 !~ /<local-command-stdout>/) mc++
                     }
                     /"type"[[:space:]]*:[[:space:]]*"assistant"/ {
-                        s = $0
-                        t = s; sub(/.*"input_tokens"[[:space:]]*:[[:space:]]*/, "", t); sub(/[^0-9].*/, "", t); if (t+0 > 0) inp += t+0
-                        t = s; sub(/.*"cache_creation_input_tokens"[[:space:]]*:[[:space:]]*/, "", t); sub(/[^0-9].*/, "", t); if (t+0 > 0) cw += t+0
-                        t = s; sub(/.*"cache_read_input_tokens"[[:space:]]*:[[:space:]]*/, "", t); sub(/[^0-9].*/, "", t); if (t+0 > 0) cr += t+0
-                        t = s; sub(/.*"output_tokens"[[:space:]]*:[[:space:]]*/, "", t); sub(/[^0-9].*/, "", t); if (t+0 > 0) out += t+0
+                        if ((v = tok($0, "\"input_tokens\"")) > 0) inp += v
+                        if ((v = tok($0, "\"cache_creation_input_tokens\"")) > 0) cw += v
+                        if ((v = tok($0, "\"cache_read_input_tokens\"")) > 0) cr += v
+                        if ((v = tok($0, "\"output_tokens\"")) > 0) out += v
                     }
-                    END { print mc+0, inp+0, cw+0, cr+0, out+0 }
+                    $0 !~ /"isMeta"/ && $0 !~ /<command-name>/ &&
+                    $0 !~ /<local-command-/ && $0 !~ /toolUseResult/ {
+                        # Last surviving entry votes -- the forward equivalent of the
+                        # old reverse scan, keeping its bash-glob semantics exactly:
+                        # no colon required after "type", isMeta filtered whatever
+                        # its value, filters tested before entry type.
+                        if ($0 ~ /"type".*"assistant"/) {
+                            if ($0 ~ /"stop_reason".*"end_turn"/) idle = "true"
+                            else idle = "false"
+                        } else if ($0 ~ /"type".*"user"/) {
+                            if ($0 ~ /Request interrupted by user/) idle = "true"
+                            else idle = "false"
+                        }
+                    }
+                    END {
+                        if (idle == "") idle = "true"
+                        print mc+0, inp+0, cw+0, cr+0, out+0, idle
+                    }
                 ' "$transcript_path" 2>/dev/null
             )
             [[ -z "$msg_count" ]] && msg_count=0
-
-            # Idle vs working: scan from end, skip synthetic entries (without
-            # <local-command-*> the detector stays "working" after slash commands).
-            claude_is_idle=true
-            while IFS= read -r ln; do
-                [[ "$ln" == *'"isMeta"'* ]] && continue
-                [[ "$ln" == *'<command-name>'* ]] && continue
-                [[ "$ln" == *'<local-command-'* ]] && continue
-                [[ "$ln" == *"toolUseResult"* ]] && continue
-                if [[ "$ln" == *'"type"'*'"assistant"'* ]]; then
-                    if [[ "$ln" == *'"stop_reason"'*'"end_turn"'* ]]; then
-                        claude_is_idle=true
-                    else
-                        claude_is_idle=false
-                    fi
-                    break
-                fi
-                if [[ "$ln" == *'"type"'*'"user"'* ]]; then
-                    if [[ "$ln" == *'Request interrupted by user'* ]]; then
-                        claude_is_idle=true
-                    else
-                        claude_is_idle=false
-                    fi
-                    break
-                fi
-            done < <(tac "$transcript_path" 2>/dev/null || awk '{a[NR]=$0}END{for(i=NR;i>=1;i--)print a[i]}' "$transcript_path" 2>/dev/null)
+            [[ -z "$claude_is_idle" ]] && claude_is_idle=true
 
             delta_in=$(( session_in_tokens - prev_in ))
             delta_out=$(( session_out_tokens - prev_out ))
