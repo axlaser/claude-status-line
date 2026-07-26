@@ -129,18 +129,46 @@ sa_sanitize_title() {  # replace "|" and control chars with spaces, trim -> "" w
 }
 # @parity:sanitize-title-end
 
+# Fork-free dirname/basename (POSIX semantics over /-separated paths): the
+# subagents-dir path is rebuilt from the transcript path on every tick, and
+# the external binaries cost a process each. Out-variable first, data after,
+# same convention as the render helpers below.
+sl_dirname() {  # out-var, path
+    local _dn_p="$2"
+    _dn_p="${_dn_p%"${_dn_p##*[!/]}"}"    # strip trailing slashes
+    if [[ -z "$_dn_p" ]]; then
+        # "" -> "."; all-slashes ("/", "//", ...) -> "/"
+        if [[ -n "$2" ]]; then printf -v "$1" '%s' '/'; else printf -v "$1" '%s' '.'; fi
+        return
+    fi
+    if [[ "$_dn_p" != */* ]]; then printf -v "$1" '%s' '.'; return; fi
+    _dn_p="${_dn_p%/*}"                    # drop the last component
+    _dn_p="${_dn_p%"${_dn_p##*[!/]}"}"    # strip the separator run before it
+    printf -v "$1" '%s' "${_dn_p:-/}"
+}
+
+sl_basename() {  # out-var, path, optional suffix (not stripped when it is the whole name)
+    local _bn_p="$2" _bn_s="${3-}"
+    _bn_p="${_bn_p%"${_bn_p##*[!/]}"}"    # strip trailing slashes
+    if [[ -z "$_bn_p" ]]; then
+        # "" -> ""; all-slashes -> "/"
+        if [[ -n "$2" ]]; then printf -v "$1" '%s' '/'; else printf -v "$1" '%s' ''; fi
+        return
+    fi
+    _bn_p="${_bn_p##*/}"
+    [[ -n "$_bn_s" && "$_bn_p" == *"$_bn_s" && "$_bn_p" != "$_bn_s" ]] && _bn_p="${_bn_p%"$_bn_s"}"
+    printf -v "$1" '%s' "$_bn_p"
+}
+
 # --- Idle-state fast path ---
 _oc_path="${TMPDIR:-/tmp}/statusline-oc-${J_SESSION_ID//[^a-zA-Z0-9_-]/}.txt"
-_oc_tmt=""
-[[ -n "$J_TRANSCRIPT_PATH" && -f "$J_TRANSCRIPT_PATH" ]] && _oc_tmt=$(stat -c %Y "$J_TRANSCRIPT_PATH" 2>/dev/null)
-_oc_now=$(date +%s)
-_oc_gmt=""
+_oc_now=${EPOCHSECONDS:-$(date +%s)}
 _oc_gidx="${J_GIT_CWD:-.}/.git/index"
-[[ -f "$_oc_gidx" ]] && _oc_gmt=$(stat -c %Y "$_oc_gidx" 2>/dev/null)
-_oc_smt=""
+_oc_sdir=""
 if [[ -n "$J_TRANSCRIPT_PATH" ]]; then
-    _oc_sdir="$(dirname "$J_TRANSCRIPT_PATH")/$(basename "$J_TRANSCRIPT_PATH" .jsonl)/subagents"
-    [[ -d "$_oc_sdir" ]] && _oc_smt=$(stat -c %Y "$_oc_sdir" 2>/dev/null)
+    sl_dirname _oc_pdir "$J_TRANSCRIPT_PATH"
+    sl_basename _oc_pbase "$J_TRANSCRIPT_PATH" .jsonl
+    _oc_sdir="${_oc_pdir}/${_oc_pbase}/subagents"
 fi
 # Feed content+freshness and the learned-map mtime join the key so subagent
 # tier switches and learned window changes invalidate the render cache. The
@@ -149,8 +177,37 @@ fi
 _oc_feed="${TMPDIR:-/tmp}/statusline-tasks-${J_SESSION_ID//[^a-zA-Z0-9_-]/}.json"
 # @parity:cache FEED_TTL=10
 FEED_TTL=10
-_oc_fmt=""
-[[ -f "$_oc_feed" ]] && _oc_fmt=$(stat -c %Y "$_oc_feed" 2>/dev/null)
+MODEL_WINDOWS_PATH="$HOME/.claude/statusline-model-windows.json"
+# One batched stat over every cache-key path that exists, results mapped back
+# BY NAME: the mtime is the last space-separated token, everything before it
+# is the path as we passed it (paths may contain spaces, never newlines --
+# they come from the newline-split jq extraction). A path missing from the
+# output -- vanished between the existence test and the stat -- degrades to
+# the same empty value the old per-file call produced. The format flag is
+# deliberately per-platform (GNU `-c '%n %Y'` here, BSD `-f '%N %m'` on macOS).
+_oc_tmt="" _oc_gmt="" _oc_smt="" _oc_fmt="" _oc_mwmt=""
+_oc_stat_paths=()
+[[ -n "$J_TRANSCRIPT_PATH" && -f "$J_TRANSCRIPT_PATH" ]] && _oc_stat_paths+=("$J_TRANSCRIPT_PATH")
+[[ -f "$_oc_gidx" ]] && _oc_stat_paths+=("$_oc_gidx")
+[[ -n "$_oc_sdir" && -d "$_oc_sdir" ]] && _oc_stat_paths+=("$_oc_sdir")
+[[ -f "$_oc_feed" ]] && _oc_stat_paths+=("$_oc_feed")
+[[ -f "$MODEL_WINDOWS_PATH" ]] && _oc_stat_paths+=("$MODEL_WINDOWS_PATH")
+if (( ${#_oc_stat_paths[@]} > 0 )); then
+    _oc_stat_hits=0
+    while IFS= read -r _oc_line; do
+        [[ "$_oc_line" == *' '* ]] || continue
+        _oc_val="${_oc_line##* }"
+        [[ "$_oc_val" =~ ^[0-9]+$ ]] || continue
+        case "${_oc_line% *}" in
+            "$J_TRANSCRIPT_PATH")  _oc_tmt="$_oc_val";  _oc_stat_hits=$(( _oc_stat_hits + 1 )) ;;
+            "$_oc_gidx")           _oc_gmt="$_oc_val";  _oc_stat_hits=$(( _oc_stat_hits + 1 )) ;;
+            "$_oc_sdir")           _oc_smt="$_oc_val";  _oc_stat_hits=$(( _oc_stat_hits + 1 )) ;;
+            "$_oc_feed")           _oc_fmt="$_oc_val";  _oc_stat_hits=$(( _oc_stat_hits + 1 )) ;;
+            "$MODEL_WINDOWS_PATH") _oc_mwmt="$_oc_val"; _oc_stat_hits=$(( _oc_stat_hits + 1 )) ;;
+        esac
+    done < <(stat -c '%n %Y' "${_oc_stat_paths[@]}" 2>/dev/null)
+    (( _oc_stat_hits == ${#_oc_stat_paths[@]} )) || log_msg "oc stat: mapped ${_oc_stat_hits}/${#_oc_stat_paths[@]} path(s)"
+fi
 _oc_ffresh=0
 _oc_fjson=""
 if [[ "$_oc_fmt" =~ ^[0-9]+$ ]] && (( _oc_now - _oc_fmt <= FEED_TTL )); then
@@ -160,11 +217,8 @@ if [[ "$_oc_fmt" =~ ^[0-9]+$ ]] && (( _oc_now - _oc_fmt <= FEED_TTL )); then
     # failure if the file vanishes between the stat and the read.
     sl_trusted_file "$_oc_feed" && { IFS= read -r _oc_fjson < "$_oc_feed"; } 2>/dev/null
 fi
-MODEL_WINDOWS_PATH="$HOME/.claude/statusline-model-windows.json"
-_oc_mwmt=""
-[[ -f "$MODEL_WINDOWS_PATH" ]] && _oc_mwmt=$(stat -c %Y "$MODEL_WINDOWS_PATH" 2>/dev/null)
 # @parity:cache OUTPUT_BUCKET=5
-_oc_key=$(printf '%s' "${raw}|${_oc_tmt}|${_oc_gmt}|${_oc_smt}|${_oc_ffresh}|${_oc_fjson}|${_oc_mwmt}|$(( _oc_now / 5 ))" | sha256sum | cut -d' ' -f1)
+read -r _oc_key _ < <(printf '%s' "${raw}|${_oc_tmt}|${_oc_gmt}|${_oc_smt}|${_oc_ffresh}|${_oc_fjson}|${_oc_mwmt}|$(( _oc_now / 5 ))" | sha256sum 2>/dev/null)
 
 if [[ -n "$J_SESSION_ID" ]] && sl_trusted_file "$_oc_path"; then
     # Command group so a redirect-open failure (git-refresh hook may delete the
@@ -571,14 +625,52 @@ if [[ -n "$branch" ]]; then
 fi
 
 # --- 5. Cost + duration ---
+format_cost() {  # out-fmt-var, out-gt-var, raw cost string -> "$X.YYYY" + 1/0 for > 0.50
+    # bash printf %f both parses and renders under the active locale; pin
+    # LC_ALL=C for the conversion and restore it (assignment or unset) so a
+    # comma-decimal locale can neither misparse the input nor render a comma.
+    # Deliberately not `local LC_ALL`: old bash does not reliably re-run
+    # setlocale when a local locale variable goes out of scope.
+    local _fc_restore=0 _fc_saved=""
+    [[ -n "${LC_ALL+x}" ]] && { _fc_restore=1; _fc_saved="$LC_ALL"; }
+    LC_ALL=C
+    local _fc_num _fc_int _fc_frac="" _fc_gt=0
+    # awk-style numeric coercion: longest numeric prefix, garbage -> 0. Keeps
+    # printf off invalid input, which would write to stderr.
+    if [[ "$3" =~ ^[[:space:]]*([+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]+)?) ]]; then
+        _fc_num="${BASH_REMATCH[1]}"
+    else
+        _fc_num=0
+    fi
+    printf -v "$1" '$%.4f' "$_fc_num"
+# @parity:threshold COST_WARN=0.50
+    # Scaled compare on the exact decimal digits (no float compare): > 0.50
+    # means a nonzero integer part, or a fraction above "5 then any nonzero".
+    # Exponent forms are normalized through %.10f first (still C locale).
+    [[ "$_fc_num" == *[eE]* ]] && printf -v _fc_num '%.10f' "$_fc_num"
+    if [[ "$_fc_num" != -* ]]; then
+        _fc_num="${_fc_num#+}"
+        _fc_int="${_fc_num%%.*}"
+        [[ "$_fc_num" == *.* ]] && _fc_frac="${_fc_num#*.}"
+        if [[ "$_fc_int" == *[1-9]* ]]; then
+            _fc_gt=1
+        else
+            case "${_fc_frac:0:1}" in
+                [6-9]) _fc_gt=1 ;;
+                5)     [[ "${_fc_frac:1}" == *[1-9]* ]] && _fc_gt=1 ;;
+            esac
+        fi
+    fi
+    printf -v "$2" '%s' "$_fc_gt"
+    if (( _fc_restore )); then LC_ALL="$_fc_saved"; else unset LC_ALL; fi
+}
+
 cost_part=""
 total_cost="$J_TOTAL_COST"
 [[ -z "$total_cost" ]] && total_cost="$J_TOTAL_COST_LEGACY"
 
 if [[ -n "$total_cost" ]]; then
-    cost_fmt=$(awk -v c="$total_cost" 'BEGIN { printf "$%.4f", c }')
-    # @parity:threshold COST_WARN=0.50
-    cost_gt=$(awk -v c="$total_cost" 'BEGIN { print (c > 0.50) ? 1 : 0 }')
+    format_cost cost_fmt cost_gt "$total_cost"
     if (( cost_gt )); then cost_color="$YELLOW"; else cost_color="$GREEN"; fi
     cost_part="${cost_color}${cost_fmt}${RESET}"
 fi
@@ -940,7 +1032,7 @@ format_window() {
     local burn_part="" reset_part=""
     if [[ -n "$resets_at" && "${resets_at%.*}" =~ ^[0-9]+$ ]]; then
         local now
-        now=$(date +%s)
+        now=${EPOCHSECONDS:-$(date +%s)}
         local remaining=$(( ${resets_at%.*} - now ))
         if (( remaining > 0 && remaining <= window_secs )); then
             local expected_pct=$(( (window_secs - remaining) * 100 / window_secs ))
@@ -1075,7 +1167,7 @@ build_sa_row() {  # used ctx_size model_id display state(working|done) effort ->
 }
 
 declare -a subagent_contents=()
-sa_now=$(date +%s)
+sa_now=${EPOCHSECONDS:-$(date +%s)}
 sa_sid_safe="${session_id//[^a-zA-Z0-9_-]/}"
 feed_tier=false
 
@@ -1161,8 +1253,8 @@ fi
 # Fallback tier: per-agent transcripts under
 # <project>/<sessionId>/subagents/agent-*.jsonl (+ sibling .meta.json).
 if [[ "$feed_tier" != true && -n "$session_id" && -n "$transcript_path" ]]; then
-    project_dir=$(dirname "$transcript_path")
-    session_base=$(basename "$transcript_path" .jsonl)
+    sl_dirname project_dir "$transcript_path"
+    sl_basename session_base "$transcript_path" .jsonl
     subagents_dir="$project_dir/$session_base/subagents"
     if [[ -d "$subagents_dir" ]]; then
         log_msg "subagents: fallback tier (feed absent/stale)"
@@ -1173,7 +1265,7 @@ if [[ "$feed_tier" != true && -n "$session_id" && -n "$transcript_path" ]]; then
             sa_age=$(( sa_now - sa_mt ))
             (( sa_age > 180 )) && continue
 
-            sa_base=$(basename "$sa_file" .jsonl)
+            sl_basename sa_base "$sa_file" .jsonl
             sa_cache_path="${TMPDIR:-/tmp}/statusline-sa-${sa_sid_safe}-${sa_base}.txt"
             sa_use_cache=false
             sa_cache_dirty=false
@@ -1358,9 +1450,12 @@ if [[ -n "$J_SESSION_ID" ]]; then
     _ns_ctx=false _ns_rate=false _ns_rate_resets="" _ns_usable=true
 
     if sl_trusted_file "$_notify_state" && command -v jq &>/dev/null; then
-        _ns_ctx=$(jq -r '.notified_context_high // false' "$_notify_state" 2>/dev/null)
-        _ns_rate=$(jq -r '.notified_rate_limit // false' "$_notify_state" 2>/dev/null)
-        _ns_rate_resets=$(jq -r '.last_rate_resets_at // ""' "$_notify_state" 2>/dev/null)
+        # One jq pass emits all three latch fields as a single US-delimited
+        # record (control chars scrubbed jq-side so an embedded 0x1f or
+        # newline cannot shift fields -- the feed-tier record convention),
+        # consumed by one read. A non-object or unparseable file emits
+        # nothing, leaving every field blank like the old per-field calls.
+        { IFS=$'\x1f' read -r _ns_ctx _ns_rate _ns_rate_resets < <(jq -r 'if type != "object" then error("not a JSON object") else [((.notified_context_high // false) | tostring), ((.notified_rate_limit // false) | tostring), ((.last_rate_resets_at // "") | tostring | gsub("[\\x00-\\x1f\\x7f]"; " "))] | join("\u001f") end' "$_notify_state" 2>/dev/null); } 2>/dev/null
         # Fail closed when the file exists but cannot be parsed: a torn read leaves
         # these empty, and empty != "true", so the latches would look like "never
         # notified" and re-fire the alert on every refresh while the collision lasts.
@@ -1370,8 +1465,11 @@ if [[ -n "$J_SESSION_ID" ]]; then
 
     _ctx_thresh=70 _rate_thresh=80
     if [[ -f "$HOME/.claude/notify-config.json" ]] && command -v jq &>/dev/null; then
-        _ct=$(jq -r '.context_high.threshold // 70' "$HOME/.claude/notify-config.json" 2>/dev/null)
-        _rt=$(jq -r '.rate_limit.threshold // 80' "$HOME/.claude/notify-config.json" 2>/dev/null)
+        # Same single-record shape for the two thresholds. The `?` keeps a
+        # per-field error (e.g. .context_high is a number) scoped to that
+        # field -- the old per-call layout defaulted only the broken field,
+        # and one shared call must not widen that blast radius.
+        { IFS=$'\x1f' read -r _ct _rt < <(jq -r 'if type != "object" then error("not a JSON object") else [((.context_high.threshold? // 70) | tostring), ((.rate_limit.threshold? // 80) | tostring)] | join("\u001f") end' "$HOME/.claude/notify-config.json" 2>/dev/null); } 2>/dev/null
         [[ "$_ct" =~ ^[0-9]+$ ]] && _ctx_thresh=$_ct
         [[ "$_rt" =~ ^[0-9]+$ ]] && _rate_thresh=$_rt
     fi
