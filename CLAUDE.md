@@ -112,6 +112,7 @@ The hot cost is process creation, not script logic: every refresh spawns a fresh
 - Performance changes must keep rendered output byte-identical (verified across the state matrix in `docs/performance.md` §4) and must be measured with fresh-process probes, never warm loops — end-to-end before/after medians only.
 - Debug-log call sites must not evaluate expensive arguments when logging is off (PowerShell evaluates arguments before the callee's guard).
 - Bump `CACHE_VERSION` whenever a cache record format changes.
+- `docs/performance.md` is a living document — whenever work measures a new cost, rules out a hypothesis, accepts a rendered-output divergence, or settles a design question, update it in the same change. Its §6 reference numbers must always describe the current scripts.
 
 ### Repo Skills and Branching
 
