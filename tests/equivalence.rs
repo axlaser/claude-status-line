@@ -11,8 +11,10 @@ use std::process::{Command, Stdio};
 use claude_statusline::clock::{Clock, TestClock};
 use claude_statusline::debug;
 use claude_statusline::git::{self, GitStatus, Porcelain};
+use claude_statusline::notify_state::{self, decide, Latch, LatchState};
 use claude_statusline::payload::{sanitize_display, Payload};
 use claude_statusline::platform;
+use claude_statusline::render;
 use claude_statusline::settings;
 use claude_statusline::state::{self, WriteOutcome};
 use claude_statusline::subagent::{self, Row, Windows};
@@ -4384,4 +4386,417 @@ fn feed_freshness_is_measured_through_the_injected_clock() {
         !subagent::feed_is_fresh(&TestClock::at(1_000), &feed),
         "an unreadable mtime is not freshness"
     );
+}
+
+// ---------------------------------------------------------------------------
+// U12 -- render, thresholds, notification spawn
+// ---------------------------------------------------------------------------
+
+/// Drops SGR escapes so an assertion can talk about what the user sees.
+/// Deliberately not `render::visible_width`'s stripper: a test that shared the
+/// implementation under test would agree with it even when both were wrong.
+fn strip_ansi(s: &str) -> String {
+    let mut out = String::new();
+    let mut rest = s;
+    while let Some(start) = rest.find('\u{1b}') {
+        out.push_str(&rest[..start]);
+        match rest[start..].find('m') {
+            Some(end) => rest = &rest[start + end + 1..],
+            None => {
+                rest = "";
+                break;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Width is what the box is padded to, so it is the one thing that cannot be
+/// checked by reading the output: an escape counted as columns, or a bar cell
+/// counted as bytes, both render a box whose rows disagree. The second is what
+/// the bash captures recorded before the harness pinned a UTF-8 locale.
+#[test]
+fn visible_width_counts_columns_not_bytes_or_escapes() {
+    let cases: [(&str, usize, &str); 7] = [
+        ("plain", 5, "ASCII is its own length"),
+        ("\u{1b}[31mred\u{1b}[0m", 3, "SGR escapes occupy no columns"),
+        (
+            "\u{1b}[38;5;242m░\u{1b}[0m",
+            1,
+            "a 3-byte bar cell is one column",
+        ),
+        (
+            "██████",
+            6,
+            "six bar cells are six columns, not eighteen bytes",
+        ),
+        ("·", 1, "a 2-byte middot is one column"),
+        ("日本", 4, "CJK counts as two cells each"),
+        ("🙂", 2, "astral emoji counts as two cells"),
+    ];
+    for (input, expected, why) in cases {
+        assert_eq!(render::visible_width(input), expected, "[{input:?}] {why}");
+    }
+}
+
+#[test]
+fn an_unterminated_escape_does_not_eat_the_rest_of_the_row() {
+    // A branch name is an untrusted field. A stripper that swallowed everything
+    // after a stray ESC[ would under-count the row and over-pad the box.
+    assert_eq!(render::visible_width("a\u{1b}[31b"), 6);
+}
+
+#[test]
+fn token_and_window_labels_truncate_rather_than_round() {
+    let cases: [(u64, &str); 8] = [
+        (0, "0"),
+        (400, "400"),
+        (999, "999"),
+        (1_000, "1.0K"),
+        (2_749, "2.7K"),
+        (999_999, "999.9K"),
+        (1_000_000, "1.0M"),
+        (1_250_000, "1.2M"),
+    ];
+    for (input, expected) in cases {
+        assert_eq!(render::format_tokens(input), expected, "[{input}]");
+    }
+    assert_eq!(render::format_window_label(200_000), "200K");
+    assert_eq!(render::format_window_label(1_000_000), "1M");
+}
+
+#[test]
+fn cost_color_turns_over_fifty_cents_exactly_at_the_boundary() {
+    let cases: [(&str, &str, bool); 8] = [
+        ("1.2345", "$1.2345", true),
+        ("0.5", "$0.5000", false),
+        ("0.50", "$0.5000", false),
+        ("0.5000001", "$0.5000", true),
+        ("0.6", "$0.6000", true),
+        ("0.4999", "$0.4999", false),
+        ("-3", "$-3.0000", false),
+        ("garbage", "$0.0000", false),
+    ];
+    for (raw, formatted, over) in cases {
+        assert_eq!(
+            render::format_cost(raw),
+            (formatted.to_string(), over),
+            "[{raw}]"
+        );
+    }
+}
+
+#[test]
+fn model_ids_prettify_without_losing_the_variant_marker_tier() {
+    let cases: [(&str, &str); 6] = [
+        ("claude-sonnet-5", "Sonnet 5"),
+        ("claude-opus-4-8", "Opus 4.8"),
+        ("claude-haiku-4-5-20251001", "Haiku 4.5"),
+        // The family match is a prefix, so a marker suffix still resolves.
+        ("claude-opus-5[1m]", "Opus 5"),
+        ("fable-5", "Fable 5"),
+        ("some-internal-build", "some-internal-build"),
+    ];
+    for (id, expected) in cases {
+        assert_eq!(render::prettify_model_id(id), expected, "[{id}]");
+    }
+}
+
+#[test]
+fn the_bar_fills_from_a_clamped_rounded_percentage() {
+    let filled = |pct| {
+        render::render_bar(pct, "")
+            .chars()
+            .filter(|c| *c == '█')
+            .count()
+    };
+    assert_eq!(filled(0), 0);
+    assert_eq!(filled(42), 13, "30 * 42 + 50, integer-divided by 100");
+    assert_eq!(filled(100), 30);
+    assert_eq!(filled(-5), 0, "a negative percentage clamps to empty");
+    assert_eq!(filled(300), 30, "an over-100 percentage clamps to full");
+}
+
+#[test]
+fn rate_windows_render_burn_against_the_injected_clock() {
+    // 40% used with 25% of a 5h window elapsed: 15 points ahead of linear.
+    let now = 1_767_225_600;
+    let resets = now + 13_500; // 3h45m left of 5h
+    let rendered = render::format_rate_window("5h", Some(40.0), &resets.to_string(), 18_000, now);
+    assert_eq!(
+        strip_ansi(&rendered),
+        "5h 40% ⇡15% (3h45m)",
+        "rendered: {rendered:?}"
+    );
+
+    let under = render::format_rate_window("5h", Some(10.0), &resets.to_string(), 18_000, now);
+    assert_eq!(strip_ansi(&under), "5h 10% ⇣15% (3h45m)");
+
+    assert_eq!(
+        render::format_rate_window("7d", None, "", 604_800, now),
+        "",
+        "an absent percentage renders no window at all"
+    );
+    assert_eq!(
+        strip_ansi(&render::format_rate_window(
+            "5h",
+            Some(40.0),
+            "",
+            18_000,
+            now
+        )),
+        "5h 40%",
+        "no resets_at means no burn arrow and no countdown"
+    );
+}
+
+#[test]
+fn elapsed_and_countdown_formats_match_their_scales() {
+    assert_eq!(render::format_elapsed(45_000.0), "45s");
+    assert_eq!(render::format_elapsed(654_000.0), "10m54s");
+    assert_eq!(render::format_elapsed(7_500_000.0), "2h05m");
+
+    assert_eq!(
+        render::format_duration(0),
+        "",
+        "an expired window shows nothing"
+    );
+    assert_eq!(render::format_duration(-1), "");
+    assert_eq!(render::format_duration(300), "5m");
+    assert_eq!(render::format_duration(3_600), "1h");
+    assert_eq!(render::format_duration(8_100), "2h15m");
+    assert_eq!(render::format_duration(97_200), "1d3h");
+}
+
+#[test]
+fn a_cwd_under_home_collapses_to_a_tilde_and_others_to_two_segments() {
+    let cases: [(&str, Option<&str>, &str); 6] = [
+        ("/home/dev", Some("/home/dev"), "~"),
+        ("/home/dev/src/thing", Some("/home/dev"), "~/src/thing"),
+        ("/var/repo/work", Some("/home/dev"), ".../repo/work"),
+        ("/tmp", Some("/home/dev"), "/tmp"),
+        // Both separators resolve through one implementation (R25).
+        ("C:\\Users\\dev\\src", Some("C:\\Users\\dev"), "~/src"),
+        ("D:\\a\\b\\c", None, ".../b/c"),
+    ];
+    for (cwd, home, expected) in cases {
+        assert_eq!(render::format_cwd(cwd, home), expected, "[{cwd}]");
+    }
+}
+
+#[test]
+fn a_subagent_row_scrubs_its_untrusted_fields_at_the_sink() {
+    // AE13: the escape arrives through the row, which is what every source
+    // path -- live feed, read-back cache, transcript fallback -- funnels into.
+    let row = Row {
+        used: 18_000,
+        window: 200_000,
+        model: "claude-sonnet-5".into(),
+        display: "hostile\u{1b}[31m|title".into(),
+        effort: String::new(),
+        done: false,
+    };
+    let rendered = render::format_subagent_row(&row);
+    let body = strip_ansi(&rendered);
+    assert!(
+        !rendered.contains("\u{1b}[31m"),
+        "the planted escape must not reach the terminal: {rendered:?}"
+    );
+    assert!(
+        body.contains("hostile") && body.contains("title") && !body.contains('|'),
+        "control bytes and the column separator become spaces: {body:?}"
+    );
+    assert!(
+        body.contains("9%") && body.contains("18.0K/200K"),
+        "{body:?}"
+    );
+    assert!(body.ends_with("○ working"), "{body:?}");
+}
+
+#[test]
+fn a_long_subagent_title_is_ellipsised_by_characters() {
+    let row = Row {
+        used: 0,
+        window: 200_000,
+        model: String::new(),
+        // 45 astral characters: truncating by bytes would split one.
+        display: "🙂".repeat(45),
+        effort: String::new(),
+        done: true,
+    };
+    let body = strip_ansi(&render::format_subagent_row(&row));
+    assert!(body.contains(&format!("{}…", "🙂".repeat(39))), "{body:?}");
+    assert!(body.ends_with("✓ done"), "{body:?}");
+}
+
+/// AE15. The whole point of the latch is one notification per crossing, so the
+/// re-arm and the window rollover matter as much as the fire.
+#[test]
+fn context_and_rate_alerts_fire_once_per_crossing() {
+    let fresh = || LatchState::Usable(Latch::default());
+
+    let crossed = decide(fresh(), 75, 70, 0, 80, "");
+    assert_eq!(crossed.alerts.len(), 1, "crossing fires once");
+    assert_eq!(crossed.alerts[0].event, "context_high");
+    assert_eq!(crossed.alerts[0].value, 75);
+    assert!(crossed.latch.context_high && crossed.changed);
+
+    let still_above = decide(LatchState::Usable(crossed.latch.clone()), 78, 70, 0, 80, "");
+    assert!(
+        still_above.alerts.is_empty() && !still_above.changed,
+        "staying above the threshold must not re-fire or rewrite the latch"
+    );
+
+    let dropped = decide(LatchState::Usable(crossed.latch.clone()), 40, 70, 0, 80, "");
+    assert!(
+        dropped.alerts.is_empty() && !dropped.latch.context_high && dropped.changed,
+        "dropping below re-arms without notifying"
+    );
+
+    let recrossed = decide(LatchState::Usable(dropped.latch), 90, 70, 0, 80, "");
+    assert_eq!(
+        recrossed.alerts.len(),
+        1,
+        "the next crossing fires again -- otherwise the alert is once per session"
+    );
+}
+
+#[test]
+fn a_rate_window_rollover_rearms_the_rate_latch() {
+    let latched = Latch {
+        context_high: false,
+        rate_limit: true,
+        rate_resets_at: "1767225600".into(),
+    };
+    let same = decide(
+        LatchState::Usable(latched.clone()),
+        0,
+        70,
+        95,
+        80,
+        "1767225600",
+    );
+    assert!(same.alerts.is_empty(), "the same window stays latched");
+
+    let rolled = decide(LatchState::Usable(latched), 0, 70, 95, 80, "1767243600");
+    assert_eq!(
+        rolled.alerts.len(),
+        1,
+        "a new window is a new crossing, or one busy window silences the rest"
+    );
+    assert_eq!(rolled.latch.rate_resets_at, "1767243600");
+}
+
+#[test]
+fn an_unreadable_latch_suppresses_rather_than_spams() {
+    // R23: a state file that exists but cannot be read reads as
+    // already-notified. Treated as "never notified" it would re-fire on every
+    // refresh for as long as the collision lasted.
+    let decision = decide(LatchState::Unusable, 99, 70, 99, 80, "1767225600");
+    assert!(decision.alerts.is_empty());
+    assert!(
+        !decision.changed,
+        "nothing is written either -- the next refresh reads a whole file"
+    );
+}
+
+#[test]
+fn the_latch_serialises_with_the_field_names_the_scripts_wrote() {
+    let latch = Latch {
+        context_high: true,
+        rate_limit: false,
+        rate_resets_at: "1767225600".into(),
+    };
+    let json = notify_state::latch_json(&latch);
+    assert_eq!(
+        json,
+        "{\"notified_context_high\":true,\"notified_rate_limit\":false,\"last_rate_resets_at\":\"1767225600\"}"
+    );
+
+    let dir = scratch_dir("latch-roundtrip");
+    let path = dir.join("statusline-notify-s.json");
+    std::fs::write(&path, &json).expect("failed to write the latch");
+    assert_eq!(
+        notify_state::read_latch(&path),
+        LatchState::Usable(latch),
+        "what the reader recovers is what the writer stored"
+    );
+}
+
+#[test]
+fn degraded_input_renders_the_notice_and_touches_no_state() {
+    // AE3. The bad-JSON path must not write the token record or the latch: a
+    // tick that could not be understood overwriting the last good one is how a
+    // single malformed refresh would erase a session's deltas.
+    let dir = scratch_dir("degraded-render");
+    let dir_str = dir.to_str().expect("scratch path is not UTF-8");
+    for payload in ["", "not json", "[1,2,3]"] {
+        let run = run_bin(
+            &["statusline"],
+            payload,
+            &[("TMPDIR", dir_str), ("TEMP", dir_str)],
+        );
+        assert_eq!(run.code, Some(0), "[{payload:?}] must exit 0");
+        assert_eq!(run.stderr, "", "[{payload:?}] must write nothing to stderr");
+        assert_eq!(
+            run.stdout, "\u{1b}[31m[statusline: bad JSON]\u{1b}[0m",
+            "[{payload:?}]"
+        );
+    }
+    let stray: Vec<String> = std::fs::read_dir(&dir)
+        .expect("failed to read the scratch dir")
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(stray.is_empty(), "degraded input wrote state: {stray:?}");
+}
+
+#[test]
+fn the_box_pads_every_row_to_one_width() {
+    // The failure this catches is the one the bash captures shipped: rows
+    // padded to a width computed differently from the width they occupy, so
+    // the frame's right edge is ragged. Every line must be identical width.
+    let payload = Payload::parse(
+        r#"{"session_id":"render-test","workspace":{"current_dir":"/var/repo/work"},
+            "model":{"display_name":"Opus 5","id":"claude-opus-5"},
+            "context_window":{"context_window_size":200000,"used_percentage":42.4,
+                              "total_input_tokens":85000},
+            "effort":{"level":"high"},"cost":{"total_cost_usd":1.2345}}"#,
+    )
+    .expect("the payload should parse");
+
+    let rows = [Row {
+        used: 18_000,
+        window: 200_000,
+        model: "claude-sonnet-5".into(),
+        // CJK and emoji in one row: the case the width helper exists for.
+        display: "日本語のタスク 🙂".into(),
+        effort: "xhigh".into(),
+        done: false,
+    }];
+    let out = render::render(&render::Inputs {
+        payload: &payload,
+        home: Some("/home/dev"),
+        git: None,
+        scan: None,
+        record: None,
+        subagents: &rows,
+        now: 1_767_225_600,
+    });
+
+    let widths: Vec<usize> = out.lines().map(render::visible_width).collect();
+    let first = widths[0];
+    assert!(
+        widths.iter().all(|w| *w == first),
+        "ragged box: widths {widths:?}\n{out}"
+    );
+    assert!(
+        !out.ends_with('\n'),
+        "the render carries no trailing newline"
+    );
+    let plain = strip_ansi(&out);
+    assert!(plain.contains(".../repo/work"), "{plain}");
+    assert!(plain.contains("Opus 5 · high effort"), "{plain}");
+    assert!(plain.contains("42%"), "42.4 rounds to 42: {plain}");
 }

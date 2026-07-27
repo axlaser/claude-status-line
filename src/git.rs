@@ -171,9 +171,17 @@ fn count_before(text: &str, label: &str) -> u64 {
 /// sentinel; it is a closure so the extra subprocess is not paid by a branch
 /// that merely *is* named `(detached)` in a test.
 ///
-/// Unborn HEAD renders **no git segment on this platform**. Windows renders the
-/// literal `HEAD` instead. That divergence predates the port and is not
-/// reconciled here — U13 records which one the binary keeps.
+/// Unborn HEAD renders **no git segment, on every platform** — settled at U12
+/// and recorded in the plan's Resolved divergences (R20). It breaks Windows,
+/// which substitutes the literal `HEAD`.
+///
+/// The deciding argument is coherence rather than majority. A bare `git init`
+/// has no `.git/index`, and the whole git block is guarded on that file, so
+/// that repo already renders no git segment anywhere and cannot be changed
+/// without redesigning the index-mtime cache key. Keeping Windows' literal
+/// would make the row's presence depend on whether an index file happens to
+/// exist — invisible to the user, and arbitrary. `HEAD` is also simply wrong:
+/// porcelain reports `# branch.head main`, so the branch has a name.
 pub fn resolve_branch(p: &Porcelain, detached_hash: impl FnOnce() -> Option<String>) -> String {
     if p.branch == "(detached)" {
         // Ask git for the abbreviation rather than truncating the oid: git

@@ -6,4 +6,5 @@
 
 pub mod git_refresh;
 pub mod notify;
+pub mod statusline;
 pub mod subagent;

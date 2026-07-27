@@ -3,7 +3,7 @@
   "case": "git-unborn-head",
   "component": "statusline",
   "observable": "stdout",
-  "source_commit": "513ae1a567453c4d89cc26be16f73c34974fafc6",
+  "source_commit": "9cf8729358cde98cb7a796c52cb5008a6d9d07cd",
   "clock": 1767225600,
   "git_state": "unborn-head",
   "payload": "payloads/full.json",

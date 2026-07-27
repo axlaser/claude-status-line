@@ -7,7 +7,7 @@
 
 use std::io::Write;
 
-use claude_statusline::{cmd, config, debug, platform, self_check, session, settings};
+use claude_statusline::{clock, cmd, config, debug, platform, self_check, session, settings};
 
 /// Reads all of stdin, treating an unreadable or non-UTF-8 stream as empty.
 ///
@@ -167,8 +167,10 @@ fn fail(message: &str) -> i32 {
 
 fn dispatch(sub: &str, rest: &[&str]) {
     match sub {
-        // Filled in by U8-U13.
-        "statusline" => {}
+        "statusline" => {
+            let payload = read_stdin();
+            emit(&cmd::statusline::run(&clock::SystemClock, &payload));
+        }
         "notify" => {
             let event = rest.first().copied().unwrap_or("");
             let value = rest.get(1).copied().unwrap_or("");
