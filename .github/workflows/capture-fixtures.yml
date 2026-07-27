@@ -15,7 +15,9 @@ name: capture-fixtures
 
 on:
   # Pushing a `capture-<component>` tag runs a capture; the tag is deleted
-  # afterwards.
+  # afterwards. `capture-<component>@<commit>` captures against a historical
+  # tree, which is how R33's "regenerate any fixture" survives a component
+  # whose scripts the branch tip has already deleted.
   #
   # This exists because `workflow_dispatch` is only offered for workflows that
   # are already on the default branch, and this one does not get there until the
@@ -99,15 +101,33 @@ jobs:
           # A tag-triggered run carries no inputs, so the tag name is the
           # request: `capture-git-refresh` captures that component, and any
           # other `capture-*` tag captures everything.
+          #
+          # An optional `@<commit>` suffix picks the tree whose scripts run --
+          # `capture-git-refresh@7ac72b8`. R33 requires any fixture to be
+          # regenerable against a historical commit, and on this branch the tag
+          # is the only trigger available (workflow_dispatch is offered only for
+          # workflows already on the default branch), so without this the
+          # requirement has no way to be met for a component whose scripts the
+          # branch tip has already deleted.
           component="$IN_COMPONENT"
-          if [ -z "$component" ] && [ "$GITHUB_EVENT_NAME" = "push" ]; then
-            case "${GITHUB_REF_NAME#capture-}" in
-              git-refresh|subagent|notify|statusline) component="${GITHUB_REF_NAME#capture-}" ;;
-              *) component="all" ;;
+          commit="$IN_COMMIT"
+          if [ "$GITHUB_EVENT_NAME" = "push" ]; then
+            request="${GITHUB_REF_NAME#capture-}"
+            case "$request" in
+              *@*)
+                [ -n "$commit" ] || commit="${request#*@}"
+                request="${request%@*}"
+                ;;
             esac
+            if [ -z "$component" ]; then
+              case "$request" in
+                git-refresh|subagent|notify|statusline) component="$request" ;;
+                *) component="all" ;;
+              esac
+            fi
           fi
 
-          [ -n "$IN_COMMIT" ] && args+=(--at "$IN_COMMIT")
+          [ -n "$commit" ] && args+=(--at "$commit")
           if [ -n "$component" ] && [ "$component" != "all" ]; then
             args+=(--component "$component")
           fi

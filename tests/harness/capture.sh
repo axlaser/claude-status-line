@@ -152,8 +152,20 @@ mtime_of() {
 # Replaces every machine-local path with a placeholder, then refuses to hand
 # back anything still carrying the real user's home or repo path. Fixtures are
 # committed, and CLAUDE.md forbids shipping a personal absolute path.
+# Replaces every machine-local path in the captured observable with a
+# placeholder, reading from a file and writing the scrubbed bytes to stdout.
+#
+# It takes a path rather than a string because `$(cat file)` strips *every*
+# trailing newline, while the Windows driver reads through .NET's ReadAllText
+# and keeps them. Two drivers that disagree about a trailing byte write
+# fixtures that look like a real cross-platform divergence and are not — which
+# is exactly what U6 hit on the one observable whose captured bytes happened to
+# end in a newline. The trailing `x` below survives the stripping and is
+# removed afterwards.
 scrub() {
-    local text=$1
+    local text
+    text=$(cat "$1"; printf x)
+    text=${text%x}
     text=${text//"$WORK_DIR"/\{REPO\}}
     text=${text//"$TMP_DIR"/\{TMP\}}
     text=${text//"$HOME_DIR"/\{HOME\}}
@@ -350,7 +362,11 @@ capture_case() {
     local script="$SCRIPTS_ROOT/$PLATFORM"
     local stdout_file="$CASE_ROOT/stdout" stderr_file="$CASE_ROOT/stderr"
     local -a before after
-    local rc=0 body=""
+    local rc=0
+    # The observable is assembled as a file, never as a shell string, so its
+    # exact bytes survive to the fixture. See `scrub`.
+    local observable_file="$CASE_ROOT/observable"
+    : > "$observable_file"
 
     export HOME="$HOME_DIR" TMPDIR="$TMP_DIR" STATUSLINE_CAPTURE_FILE="$capture_file"
     export PATH="$shim_dir:$PATH"
@@ -410,7 +426,7 @@ capture_case() {
                     fail "$component/$case_name: an output cache was written by a case that is supposed to exit before rendering"
                 fi
             fi
-            body=$(cat "$stdout_file")
+            cp "$stdout_file" "$observable_file"
             ;;
         deleted-paths)
             # R31's observable for git-refresh is the exact set of paths that
@@ -420,20 +436,19 @@ capture_case() {
             # a full diff can show that.
             printf '%s\n' "${before[@]+"${before[@]}"}" | LC_ALL=C sort > "$CASE_ROOT/before.txt"
             printf '%s\n' "${after[@]+"${after[@]}"}"   | LC_ALL=C sort > "$CASE_ROOT/after.txt"
-            body=$(comm -23 "$CASE_ROOT/before.txt" "$CASE_ROOT/after.txt" | sed 's|^\./||')
+            comm -23 "$CASE_ROOT/before.txt" "$CASE_ROOT/after.txt" |
+                sed 's|^\./||' > "$observable_file"
             ;;
         feed-bytes)
             if [[ -n $SESSION_ID && -f "$TMP_DIR/statusline-tasks-$SESSION_ID.json" ]]; then
-                body=$(cat "$TMP_DIR/statusline-tasks-$SESSION_ID.json")
-            else
-                body=""
+                cp "$TMP_DIR/statusline-tasks-$SESSION_ID.json" "$observable_file"
             fi
             # The handler must print nothing, or Claude Code's default agent
             # panel is replaced by whatever it emitted.
             [[ -s $stdout_file ]] && fail "$component/$case_name: the subagent handler wrote to stdout"
             ;;
         notify-argv)
-            body=$(cat "$capture_file")
+            cp "$capture_file" "$observable_file"
             ;;
         *)
             fail "unknown observable '$observable'"
@@ -442,7 +457,7 @@ capture_case() {
 
     local dest="$out_root/$component/$case_name"
     mkdir -p "$dest/expected"
-    printf '%s' "$(scrub "$body")" > "$dest/expected/$PLATFORM.txt"
+    scrub "$observable_file" > "$dest/expected/$PLATFORM.txt"
 
     jq -n \
         --arg case "$case_name" \
