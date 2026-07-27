@@ -13,6 +13,8 @@ fixture that everything downstream then treats as truth.
 ```
 capture.sh      macOS and Linux driver (bash 4+, jq, git)
 capture.ps1     Windows driver (PowerShell 5.1+, git) — its functional twin
+measure.sh      macOS and Linux paired measurement (bash 5+, jq, git)
+measure.ps1     Windows paired measurement — its functional twin
 cases.json      the case table: what to capture, with what inputs
 states.json     the docs/performance.md §4 git-state matrix, as data
 payloads/       pinned stdin payloads
@@ -84,6 +86,40 @@ Replaying in Rust pins the clock to `clock` and each state file's mtime to
 `clock + mtime_offset`, which reproduces the same freshness and staleness
 decisions deterministically. This is what KTD6's `Clock` trait — covering
 filesystem mtimes as well as wall-clock reads — exists to make possible.
+
+## Paired measurement (R38)
+
+`measure.sh` and `measure.ps1` produce the end-to-end fresh-process medians R38
+requires before a component's scripts are deleted — one number for the script,
+one for the binary, taken on the same host with the runs interleaved.
+
+```bash
+tests/harness/measure.sh --component subagent --runs 11 --json out.json
+```
+
+```powershell
+.\tests\harness\measure.ps1 -Component subagent -Runs 11 -Json out.json
+```
+
+`docs/performance.md` §3 governs the method and both drivers implement it
+literally: one fresh process per probe, a median of at least seven runs, an
+isolated `HOME`/`USERPROFILE` and `TMPDIR`/`TEMP`, and `STATUSLINE_DEBUG`
+cleared so one variant is not charged for a log append the other skips.
+
+Interleaving is the part that is easy to skip and expensive to get wrong. A
+machine that gets busier halfway through a run would charge the whole drift to
+whichever variant was measured second, and the result would look exactly like a
+finding.
+
+Both drivers **prove each variant does its work before timing anything**. A
+probe that silently no-opped — a missing `jq`, a changed payload contract —
+would otherwise be reported as a spectacular speed-up.
+
+macOS and Linux pairs come from `.github/workflows/measure.yml`, one job per
+platform so both halves of a pair share a runner, with the runner label and
+image version recorded beside the numbers (R38, R41). Windows pairs are measured
+on the maintainer's machine, for the same reason KTD9 keeps Windows capture off
+CI.
 
 ## Observables (R31)
 
