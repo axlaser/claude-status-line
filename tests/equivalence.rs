@@ -37,12 +37,15 @@ fn run_bin(args: &[&str], stdin: &str, env: &[(&str, &str)]) -> Run {
         cmd.env(k, v);
     }
     let mut child = cmd.spawn().expect("failed to spawn the binary under test");
-    child
-        .stdin
-        .as_mut()
-        .expect("stdin was not piped")
-        .write_all(stdin.as_bytes())
-        .expect("failed to write stdin");
+    // A broken pipe here is the child behaving correctly, not a failure: most
+    // subcommands exit without ever draining stdin, and the parent's write
+    // races that exit. Linux and Windows lose the race often enough to fail the
+    // suite; macOS mostly wins it, which is what kept this hidden. Taking the
+    // handle also closes it on drop, so a subcommand that *does* read stdin
+    // still sees EOF.
+    if let Some(mut pipe) = child.stdin.take() {
+        let _ = pipe.write_all(stdin.as_bytes());
+    }
     let out = child.wait_with_output().expect("failed to collect output");
     Run {
         code: out.status.code(),
@@ -448,8 +451,15 @@ fn repo_file(rel: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join(rel)
 }
 
+/// Reads a repository file with line endings normalised to LF.
+///
+/// These cases assert structure, not bytes, and a Windows checkout hands them
+/// CRLF. Without this a multi-line pattern match silently means something
+/// different depending on which platform ran the test.
 fn read_repo_file(rel: &str) -> String {
-    std::fs::read_to_string(repo_file(rel)).unwrap_or_else(|e| panic!("could not read {rel}: {e}"))
+    std::fs::read_to_string(repo_file(rel))
+        .unwrap_or_else(|e| panic!("could not read {rel}: {e}"))
+        .replace("\r\n", "\n")
 }
 
 const RELEASE_WORKFLOW: &str = ".github/workflows/release.yml";
