@@ -255,7 +255,14 @@ build_git_state() {
             write)
                 local rel content
                 rel=$(jq -r --argjson i "$i" '.[$i][1]' <<<"$steps")
-                content=$(jq -r --argjson i "$i" '.[$i][2]' <<<"$steps")
+                # `-j` so jq adds no newline of its own, and the `printf x`
+                # sentinel so command substitution cannot eat the one the data
+                # really has. Plain `$(jq -r ...)` strips it, which wrote a
+                # 12-byte README where the Windows driver wrote 13 -- a
+                # different blob, a different tree, and a different commit hash
+                # in the one state that renders one.
+                content=$(jq -j --argjson i "$i" '.[$i][2]' <<<"$steps"; printf x)
+                content=${content%x}
                 mkdir -p "$(dirname -- "$WORK_DIR/$rel")"
                 printf '%s' "$content" > "$WORK_DIR/$rel"
                 ;;

@@ -204,12 +204,15 @@ pub fn resolve_branch(p: &Porcelain, detached_hash: impl FnOnce() -> Option<Stri
 /// already ports the deletion of exactly `statusline-git-<id>.txt`, so a binary
 /// that cached anywhere else would keep a stale git row alive through every
 /// file-modifying tool call.
-pub fn cache_path(session_id: &str) -> Option<PathBuf> {
+/// `temp` is passed rather than read from the environment so a fixture replay
+/// can stage a clean root per case. Ambient reads would make the whole render
+/// path untestable in-process, which is what R30 asks for.
+pub fn cache_path(temp: &Path, session_id: &str) -> Option<PathBuf> {
     let safe = session::sanitize_session_id(session_id);
     if safe.is_empty() {
         return None;
     }
-    Some(session::temp_dir().join(format!("statusline-git-{safe}.txt")))
+    Some(temp.join(format!("statusline-git-{safe}.txt")))
 }
 
 /// Parses a cache record into the index mtime it was taken at and its reading.
@@ -259,13 +262,13 @@ pub fn resolve_cwd(payload_git_cwd: &str) -> PathBuf {
 /// that, and it is the scripts' test verbatim — which also means a linked
 /// worktree or a submodule, where `.git` is a file rather than a directory,
 /// renders no git row today. Ported as-is; changing it would be a feature.
-pub fn status(clock: &dyn Clock, cwd: &Path, session_id: &str) -> Option<GitStatus> {
+pub fn status(clock: &dyn Clock, temp: &Path, cwd: &Path, session_id: &str) -> Option<GitStatus> {
     let index = cwd.join(".git").join("index");
     if !index.is_file() {
         return None;
     }
     let index_mtime = clock.mtime_unix(&index).unwrap_or(0);
-    let cache = cache_path(session_id);
+    let cache = cache_path(temp, session_id);
 
     if let Some(path) = cache.as_deref() {
         if let Some(hit) = read_fresh_cache(clock, path, index_mtime) {

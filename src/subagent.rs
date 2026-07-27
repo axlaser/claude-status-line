@@ -296,13 +296,13 @@ pub fn parse_feed(raw: &str) -> Option<Vec<FeedTask>> {
 }
 
 /// The per-task state file that carries the done stamp across refreshes.
-fn task_state_path(session_id: &str, task_id: &str) -> Option<PathBuf> {
+fn task_state_path(temp: &Path, session_id: &str, task_id: &str) -> Option<PathBuf> {
     let session = session::sanitize_session_id(session_id);
     let task = session::sanitize_session_id(task_id);
     if session.is_empty() || task.is_empty() {
         return None;
     }
-    Some(session::temp_dir().join(format!("statusline-sa-{session}-task-{task}.txt")))
+    Some(temp.join(format!("statusline-sa-{session}-task-{task}.txt")))
 }
 
 /// The per-task record: `tokens|window|model|display|done|start|effort`.
@@ -352,6 +352,7 @@ impl TaskState {
 /// the caller to the fallback tier.
 pub fn rows_from_feed(
     clock: &dyn Clock,
+    temp: &Path,
     session_id: &str,
     feed_json: &str,
     windows: &Windows,
@@ -369,7 +370,7 @@ pub fn rows_from_feed(
             seen.push(safe_id);
         }
         let window = task.window.unwrap_or_else(|| windows.resolve(&task.model));
-        let path = task_state_path(session_id, &task.id);
+        let path = task_state_path(temp, session_id, &task.id);
         let previous = path
             .as_deref()
             .and_then(state::read_trusted)
@@ -415,7 +416,7 @@ pub fn rows_from_feed(
         ));
     }
 
-    candidates.extend(disappeared_rows(clock, session_id, &seen));
+    candidates.extend(disappeared_rows(clock, temp, session_id, &seen));
     candidates.sort_by(|a, b| a.0.cmp(&b.0));
     let count = candidates.len();
     debug::log(move || format!("subagents: feed tier, {count} row(s)"));
@@ -427,14 +428,23 @@ pub fn rows_from_feed(
 /// This is the second done signal, and it is the one that catches a task which
 /// completes and leaves the feed in the same tick — the status-based signal
 /// never sees those.
-fn disappeared_rows(clock: &dyn Clock, session_id: &str, seen: &[String]) -> Vec<(String, Row)> {
+fn disappeared_rows(
+    clock: &dyn Clock,
+    temp: &Path,
+    session_id: &str,
+    seen: &[String],
+) -> Vec<(String, Row)> {
     let session = session::sanitize_session_id(session_id);
     if session.is_empty() {
         return Vec::new();
     }
+    // `strip_prefix`, never a greedy scan for the last `-task-`: bash uses
+    // `${file##*-task-}`, so an id that itself contains `-task-` — including
+    // the ordinary `task-0001` — resolves to a suffix that never matches the
+    // seen list, and a running task is rendered a second time as `done`.
     let prefix = format!("statusline-sa-{session}-task-");
     let now = clock.now_unix();
-    let Ok(entries) = std::fs::read_dir(session::temp_dir()) else {
+    let Ok(entries) = std::fs::read_dir(temp) else {
         return Vec::new();
     };
 

@@ -3413,17 +3413,17 @@ fn deltas_follow_the_scripts_rules() {
 /// path-traversal sink like every other per-session file.
 #[test]
 fn the_record_path_cannot_escape_the_temp_root() {
-    let temp = claude_statusline::session::temp_dir();
+    let temp = scratch_dir("record-path-traversal");
 
-    let ordinary = transcript::record_path("abc-123").expect("an ordinary id yields a path");
+    let ordinary = transcript::record_path(&temp, "abc-123").expect("an ordinary id yields a path");
     assert_eq!(ordinary.parent(), Some(temp.as_path()));
     assert_eq!(
         ordinary.file_name().and_then(|n| n.to_str()),
         Some("statusline-tokens-abc-123.txt")
     );
 
-    let traversal =
-        transcript::record_path("../../etc/passwd").expect("a traversal id still yields a path");
+    let traversal = transcript::record_path(&temp, "../../etc/passwd")
+        .expect("a traversal id still yields a path");
     assert_eq!(
         traversal.parent(),
         Some(temp.as_path()),
@@ -3435,7 +3435,7 @@ fn the_record_path_cannot_escape_the_temp_root() {
     );
 
     assert_eq!(
-        transcript::record_path("///"),
+        transcript::record_path(&temp, "///"),
         None,
         "an id that sanitizes to nothing must not share one record with every other such session"
     );
@@ -3803,7 +3803,7 @@ fn the_git_ttl_expires_through_the_injected_clock() {
     std::fs::write(&index, b"not a real index").expect("failed to write the fake index");
 
     let session = "git-ttl-session";
-    let cache = git::cache_path(session).expect("an ordinary session id yields a cache path");
+    let cache = git::cache_path(&dir, session).expect("an ordinary session id yields a cache path");
     let cached = GitStatus {
         branch: "cached-branch".into(),
         insertions: 1,
@@ -3815,7 +3815,7 @@ fn the_git_ttl_expires_through_the_injected_clock() {
         .with_mtime(&index, 1000)
         .with_mtime(&cache, 1996);
     assert_eq!(
-        git::status(&fresh, &dir, session).as_ref(),
+        git::status(&fresh, &dir, &dir, session).as_ref(),
         Some(&cached),
         "a record 4s old, taken at the current index mtime, is a hit"
     );
@@ -3824,7 +3824,7 @@ fn the_git_ttl_expires_through_the_injected_clock() {
         .with_mtime(&index, 1000)
         .with_mtime(&cache, 1995);
     assert_ne!(
-        git::status(&expired, &dir, session).as_ref(),
+        git::status(&expired, &dir, &dir, session).as_ref(),
         Some(&cached),
         "at exactly the TTL the record is stale, so git is consulted"
     );
@@ -3833,7 +3833,7 @@ fn the_git_ttl_expires_through_the_injected_clock() {
         .with_mtime(&index, 1001)
         .with_mtime(&cache, 1999);
     assert_ne!(
-        git::status(&moved, &dir, session).as_ref(),
+        git::status(&moved, &dir, &dir, session).as_ref(),
         Some(&cached),
         "an index that moved invalidates the record however fresh it is"
     );
@@ -3847,20 +3847,20 @@ fn the_git_ttl_expires_through_the_injected_clock() {
 fn a_directory_without_a_repository_renders_no_git_row() {
     let dir = scratch_dir("git-no-repo");
     let clock = TestClock::at(2000);
-    assert_eq!(git::status(&clock, &dir, "no-repo-session"), None);
+    assert_eq!(git::status(&clock, &dir, &dir, "no-repo-session"), None);
 }
 
 #[test]
 fn the_git_cache_path_cannot_escape_the_temp_root() {
-    let temp = claude_statusline::session::temp_dir();
+    let temp = scratch_dir("git-cache-traversal");
     let traversal =
-        git::cache_path("../../etc/passwd").expect("a traversal id still yields a path");
+        git::cache_path(&temp, "../../etc/passwd").expect("a traversal id still yields a path");
     assert_eq!(traversal.parent(), Some(temp.as_path()));
     assert_eq!(
         traversal.file_name().and_then(|n| n.to_str()),
         Some("statusline-git-etcpasswd.txt")
     );
-    assert_eq!(git::cache_path("///"), None);
+    assert_eq!(git::cache_path(&temp, "///"), None);
 }
 
 #[test]
@@ -4100,7 +4100,7 @@ fn a_payload_that_is_not_a_feed_drops_the_tier() {
 #[test]
 fn a_fresh_feed_renders_its_own_models_and_windows() {
     let session = "feedsession1";
-    clear_task_state(session);
+    let temp = scratch_dir("feed-models");
     let clock = TestClock::at(1_000);
     let windows = Windows::new("", None, learned(&[]));
 
@@ -4113,7 +4113,7 @@ fn a_fresh_feed_renders_its_own_models_and_windows() {
          "tokenCount": 1234}
     ]}"#;
 
-    let rows = subagent::rows_from_feed(&clock, session, feed, &windows)
+    let rows = subagent::rows_from_feed(&clock, &temp, session, feed, &windows)
         .expect("a well-formed feed yields rows");
 
     assert_eq!(
@@ -4148,7 +4148,7 @@ fn a_fresh_feed_renders_its_own_models_and_windows() {
 #[test]
 fn a_feed_without_windows_falls_back_to_the_resolver() {
     let session = "feedsession2";
-    clear_task_state(session);
+    let temp = scratch_dir("feed-windows");
     let clock = TestClock::at(1_000);
     let windows = Windows::new("", None, learned(&[("claude-sonnet-5", 424_242)]));
 
@@ -4156,10 +4156,10 @@ fn a_feed_without_windows_falls_back_to_the_resolver() {
         {"id": "a", "status": "running", "model": "claude-sonnet-5", "tokenCount": 10},
         {"id": "b", "status": "running", "model": "claude-mystery-1", "tokenCount": 20}
     ]}"#;
-    let rows = subagent::rows_from_feed(&clock, session, feed, &windows).expect("feed parses");
+    let rows =
+        subagent::rows_from_feed(&clock, &temp, session, feed, &windows).expect("feed parses");
     let sizes: Vec<u64> = rows.iter().map(|r| r.window).collect();
     assert_eq!(sizes, vec![424_242, 200_000]);
-    clear_task_state(session);
 }
 
 /// The done linger, both signals: a task reporting a terminal status, and a
@@ -4168,7 +4168,7 @@ fn a_feed_without_windows_falls_back_to_the_resolver() {
 #[test]
 fn finished_tasks_linger_then_disappear() {
     let session = "feedsession3";
-    clear_task_state(session);
+    let temp = scratch_dir("feed-linger");
     let windows = Windows::new("", None, learned(&[]));
     let running = r#"{"tasks": [{"id": "t1", "status": "running", "model": "claude-haiku-4-5",
                                  "tokenCount": 5, "description": "the task"}]}"#;
@@ -4177,43 +4177,43 @@ fn finished_tasks_linger_then_disappear() {
     let empty = r#"{"tasks": []}"#;
 
     // Running.
-    let rows = subagent::rows_from_feed(&TestClock::at(1_000), session, running, &windows)
+    let rows = subagent::rows_from_feed(&TestClock::at(1_000), &temp, session, running, &windows)
         .expect("feed parses");
     assert_eq!(rows.len(), 1);
     assert!(!rows[0].done);
 
     // Completed at t=1000: still visible, now marked done.
-    let rows = subagent::rows_from_feed(&TestClock::at(1_000), session, finished, &windows)
+    let rows = subagent::rows_from_feed(&TestClock::at(1_000), &temp, session, finished, &windows)
         .expect("feed parses");
     assert_eq!(rows.len(), 1);
     assert!(rows[0].done, "a terminal status marks the row done");
 
     // Still inside the linger at t=1030, measured from completion rather than
     // from this observation.
-    let rows = subagent::rows_from_feed(&TestClock::at(1_030), session, finished, &windows)
+    let rows = subagent::rows_from_feed(&TestClock::at(1_030), &temp, session, finished, &windows)
         .expect("feed parses");
     assert_eq!(rows.len(), 1, "30s is still within the linger");
 
     // Past it at t=1031.
-    let rows = subagent::rows_from_feed(&TestClock::at(1_031), session, finished, &windows)
+    let rows = subagent::rows_from_feed(&TestClock::at(1_031), &temp, session, finished, &windows)
         .expect("feed parses");
     assert!(rows.is_empty(), "past the linger the row is gone");
 
     // The other done signal: a task that vanishes from a fresh feed. Its state
     // file is still there, so it renders as done and then expires.
-    clear_task_state(session);
-    let _ = subagent::rows_from_feed(&TestClock::at(2_000), session, running, &windows);
-    let rows = subagent::rows_from_feed(&TestClock::at(2_001), session, empty, &windows)
+    let temp = scratch_dir("feed-linger-vanish");
+    let _ = subagent::rows_from_feed(&TestClock::at(2_000), &temp, session, running, &windows);
+    let rows = subagent::rows_from_feed(&TestClock::at(2_001), &temp, session, empty, &windows)
         .expect("feed parses");
     assert_eq!(rows.len(), 1, "a task that left the feed has finished");
     assert!(rows[0].done);
     assert_eq!(rows[0].display, "the task", "its last known title survives");
 
-    let rows = subagent::rows_from_feed(&TestClock::at(2_040), session, empty, &windows)
+    let rows = subagent::rows_from_feed(&TestClock::at(2_040), &temp, session, empty, &windows)
         .expect("feed parses");
     assert!(rows.is_empty(), "and then it expires");
 
-    let leftover = std::fs::read_dir(claude_statusline::session::temp_dir())
+    let leftover = std::fs::read_dir(&temp)
         .expect("the temp directory is readable")
         .flatten()
         .filter(|e| {

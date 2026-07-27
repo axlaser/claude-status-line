@@ -169,7 +169,8 @@ fn dispatch(sub: &str, rest: &[&str]) {
     match sub {
         "statusline" => {
             let payload = read_stdin();
-            emit(&cmd::statusline::run(&clock::SystemClock, &payload));
+            let roots = cmd::statusline::Roots::from_env();
+            emit(&cmd::statusline::run(&clock::SystemClock, &roots, &payload));
         }
         "notify" => {
             let event = rest.first().copied().unwrap_or("");

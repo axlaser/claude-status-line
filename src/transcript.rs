@@ -188,12 +188,12 @@ impl TokenRecord {
 /// `None` for a session id that sanitizes to nothing, which would otherwise
 /// produce one shared `statusline-tokens-.txt` that every such session would
 /// read each other's deltas from.
-pub fn record_path(session_id: &str) -> Option<std::path::PathBuf> {
+pub fn record_path(temp: &std::path::Path, session_id: &str) -> Option<std::path::PathBuf> {
     let safe = crate::session::sanitize_session_id(session_id);
     if safe.is_empty() {
         return None;
     }
-    Some(crate::session::temp_dir().join(format!("statusline-tokens-{safe}.txt")))
+    Some(temp.join(format!("statusline-tokens-{safe}.txt")))
 }
 
 /// Scans `bytes`, counting only records that fit within `sampled_size`.

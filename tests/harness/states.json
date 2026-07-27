@@ -16,15 +16,24 @@
     "Commit hashes are rendered output: the detached-HEAD state shows a short",
     "hash, so a fixture is only reproducible if the hash is. Identity, both",
     "dates, the branch name, and the line-ending config are all pinned below,",
-    "and every git invocation must carry them or a second run drifts."
+    "and every git invocation must carry them or a second run drifts.",
+    "",
+    "The dates are in git's RAW format -- `<unix seconds> <offset>` -- and must",
+    "stay that way. An ISO-8601 string here is silently coerced to a [DateTime]",
+    "by PowerShell's ConvertFrom-Json and then stringified in the *local*",
+    "timezone, so git records the capturing machine's offset in the commit",
+    "object. The recorded instant stays right and the hash still changes, which",
+    "made the Windows detached-HEAD fixture reproducible only on a machine in",
+    "the same timezone as the one that captured it. The raw format is never",
+    "mistaken for a date by either driver."
   ],
   "git_env": {
     "GIT_AUTHOR_NAME": "statusline fixtures",
     "GIT_AUTHOR_EMAIL": "fixtures@localhost",
     "GIT_COMMITTER_NAME": "statusline fixtures",
     "GIT_COMMITTER_EMAIL": "fixtures@localhost",
-    "GIT_AUTHOR_DATE": "2026-01-01T00:00:00+0000",
-    "GIT_COMMITTER_DATE": "2026-01-01T00:00:00+0000"
+    "GIT_AUTHOR_DATE": "1767225600 +0000",
+    "GIT_COMMITTER_DATE": "1767225600 +0000"
   },
   "git_config": [
     "core.autocrlf=false",

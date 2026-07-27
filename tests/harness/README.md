@@ -91,6 +91,27 @@ Replaying in Rust pins the clock to `clock` and each state file's mtime to
 decisions deterministically. This is what KTD6's `Clock` trait — covering
 filesystem mtimes as well as wall-clock reads — exists to make possible.
 
+## Two drivers, one repository
+
+`states.json` exists so a git state is described once and built identically by
+both drivers. Twice that has failed silently, and in both cases the symptom was
+the same: the detached-HEAD fixture — the only state that renders a commit hash
+— disagreed across platforms while every other state matched.
+
+- **bash ate the trailing newline.** `content=$(jq -r ...)` strips it, so the
+  driver wrote a 12-byte `README.md` where the Windows driver wrote 13. Fixed
+  with `jq -j` plus a `printf x` sentinel.
+- **PowerShell turned the pinned dates into local time.** `ConvertFrom-Json`
+  coerces an ISO-8601 string to `[DateTime]`, which stringifies in the local
+  timezone, so git recorded the *capturing machine's* offset. The instant was
+  still right and the hash still changed — the fixture was reproducible only in
+  the timezone it was captured in. The dates are now in git's raw
+  `<seconds> <offset>` format, which neither driver mistakes for a date.
+
+The lesson both share: a value that reaches a commit object is rendered output.
+When adding a state, check the detached-HEAD hash across platforms — it is the
+canary, because it is the only place a build difference becomes visible bytes.
+
 ## The locale is a render input
 
 R30 requires every render input to be pinned. The locale is one, and pinning it

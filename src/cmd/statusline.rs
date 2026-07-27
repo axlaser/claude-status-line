@@ -21,9 +21,39 @@ use crate::session::{sanitize_session_id, temp_dir};
 use crate::subagent::{self, Row, Windows};
 use crate::transcript::{self, Scan, TokenRecord};
 
-/// Where the learned model→window map lives.
-pub fn model_windows_path() -> Option<PathBuf> {
-    crate::claude_dir().map(|d| d.join("statusline-model-windows.json"))
+/// The two filesystem roots every state path hangs off.
+///
+/// Passed rather than read from the environment at each use site. The scripts
+/// had no choice — a shell reads `$HOME` wherever it stands — but ambient reads
+/// make the render path untestable in-process, and R30 requires a case to pin
+/// every render input, which these are. `from_env` is the production
+/// construction and the only place the variables are consulted.
+pub struct Roots {
+    pub home: Option<PathBuf>,
+    pub temp: PathBuf,
+}
+
+impl Roots {
+    pub fn from_env() -> Self {
+        Self {
+            home: crate::home_dir(),
+            temp: temp_dir(),
+        }
+    }
+
+    fn claude_dir(&self) -> Option<PathBuf> {
+        self.home.as_ref().map(|h| h.join(".claude"))
+    }
+
+    /// Where the learned model→window map lives.
+    pub fn model_windows_path(&self) -> Option<PathBuf> {
+        self.claude_dir()
+            .map(|d| d.join("statusline-model-windows.json"))
+    }
+
+    fn notify_config_path(&self) -> Option<PathBuf> {
+        self.claude_dir().map(|d| d.join("notify-config.json"))
+    }
 }
 
 /// Renders one refresh and fires whatever alerts it crossed.
@@ -32,25 +62,27 @@ pub fn model_windows_path() -> Option<PathBuf> {
 /// notice and does nothing else — no state is read, written, or invalidated,
 /// because a tick that could not be understood must not overwrite what the
 /// last good tick recorded.
-pub fn run(clock: &dyn Clock, raw: &str) -> String {
+pub fn run(clock: &dyn Clock, roots: &Roots, raw: &str) -> String {
     let Some(payload) = Payload::parse(raw) else {
         return render::BAD_JSON.to_string();
     };
 
-    let temp = temp_dir();
-    let home = crate::home_dir();
-    let home_str = home.as_deref().and_then(Path::to_str).map(str::to_owned);
+    let home_str = roots
+        .home
+        .as_deref()
+        .and_then(Path::to_str)
+        .map(str::to_owned);
     let session_id = payload.session_id().to_string();
 
-    let git = git_status(clock, &payload, &session_id);
-    let (scan, record) = transcript_state(clock, &payload, &session_id);
+    let git = git_status(clock, roots, &payload, &session_id);
+    let (scan, record) = transcript_state(clock, roots, &payload, &session_id);
 
     // Refreshed before the rows resolve, so a session on a newly seen model
     // gives its own subagents a real denominator on the very first refresh
     // rather than one tick later.
-    let learned = learn_and_load(&payload);
+    let learned = learn_and_load(roots, &payload);
     let windows = Windows::new(payload.model_id(), payload.context_window_size(), learned);
-    let subagents = subagent_rows(clock, &payload, &session_id, &temp, &windows);
+    let subagents = subagent_rows(clock, roots, &payload, &session_id, &windows);
 
     let output = render::render(&Inputs {
         payload: &payload,
@@ -62,13 +94,18 @@ pub fn run(clock: &dyn Clock, raw: &str) -> String {
         now: clock.now_unix(),
     });
 
-    fire_alerts(&payload, &temp, &session_id, &output);
+    fire_alerts(roots, &payload, &session_id, &output);
     output
 }
 
-fn git_status(clock: &dyn Clock, payload: &Payload, session_id: &str) -> Option<GitStatus> {
+fn git_status(
+    clock: &dyn Clock,
+    roots: &Roots,
+    payload: &Payload,
+    session_id: &str,
+) -> Option<GitStatus> {
     let cwd = crate::git::resolve_cwd(payload.git_cwd());
-    crate::git::status(clock, &cwd, session_id)
+    crate::git::status(clock, &roots.temp, &cwd, session_id)
 }
 
 /// This tick's totals, and the record that carries the per-bucket deltas.
@@ -78,6 +115,7 @@ fn git_status(clock: &dyn Clock, payload: &Payload, session_id: &str) -> Option<
 /// go away: they cached the totals, so a same-size rewrite was invisible.
 fn transcript_state(
     clock: &dyn Clock,
+    roots: &Roots,
     payload: &Payload,
     session_id: &str,
 ) -> (Option<Scan>, Option<TokenRecord>) {
@@ -92,7 +130,7 @@ fn transcript_state(
     let size = meta.len();
     let mtime = clock.mtime_unix(path).unwrap_or(0);
 
-    let record_path = transcript::record_path(session_id);
+    let record_path = transcript::record_path(&roots.temp, session_id);
     let previous = record_path
         .as_deref()
         .and_then(crate::state::read_trusted)
@@ -117,8 +155,8 @@ fn transcript_state(
 /// The write is skipped when the entry already matches, so an unchanged pair
 /// leaves the file's mtime alone — the scripts key their output cache on that
 /// mtime, and churning it every tick would have defeated it.
-fn learn_and_load(payload: &Payload) -> std::collections::BTreeMap<String, u64> {
-    let Some(path) = model_windows_path() else {
+fn learn_and_load(roots: &Roots, payload: &Payload) -> std::collections::BTreeMap<String, u64> {
+    let Some(path) = roots.model_windows_path() else {
         return Default::default();
     };
     let mut map = Windows::load_learned(&path);
@@ -149,19 +187,21 @@ fn learn_and_load(payload: &Payload) -> std::collections::BTreeMap<String, u64> 
 /// per-agent transcripts.
 fn subagent_rows(
     clock: &dyn Clock,
+    roots: &Roots,
     payload: &Payload,
     session_id: &str,
-    temp: &Path,
     windows: &Windows,
 ) -> Vec<Row> {
     let safe = sanitize_session_id(session_id);
     if !safe.is_empty() {
-        let feed = crate::cmd::subagent::feed_path(temp, &safe);
+        let feed = crate::cmd::subagent::feed_path(&roots.temp, &safe);
         if subagent::feed_is_fresh(clock, &feed) {
             let json = crate::state::read_trusted(&feed)
                 .and_then(|b| String::from_utf8(b).ok())
                 .unwrap_or_default();
-            if let Some(rows) = subagent::rows_from_feed(clock, session_id, &json, windows) {
+            if let Some(rows) =
+                subagent::rows_from_feed(clock, &roots.temp, session_id, &json, windows)
+            {
                 return rows;
             }
         }
@@ -173,12 +213,13 @@ fn subagent_rows(
 ///
 /// `rendered` is taken only so this cannot be called before the render exists —
 /// the alert must never sit between the work and the output.
-fn fire_alerts(payload: &Payload, temp: &Path, session_id: &str, rendered: &str) {
+fn fire_alerts(roots: &Roots, payload: &Payload, session_id: &str, rendered: &str) {
     let _ = rendered;
-    let Some(path) = notify_state::latch_path(temp, session_id) else {
+    let Some(path) = notify_state::latch_path(&roots.temp, session_id) else {
         return;
     };
-    let config = NotifyConfig::default_path()
+    let config = roots
+        .notify_config_path()
         .map(|p| NotifyConfig::load(&p))
         .unwrap_or_default();
 
