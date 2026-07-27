@@ -1,0 +1,37 @@
+[package]
+name = "claude-statusline"
+version = "0.1.0"
+edition = "2021"
+description = "Cross-platform custom status line for Claude Code"
+license = "MIT"
+repository = "https://github.com/axlaser/claude-statusline"
+
+[lib]
+name = "claude_statusline"
+path = "src/lib.rs"
+
+[[bin]]
+name = "claude-statusline"
+path = "src/main.rs"
+
+[dependencies]
+serde_json = "1"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_System_Threading",
+    "Win32_System_Console",
+] }
+
+# KTD7: the top-level catch_unwind is a no-op under `panic = "abort"`, so the
+# release profile must keep unwinding panics. Do not "optimize" this away.
+[profile.release]
+panic = "unwind"
+opt-level = 3

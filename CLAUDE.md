@@ -50,7 +50,7 @@ Two-tier flow: create feature branches as `dev-<feature>` (e.g. `dev-notificatio
 
 ### Testing
 
-No test framework. Manual testing required:
+Manual testing required:
 
 - Set `STATUSLINE_DEBUG=1` to enable debug logging to `~/.claude/statusline-debug.log`
 - Test on all three platforms when possible; at minimum test macOS/Linux changes on one and verify the other by inspection
