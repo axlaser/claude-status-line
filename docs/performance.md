@@ -91,6 +91,10 @@ process per tick, so measurements must too.
   HIT line); see `docs/solutions/workflow-issues/` and `docs/solutions/best-practices/`.
 - **Bash on Git Bash: process counts are portable, milliseconds are not** (emulated fork is
   ~20–50× a real one). Report counts, not Git Bash ms, for macOS/Linux claims.
+- **Script-vs-binary pairs go through `tests/harness/measure.sh` / `measure.ps1`**, which
+  implement every rule above and refuse to report a number until each variant has been
+  proven to do its work. A probe that silently no-opped reads as a spectacular speed-up:
+  that guard is what caught a measurement of an unimplemented subcommand at U6.
 - Do not re-test the ruled-out hypotheses without new evidence: temp-glob scaling with
   file count (false — flat; the cost is one-time provider load), pre-compiled `[regex]`
   (slower), ACL-check removal (load-bearing), `pwsh` 7 (slower start), script-size/parse
@@ -166,6 +170,47 @@ baselines the §2 rules hold changes against.
 | bash external processes, hit / miss | 5 / 14 |
 | bash forks, six-row subagent render | 39 |
 | Interpreter floor (`powershell.exe -NoProfile`, empty script) | ~124 ms |
+
+### R38 paired medians — script vs. binary (2026-07-27)
+
+The Rust migration replaces each runtime script with a subcommand of one binary.
+R38 requires both halves of the pair to be measured end to end, one fresh
+process per probe, on a single host with the runs interleaved, and recorded
+before that component's scripts are deleted — after deletion the script half can
+never be measured again.
+
+Produced by `tests/harness/measure.sh` and `measure.ps1`: 11 interleaved pairs
+per host, payload `tests/harness/payloads/tasks-feed.json`, isolated
+`HOME`/`TEMP`, `STATUSLINE_DEBUG` cleared so neither variant is charged for a log
+append the other skips.
+
+**Host class is part of the number.** A hosted-runner figure must never later be
+held against a bare-metal baseline (R41), so every row carries the runner label
+and image version it came from.
+
+| Component | Host | Host class | Script | Binary | Delta |
+|---|---|---|---|---|---|
+| `subagent` | Windows 11 26200, Windows PowerShell 5.1.26100 | maintainer machine | 264.0 ms | 21.6 ms | −91.8% |
+| `subagent` | `macos-15`, image `macos15 20260715.0234.1`, bash 5.3, jq 1.8.2 | hosted runner | 25.1 ms | 3.0 ms | −88.2% |
+| `subagent` | `ubuntu-24.04`, image `ubuntu24 20260720.247.2`, bash 5.2, jq 1.7 | hosted runner | 10.4 ms | 1.1 ms | −89.1% |
+
+Reading them:
+
+- The Windows script figure independently corroborates §7's 2026-07-26
+  measurement of the same handler (~266 ms), taken by a different harness.
+- The Windows binary sits **below the ~124 ms interpreter floor**, which is the
+  whole point of the migration's cost model: that floor was never the script's
+  cost to avoid, it was the interpreter's cost to exist. There is no interpreter.
+- Bash's own floor is ~10 ms, not ~124 ms, so the Unix saving is an order of
+  magnitude smaller in absolute terms while being the same proportion. The three
+  platforms were never paying the same price for the same handler.
+
+Provenance: the binary half was built from a throwaway commit
+(`d7a963ccbc975fd36b11091afc197de3173bd3d3`) that is deliberately not on the
+branch. R37 keeps a component's port, its fixtures and its script deletion in
+one commit, and R38 requires these medians to be recorded *before* that commit —
+so the tree that was measured could not itself be a branch commit. The measured
+content is what the U6 port commit lands.
 
 ## 7. Decision record (settled design questions — do not re-litigate without new evidence)
 
