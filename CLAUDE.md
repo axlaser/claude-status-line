@@ -30,7 +30,7 @@ Claude Code pipes a JSON object to stdin on each refresh. Key top-level fields:
 
 `session_id`, `workspace.current_dir`, `cwd`, `model.display_name`, `context_window.context_window_size`, `context_window.used_percentage`, `context_window.total_input_tokens`, `effort.level`, `cost.total_cost_usd`, `transcript_path`, `rate_limits.five_hour.*`, `rate_limits.seven_day.*`, `agent.name`, `context_window.current_usage.*`
 
-See the `# @parity:json-extract-begin` / `# @parity:json-extract-end` block in `macos/statusline.sh` for the full field list.
+See the accessors on `Payload` in `src/payload.rs` for the full field list. (The `# @parity:json-extract` block in `macos/statusline.sh` was the source of truth until U13 deleted the runtime scripts; it is still readable at `9cf8729` if a capture needs regenerating.)
 
 ### Subagent Tasks Feed
 
