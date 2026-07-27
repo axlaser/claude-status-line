@@ -3,7 +3,7 @@
   "case": "git-no-upstream",
   "component": "statusline",
   "observable": "stdout",
-  "source_commit": "9cf8729358cde98cb7a796c52cb5008a6d9d07cd",
+  "source_commit": "24bfc81223c6b909e3e3ebcbbc8992569e41f9c6",
   "clock": 1767225600,
   "git_state": "no-upstream",
   "payload": "payloads/full.json",
