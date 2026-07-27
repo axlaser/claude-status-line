@@ -160,13 +160,31 @@ through `PATH`) and `record.ps1` installed at the isolated `HOME`'s
 
 ## Known gaps
 
-**Windows `notify` delivery has no external observable.** It is entirely
-in-process — `System.Media.SoundPlayer`, `SystemSounds`, and the BurntToast
-module — so it spawns nothing a `PATH` shim can see. Both `notify` cases carry
-`platforms: ["macos", "linux"]` and are skipped with a printed reason on
-Windows rather than stored as empty fixtures, because an empty golden file is
-worse than a missing one: everything downstream then asserts against nothing.
-**U7 owns choosing the Windows observable.**
+**Windows `notify` delivery has no external observable — resolved at U7.** The
+Windows *script* delivers entirely in-process (`System.Media.SoundPlayer`,
+`SystemSounds`, the BurntToast module), so it spawns nothing a `PATH` shim can
+see. Both `notify` cases keep `platforms: ["macos", "linux"]` and are skipped
+with a printed reason on Windows rather than stored as empty fixtures, because
+an empty golden file is worse than a missing one: everything downstream then
+asserts against nothing.
+
+U7 resolved the question rather than closing the gap. The port cannot call
+BurntToast in-process, so it raises the toast by invoking `powershell.exe` at
+its absolute path under `%SystemRoot%` — which gives Windows an external
+observable for the first time, but one with no script counterpart to be
+captured from. It is asserted against a literal in `tests/equivalence.rs`
+instead, which is R20's mechanism. Windows sound stays in-process, through
+`winmm`, and remains unobservable by design: spawning a player to make it
+visible to the harness would be a real behaviour change made for the test's
+convenience.
+
+**One notify fixture records a bug rather than a target.**
+`muted-sound-for-event` captures a sound helper being invoked with
+`"sound": false` set, because both bash scripts read the flag as
+`jq -r '.[$e].sound // true'` and jq's `//` yields its right-hand side when the
+left is `false` as well as when it is null. R44 makes the flags gate delivery,
+so the port mutes correctly and the fixture is kept as the record of what that
+deliberately breaks. `tests/equivalence.rs` names it in `DIVERGENT_FIXTURES`.
 
 **Reproducibility is per environment, not across machines.** The status line
 renders a truncated working directory, so the length of the temp root reaches

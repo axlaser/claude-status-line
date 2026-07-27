@@ -5,4 +5,5 @@
 //! process, and exposes one thin entry point that the dispatcher calls.
 
 pub mod git_refresh;
+pub mod notify;
 pub mod subagent;

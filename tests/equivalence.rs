@@ -1244,6 +1244,662 @@ fn feed_bytes_match_the_captured_fixtures() {
 }
 
 // ---------------------------------------------------------------------------
+// notify (R1, R15, R23, R25, R31, R44 / U7)
+// ---------------------------------------------------------------------------
+//
+// R31's observable here is the command and arguments notify invokes, so every
+// case asserts the plan rather than the effect: nothing is spawned, no toast
+// appears on the developer's desktop, and the assertions are the same on every
+// host because `plan` takes the platform as a parameter.
+
+use claude_statusline::cmd::notify::{self, Action, Env, Platform};
+use claude_statusline::config::NotifyConfig;
+
+/// Fixtures whose captured bytes are a record of what the scripts do, not a
+/// target for the port (R20).
+///
+/// `muted-sound-for-event` is the only one. Both bash scripts read the config
+/// flag as `jq -r '.[$e].sound // true'`, and jq's `//` yields its right-hand
+/// side when the left is `false` as well as when it is null — so `false // true`
+/// is `true`, and `"sound": false` has never muted anything on macOS or Linux.
+/// R44 makes the flags gate delivery, so the port mutes correctly and
+/// deliberately breaks the current behaviour of both bash platforms. Windows
+/// already behaved correctly. `muting_is_honoured_on_every_platform` is the
+/// literal that replaces the capture.
+const DIVERGENT_FIXTURES: [&str; 1] = ["muted-sound-for-event"];
+
+/// An environment with every helper and asset present, so a case that wants to
+/// exercise the absent ones removes them explicitly rather than depending on
+/// what the test machine happens to have installed.
+fn full_env() -> Env {
+    let home = PathBuf::from("/home/fixture");
+    let mut files: std::collections::BTreeSet<PathBuf> =
+        ["bell.oga", "complete.oga", "dialog-warning.oga"]
+            .iter()
+            .map(|f| PathBuf::from(format!("/usr/share/sounds/freedesktop/stereo/{f}")))
+            .collect();
+    // Spelled with literal backslashes rather than `PathBuf::join`, which would
+    // use the host's separator and stop matching what the planner emits when
+    // these tests run on Unix.
+    for f in [
+        "Windows Exclamation.wav",
+        "chimes.wav",
+        "Windows Battery Low.wav",
+        "Windows Battery Critical.wav",
+    ] {
+        files.insert(PathBuf::from(format!("C:\\Windows\\Media\\{f}")));
+    }
+    Env {
+        home: home.clone(),
+        cwd: PathBuf::from("/repo/work"),
+        system_root: PathBuf::from("C:\\Windows"),
+        programs: [
+            "terminal-notifier",
+            "notify-send",
+            "paplay",
+            "ffplay",
+            "ogg123",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect(),
+        files,
+    }
+}
+
+/// Collapses a plan into the shim's record format, so a planned invocation and
+/// a captured one can be compared directly.
+fn as_records(actions: &[Action]) -> Vec<String> {
+    fn esc(s: &str) -> String {
+        s.replace('\\', "\\\\")
+            .replace('\n', "\\n")
+            .replace('\r', "\\r")
+            .replace('\t', "\\t")
+    }
+    let mut out: Vec<String> = actions
+        .iter()
+        .filter_map(|a| match a {
+            Action::Spawn { program, args, .. } => {
+                let name = program.rsplit(['/', '\\']).next().unwrap_or(program);
+                let mut line = esc(name);
+                for arg in args {
+                    line.push('\t');
+                    line.push_str(&esc(arg));
+                }
+                Some(line)
+            }
+            // In-process Windows audio leaves nothing for a shim to record.
+            Action::PlayWav(_) | Action::Beep => None,
+        })
+        .collect();
+    // The observable is a set: the sound helper is backgrounded, so its record
+    // races the visual one. Both capture drivers sort for the same reason.
+    out.sort();
+    out
+}
+
+struct NotifyCase {
+    name: &'static str,
+    platform: Platform,
+    event: &'static str,
+    value: &'static str,
+    stdin: &'static str,
+    config: &'static str,
+    want: &'static [&'static str],
+}
+
+const PERMISSION_PAYLOAD: &str =
+    r#"{"tool_name":"Bash","session_id":"s1","tool_input":{"command":"git status --porcelain"}}"#;
+
+/// Every event on every platform, plus the states that change what is invoked.
+#[test]
+fn every_event_invokes_what_the_scripts_invoked() {
+    let cases = [
+        NotifyCase {
+            name: "macos-permission",
+            platform: Platform::Macos,
+            event: "permission",
+            value: "",
+            stdin: PERMISSION_PAYLOAD,
+            config: "{}",
+            want: &[
+                "afplay\t/System/Library/Sounds/Tink.aiff",
+                "terminal-notifier\t-title\tClaude Code\t-message\tBash: git status --porcelain",
+            ],
+        },
+        NotifyCase {
+            name: "linux-permission",
+            platform: Platform::Linux,
+            event: "permission",
+            value: "",
+            stdin: PERMISSION_PAYLOAD,
+            config: "{}",
+            want: &[
+                "notify-send\tClaude Code\tBash: git status --porcelain\t--urgency=normal",
+                "paplay\t/usr/share/sounds/freedesktop/stereo/bell.oga",
+            ],
+        },
+        NotifyCase {
+            name: "macos-stop",
+            platform: Platform::Macos,
+            event: "stop",
+            value: "",
+            stdin: "",
+            config: "{}",
+            want: &[
+                "afplay\t/System/Library/Sounds/Glass.aiff",
+                "terminal-notifier\t-title\tClaude Code\t-message\tFinished working",
+            ],
+        },
+        NotifyCase {
+            name: "linux-rate-limit-carries-its-value",
+            platform: Platform::Linux,
+            event: "rate_limit",
+            value: "82",
+            stdin: "",
+            config: "{}",
+            want: &[
+                "notify-send\tClaude Code\tRate limit at 82%\t--urgency=normal",
+                "paplay\t/usr/share/sounds/freedesktop/stereo/dialog-warning.oga",
+            ],
+        },
+        NotifyCase {
+            name: "macos-context-high-carries-its-value",
+            platform: Platform::Macos,
+            event: "context_high",
+            value: "71",
+            stdin: "",
+            config: "{}",
+            want: &[
+                "afplay\t/System/Library/Sounds/Sosumi.aiff",
+                "terminal-notifier\t-title\tClaude Code\t-message\tContext window at 71%",
+            ],
+        },
+        NotifyCase {
+            name: "linux-compaction-start",
+            platform: Platform::Linux,
+            event: "compaction_start",
+            value: "",
+            stdin: "",
+            config: "{}",
+            want: &[
+                "notify-send\tClaude Code\tCompacting context...\t--urgency=normal",
+                "paplay\t/usr/share/sounds/freedesktop/stereo/bell.oga",
+            ],
+        },
+        NotifyCase {
+            name: "linux-compaction-done",
+            platform: Platform::Linux,
+            event: "compaction_done",
+            value: "",
+            stdin: "",
+            config: "{}",
+            want: &[
+                "notify-send\tClaude Code\tContext compacted\t--urgency=normal",
+                "paplay\t/usr/share/sounds/freedesktop/stereo/complete.oga",
+            ],
+        },
+        // An unknown event has no message and no sound, so it invokes nothing
+        // rather than raising a blank notification.
+        NotifyCase {
+            name: "unknown-event-invokes-nothing",
+            platform: Platform::Macos,
+            event: "not-an-event",
+            value: "",
+            stdin: "",
+            config: "{}",
+            want: &[],
+        },
+        NotifyCase {
+            name: "empty-event-invokes-nothing",
+            platform: Platform::Linux,
+            event: "",
+            value: "",
+            stdin: "",
+            config: "{}",
+            want: &[],
+        },
+        // A permission payload that says nothing useful still notifies: the
+        // user needs to know something is waiting even if we cannot say what.
+        NotifyCase {
+            name: "unparseable-payload-still-prompts",
+            platform: Platform::Linux,
+            event: "permission",
+            value: "",
+            stdin: "{not json",
+            config: "{}",
+            want: &[
+                "notify-send\tClaude Code\tWaiting for permission\t--urgency=normal",
+                "paplay\t/usr/share/sounds/freedesktop/stereo/bell.oga",
+            ],
+        },
+        NotifyCase {
+            name: "tool-with-no-detail-names-the-tool",
+            platform: Platform::Linux,
+            event: "permission",
+            value: "",
+            stdin: r#"{"tool_name":"WebFetch"}"#,
+            config: "{}",
+            want: &[
+                "notify-send\tClaude Code\tWebFetch\t--urgency=normal",
+                "paplay\t/usr/share/sounds/freedesktop/stereo/bell.oga",
+            ],
+        },
+        // A file path under the working directory is shown relative to it, so
+        // the notification is not mostly the user's home directory.
+        NotifyCase {
+            name: "file-path-is-relative-to-cwd",
+            platform: Platform::Linux,
+            event: "permission",
+            value: "",
+            stdin: r#"{"tool_name":"Edit","tool_input":{"file_path":"/repo/work/src/main.rs"}}"#,
+            config: "{}",
+            want: &[
+                "notify-send\tClaude Code\tEdit: src/main.rs\t--urgency=normal",
+                "paplay\t/usr/share/sounds/freedesktop/stereo/bell.oga",
+            ],
+        },
+        NotifyCase {
+            name: "file-path-outside-cwd-is-left-whole",
+            platform: Platform::Linux,
+            event: "permission",
+            value: "",
+            stdin: r#"{"tool_name":"Read","tool_input":{"file_path":"/etc/hosts"}}"#,
+            config: "{}",
+            want: &[
+                "notify-send\tClaude Code\tRead: /etc/hosts\t--urgency=normal",
+                "paplay\t/usr/share/sounds/freedesktop/stereo/bell.oga",
+            ],
+        },
+        // AE14. Every metacharacter that would matter to a shell is delivered
+        // literally, because argv is a list and no shell ever sees it.
+        NotifyCase {
+            name: "metacharacters-are-delivered-literally",
+            platform: Platform::Linux,
+            event: "permission",
+            value: "",
+            stdin: r#"{"tool_name":"Bash","tool_input":{"command":"echo \"hi\"; rm -rf /; $(id) `id` && x\ny"}}"#,
+            config: "{}",
+            want: &[
+                "notify-send\tClaude Code\tBash: echo \"hi\"; rm -rf /; $(id) `id` && x\\ny\t--urgency=normal",
+                "paplay\t/usr/share/sounds/freedesktop/stereo/bell.oga",
+            ],
+        },
+        NotifyCase {
+            name: "visual-muted-leaves-only-sound",
+            platform: Platform::Macos,
+            event: "stop",
+            value: "",
+            stdin: "",
+            config: r#"{"stop":{"visual":false}}"#,
+            want: &["afplay\t/System/Library/Sounds/Glass.aiff"],
+        },
+        NotifyCase {
+            name: "a-non-boolean-flag-does-not-mute",
+            platform: Platform::Macos,
+            event: "stop",
+            value: "",
+            stdin: "",
+            config: r#"{"stop":{"sound":"false","visual":null}}"#,
+            want: &[
+                "afplay\t/System/Library/Sounds/Glass.aiff",
+                "terminal-notifier\t-title\tClaude Code\t-message\tFinished working",
+            ],
+        },
+    ];
+
+    let mut failures = Failures::default();
+    for c in cases {
+        let cfg = NotifyConfig::parse(c.config);
+        let got = as_records(&notify::plan(
+            c.platform,
+            c.event,
+            c.value,
+            c.stdin,
+            &cfg,
+            &full_env(),
+        ));
+        let want: Vec<String> = c.want.iter().map(|s| s.to_string()).collect();
+        failures.check(c.name, got == want, || {
+            format!("got {got:?}, want {want:?}")
+        });
+    }
+    failures.assert_empty("notify invocations");
+}
+
+/// AE15, and the resolved divergence. `sound: false` must actually mute, on
+/// every platform — which is a deliberate break from what both bash scripts do
+/// today. See `DIVERGENT_FIXTURES`.
+#[test]
+fn muting_is_honoured_on_every_platform() {
+    let cfg = NotifyConfig::parse(r#"{"permission":{"sound":false,"visual":true}}"#);
+    let env = full_env();
+    let mut failures = Failures::default();
+
+    for (name, platform, want) in [
+        (
+            "macos",
+            Platform::Macos,
+            vec!["terminal-notifier\t-title\tClaude Code\t-message\tBash: git status --porcelain"],
+        ),
+        (
+            "linux",
+            Platform::Linux,
+            vec!["notify-send\tClaude Code\tBash: git status --porcelain\t--urgency=normal"],
+        ),
+    ] {
+        let got = as_records(&notify::plan(
+            platform,
+            "permission",
+            "",
+            PERMISSION_PAYLOAD,
+            &cfg,
+            &env,
+        ));
+        let want: Vec<String> = want.iter().map(|s| s.to_string()).collect();
+        failures.check(name, got == want, || {
+            format!("a muted event still invoked a sound helper: got {got:?}")
+        });
+    }
+
+    // Windows sound is in-process, so muting is asserted on the plan itself
+    // rather than on an invocation.
+    let plan = notify::plan(
+        Platform::Windows,
+        "permission",
+        "",
+        PERMISSION_PAYLOAD,
+        &cfg,
+        &env,
+    );
+    failures.check(
+        "windows",
+        !plan
+            .iter()
+            .any(|a| matches!(a, Action::PlayWav(_) | Action::Beep)),
+        || format!("a muted event still planned audio: {plan:?}"),
+    );
+    failures.assert_empty("muted delivery");
+}
+
+/// A helper that is not installed is skipped, and the rest of the notification
+/// still goes out. The scripts tolerate every one of these being absent.
+#[test]
+fn a_missing_helper_degrades_rather_than_dropping_the_notification() {
+    let mut env = full_env();
+    env.programs.remove("notify-send");
+    env.programs.remove("paplay");
+
+    let cfg = NotifyConfig::default();
+    let got = as_records(&notify::plan(Platform::Linux, "stop", "", "", &cfg, &env));
+    assert_eq!(
+        got,
+        vec!["ffplay\t-nodisp\t-autoexit\t-loglevel\tquiet\t/usr/share/sounds/freedesktop/stereo/complete.oga"],
+        "the next available player should have been used and the visual skipped"
+    );
+
+    // Every player gone: sound is dropped, the visual survives.
+    env.programs.remove("ffplay");
+    env.programs.remove("ogg123");
+    env.programs.insert("notify-send".to_string());
+    let got = as_records(&notify::plan(Platform::Linux, "stop", "", "", &cfg, &env));
+    assert_eq!(
+        got,
+        vec!["notify-send\tClaude Code\tFinished working\t--urgency=normal"]
+    );
+
+    // The sound asset missing is the other half: Linux checks, macOS does not.
+    let mut env = full_env();
+    env.files.clear();
+    let got = as_records(&notify::plan(Platform::Linux, "stop", "", "", &cfg, &env));
+    assert_eq!(
+        got,
+        vec!["notify-send\tClaude Code\tFinished working\t--urgency=normal"],
+        "a missing sound asset should skip the player, not the notification"
+    );
+}
+
+/// The icon is added only when it is actually on disk, because both helpers
+/// treat a missing icon path as an error rather than ignoring it.
+#[test]
+fn the_icon_is_attached_only_when_it_exists() {
+    let cfg = NotifyConfig::default();
+    let mut env = full_env();
+    env.files
+        .insert(PathBuf::from("/home/fixture/.claude/claude-icon.png"));
+
+    let macos = as_records(&notify::plan(Platform::Macos, "stop", "", "", &cfg, &env));
+    assert_eq!(
+        macos,
+        vec![
+            "afplay\t/System/Library/Sounds/Glass.aiff",
+            "terminal-notifier\t-title\tClaude Code\t-message\tFinished working\t-appIcon\t/home/fixture/.claude/claude-icon.png\t-contentImage\t/home/fixture/.claude/claude-icon.png",
+        ]
+    );
+
+    let linux = as_records(&notify::plan(Platform::Linux, "stop", "", "", &cfg, &env));
+    assert!(
+        linux
+            .iter()
+            .any(|l| l.contains("--icon=/home/fixture/.claude/claude-icon.png")),
+        "the icon flag is missing: {linux:?}"
+    );
+}
+
+/// KTD11 and AE14, asserted as an invariant rather than by inspecting escapes.
+///
+/// The permission message is `tool_input.command` — whatever the model was
+/// about to run — so it is attacker-influenceable. On Windows it crosses into a
+/// second interpreter, and the only safe way to do that is as data. This checks
+/// that no byte of it ever appears in the program path or in any argument,
+/// which is a stronger claim than "the quoting looks right".
+#[test]
+fn the_windows_toast_never_carries_the_message_in_its_argv() {
+    let hostile = "'; Remove-Item C:\\ -Recurse; $(whoami) `id` \"quoted\"";
+    let stdin = serde_json::json!({
+        "tool_name": "Bash",
+        "tool_input": { "command": hostile },
+    })
+    .to_string();
+
+    let plan = notify::plan(
+        Platform::Windows,
+        "permission",
+        "",
+        &stdin,
+        &NotifyConfig::default(),
+        &full_env(),
+    );
+
+    let Some(Action::Spawn {
+        program,
+        args,
+        stdin: payload,
+        ..
+    }) = plan.first()
+    else {
+        panic!("the Windows plan did not start with a spawn: {plan:?}");
+    };
+
+    // Absolute path under %SystemRoot%: a powershell.exe planted on PATH or in
+    // the working directory must never be what raises a notification.
+    assert_eq!(
+        program,
+        "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"
+    );
+    assert!(
+        args.contains(&"-NoProfile".to_string()),
+        "a user profile could otherwise redefine what the script means"
+    );
+
+    // The distinctive fragments of the hostile string must appear nowhere in
+    // argv — not escaped, not quoted, not at all.
+    for fragment in ["Remove-Item", "whoami", "quoted"] {
+        assert!(
+            !program.contains(fragment),
+            "the program path carries the message"
+        );
+        for arg in args {
+            assert!(
+                !arg.contains(fragment),
+                "an argument carries the message, which is exactly what KTD11 forbids: {arg:?}"
+            );
+        }
+    }
+
+    // It does reach the child — as data, on stdin.
+    let payload = payload.as_deref().unwrap_or("");
+    assert!(
+        payload.contains("Remove-Item"),
+        "the message never reached the child at all: {payload:?}"
+    );
+    let parsed: serde_json::Value = serde_json::from_str(payload).expect("stdin is not JSON");
+    assert_eq!(
+        parsed["message"],
+        serde_json::Value::String(format!("Bash: {hostile}"))
+    );
+
+    // And the script body is a constant that cannot be influenced.
+    assert!(
+        !notify::WINDOWS_TOAST_SCRIPT.contains('"'),
+        "a double quote in the body would be re-encoded by the Windows command-line rules"
+    );
+}
+
+/// R44's thresholds, which the status line reads to decide whether to fire at
+/// all. A non-integer must fall back rather than disable the alert.
+#[test]
+fn thresholds_default_when_absent_or_unusable() {
+    struct Case {
+        name: &'static str,
+        json: &'static str,
+        event: &'static str,
+        want: i64,
+    }
+
+    let cases = [
+        Case {
+            name: "absent-config",
+            json: "{}",
+            event: "context_high",
+            want: 70,
+        },
+        Case {
+            name: "absent-rate-limit",
+            json: "{}",
+            event: "rate_limit",
+            want: 80,
+        },
+        Case {
+            name: "configured",
+            json: r#"{"context_high":{"threshold":55}}"#,
+            event: "context_high",
+            want: 55,
+        },
+        Case {
+            name: "non-integer",
+            json: r#"{"context_high":{"threshold":"high"}}"#,
+            event: "context_high",
+            want: 70,
+        },
+        Case {
+            name: "unparseable-file",
+            json: "{not json",
+            event: "rate_limit",
+            want: 80,
+        },
+        Case {
+            name: "json-not-an-object",
+            json: "[1,2,3]",
+            event: "context_high",
+            want: 70,
+        },
+    ];
+
+    let mut failures = Failures::default();
+    for c in cases {
+        let got = NotifyConfig::parse(c.json).threshold(c.event);
+        failures.check(c.name, got == c.want, || {
+            format!("threshold for {} was {got}, want {}", c.event, c.want)
+        });
+    }
+    failures.assert_empty("notify thresholds");
+}
+
+/// R31 equivalence against the captured fixtures, for the cases where the
+/// scripts and the port are supposed to agree.
+#[test]
+fn notify_invocations_match_the_captured_fixtures() {
+    let root = repo_file("tests/fixtures/notify");
+    let Ok(entries) = std::fs::read_dir(&root) else {
+        println!("no notify fixtures captured yet");
+        return;
+    };
+
+    let mut failures = Failures::default();
+    let mut checked = 0usize;
+
+    for entry in entries.flatten() {
+        let dir = entry.path();
+        if !dir.is_dir() {
+            continue;
+        }
+        let case = dir
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
+        if DIVERGENT_FIXTURES.contains(&case.as_str()) {
+            println!("skipping {case}: a recorded divergence, asserted as a literal instead");
+            continue;
+        }
+
+        let meta: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.join("case.json")).unwrap_or_default(),
+        )
+        .unwrap_or(serde_json::Value::Null);
+        let payload_rel = meta["payload"].as_str().unwrap_or("");
+        let payload = std::fs::read_to_string(repo_file(&format!("tests/harness/{payload_rel}")))
+            .unwrap_or_default();
+        let config_rel = meta["notify_config"].as_str().unwrap_or("");
+        let cfg = NotifyConfig::load(&repo_file(&format!("tests/harness/{config_rel}")));
+        let event = meta["args"][0].as_str().unwrap_or("");
+        let value = meta["args"][1].as_str().unwrap_or("");
+
+        for (platform, name) in [(Platform::Macos, "macos"), (Platform::Linux, "linux")] {
+            let Ok(expected_raw) =
+                std::fs::read_to_string(dir.join("expected").join(format!("{name}.txt")))
+            else {
+                continue;
+            };
+            checked += 1;
+            let label = format!("{case}/{name}");
+
+            // The harness supplies its own isolated home and working directory,
+            // and the capture scrubbed both back to placeholders. Replaying
+            // with the same placeholders is what makes the comparison possible.
+            let mut env = full_env();
+            env.home = PathBuf::from("{HOME}");
+            env.cwd = PathBuf::from("{REPO}");
+
+            let expected: Vec<String> = expected_raw
+                .lines()
+                .filter(|l| !l.is_empty())
+                .map(str::to_string)
+                .collect();
+            let got = as_records(&notify::plan(platform, event, value, &payload, &cfg, &env));
+
+            failures.check(&label, got == expected, || {
+                format!("script invoked {expected:?}, port planned {got:?}")
+            });
+        }
+    }
+
+    println!("compared {checked} captured platform fixture(s)");
+    failures.assert_empty("notify fixture equivalence");
+}
+
+// ---------------------------------------------------------------------------
 // Installer contract (R7, R8, R10, R17 / U4)
 // ---------------------------------------------------------------------------
 //

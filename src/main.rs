@@ -7,7 +7,7 @@
 
 use std::io::Write;
 
-use claude_statusline::{cmd, debug, platform, self_check, session, settings};
+use claude_statusline::{cmd, config, debug, platform, self_check, session, settings};
 
 /// Reads all of stdin, treating an unreadable or non-UTF-8 stream as empty.
 ///
@@ -165,12 +165,36 @@ fn fail(message: &str) -> i32 {
     1
 }
 
-fn dispatch(sub: &str, _rest: &[&str]) {
+fn dispatch(sub: &str, rest: &[&str]) {
     match sub {
         // Filled in by U8-U13.
         "statusline" => {}
-        // U7.
-        "notify" => {}
+        "notify" => {
+            let event = rest.first().copied().unwrap_or("");
+            let value = rest.get(1).copied().unwrap_or("");
+            // Only the permission event carries a payload, and only it reads
+            // stdin — the status line invokes the others with no input at all,
+            // and a blocking read there would hang the tick that spawned it.
+            let payload = if event == "permission" {
+                read_stdin()
+            } else {
+                String::new()
+            };
+            let cfg = config::NotifyConfig::default_path()
+                .map(|p| config::NotifyConfig::load(&p))
+                .unwrap_or_default();
+            let env = platform::notify::probe_env();
+            for action in cmd::notify::plan(
+                cmd::notify::Platform::current(),
+                event,
+                value,
+                &payload,
+                &cfg,
+                &env,
+            ) {
+                platform::notify::execute(&action);
+            }
+        }
         "git-refresh" => {
             let payload = read_stdin();
             cmd::git_refresh::run(&payload, &session::temp_dir());

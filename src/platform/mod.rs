@@ -7,6 +7,8 @@
 
 use std::path::Path;
 
+pub mod notify;
+
 #[cfg(unix)]
 mod imp {
     use std::os::unix::fs::MetadataExt;

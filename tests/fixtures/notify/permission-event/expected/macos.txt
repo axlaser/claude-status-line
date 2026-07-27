@@ -1,0 +1,2 @@
+afplay	/System/Library/Sounds/Tink.aiff
+terminal-notifier	-title	Claude Code	-message	Bash: git status --porcelain
