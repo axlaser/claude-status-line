@@ -10,6 +10,7 @@ use std::process::{Command, Stdio};
 
 use claude_statusline::clock::{Clock, TestClock};
 use claude_statusline::debug;
+use claude_statusline::git::{self, GitStatus, Porcelain};
 use claude_statusline::payload::{sanitize_display, Payload};
 use claude_statusline::platform;
 use claude_statusline::settings;
@@ -3448,4 +3449,419 @@ fn an_empty_transcript_scans_to_zero_without_voting() {
             "empty transcript with a {name} starting verdict"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Git status (R19, R20, R27, KTD13 / U10)
+// ---------------------------------------------------------------------------
+
+struct PorcelainCase {
+    name: &'static str,
+    lines: &'static [&'static str],
+    want: Porcelain,
+}
+
+/// The ten git states of `docs/performance.md` §4, as the porcelain text each
+/// one produces. Parsing is pure over text (KTD13), so every state is reachable
+/// here without building the repository that emits it — including the ones a
+/// fixture capture cannot easily stage.
+#[test]
+fn porcelain_v2_parses_every_documented_state() {
+    let cases = &[
+        PorcelainCase {
+            name: "clean",
+            lines: &[
+                "# branch.oid 1111111111111111111111111111111111111111",
+                "# branch.head main",
+                "# branch.upstream origin/main",
+                "# branch.ab +0 -0",
+            ],
+            want: Porcelain {
+                branch: "main".into(),
+                head_oid: "1111111111111111111111111111111111111111".into(),
+                ..Default::default()
+            },
+        },
+        PorcelainCase {
+            name: "untracked-only",
+            lines: &[
+                "# branch.oid 2222222222222222222222222222222222222222",
+                "# branch.head main",
+                "? one.txt",
+                "? two.txt",
+            ],
+            want: Porcelain {
+                branch: "main".into(),
+                head_oid: "2222222222222222222222222222222222222222".into(),
+                untracked: 2,
+                ..Default::default()
+            },
+        },
+        PorcelainCase {
+            // git collapses a wholly untracked directory into one entry. A
+            // reimplementation getting this wrong reads as an untracked count
+            // that jumps with directory size — one of the reasons U10 shells
+            // out rather than reimplementing.
+            name: "collapsed-untracked-dir",
+            lines: &[
+                "# branch.oid 3333333333333333333333333333333333333333",
+                "# branch.head main",
+                "? newdir/",
+            ],
+            want: Porcelain {
+                branch: "main".into(),
+                head_oid: "3333333333333333333333333333333333333333".into(),
+                untracked: 1,
+                ..Default::default()
+            },
+        },
+        PorcelainCase {
+            name: "dirty-tracked-changes",
+            lines: &[
+                "# branch.oid 4444444444444444444444444444444444444444",
+                "# branch.head main",
+                "1 .M N... 100644 100644 100644 aaa bbb src/lib.rs",
+                "2 R. N... 100644 100644 100644 ccc ddd R100 new.rs\told.rs",
+            ],
+            want: Porcelain {
+                branch: "main".into(),
+                head_oid: "4444444444444444444444444444444444444444".into(),
+                ..Default::default()
+            },
+        },
+        PorcelainCase {
+            name: "stashes-present",
+            lines: &[
+                "# branch.oid 5555555555555555555555555555555555555555",
+                "# branch.head main",
+                "# stash 3",
+            ],
+            want: Porcelain {
+                branch: "main".into(),
+                head_oid: "5555555555555555555555555555555555555555".into(),
+                stash: 3,
+                ..Default::default()
+            },
+        },
+        PorcelainCase {
+            // The zero case emits no line at all rather than `# stash 0`.
+            name: "stash-cleared",
+            lines: &[
+                "# branch.oid 6666666666666666666666666666666666666666",
+                "# branch.head main",
+            ],
+            want: Porcelain {
+                branch: "main".into(),
+                head_oid: "6666666666666666666666666666666666666666".into(),
+                ..Default::default()
+            },
+        },
+        PorcelainCase {
+            name: "ahead-of-upstream",
+            lines: &[
+                "# branch.oid 7777777777777777777777777777777777777777",
+                "# branch.head main",
+                "# branch.upstream origin/main",
+                "# branch.ab +4 -2",
+            ],
+            want: Porcelain {
+                branch: "main".into(),
+                head_oid: "7777777777777777777777777777777777777777".into(),
+                ahead: 4,
+                behind: 2,
+                ..Default::default()
+            },
+        },
+        PorcelainCase {
+            // No upstream means no `# branch.ab` line at all. Absent is zero,
+            // not missing data.
+            name: "no-upstream",
+            lines: &[
+                "# branch.oid 8888888888888888888888888888888888888888",
+                "# branch.head feature",
+            ],
+            want: Porcelain {
+                branch: "feature".into(),
+                head_oid: "8888888888888888888888888888888888888888".into(),
+                ..Default::default()
+            },
+        },
+        PorcelainCase {
+            name: "detached-head",
+            lines: &[
+                "# branch.oid 9999999999999999999999999999999999999999",
+                "# branch.head (detached)",
+            ],
+            want: Porcelain {
+                branch: "(detached)".into(),
+                head_oid: "9999999999999999999999999999999999999999".into(),
+                ..Default::default()
+            },
+        },
+        PorcelainCase {
+            // Unborn HEAD: the field that normally carries a hash carries a
+            // word. Arithmetic on it would be the bug.
+            name: "unborn-head",
+            lines: &["# branch.oid (initial)", "# branch.head main"],
+            want: Porcelain {
+                branch: "main".into(),
+                head_oid: "(initial)".into(),
+                ..Default::default()
+            },
+        },
+    ];
+
+    let mut failures = Failures::default();
+    for case in cases {
+        let text = format!("{}\n", case.lines.join("\n"));
+        let got = git::parse_porcelain_v2(&text);
+        failures.check(case.name, got == case.want, || {
+            format!("want {:?}, got {got:?}", case.want)
+        });
+    }
+    failures.assert_empty("porcelain v2 parsing");
+}
+
+/// A malformed `# branch.ab` line must not reach arithmetic as anything but a
+/// number — the scripts guard every one of these fields for the same reason.
+#[test]
+fn malformed_porcelain_fields_read_as_zero() {
+    let cases: &[(&str, &str, u64, u64)] = &[
+        ("well-formed", "# branch.ab +4 -2", 4, 2),
+        ("unsigned", "# branch.ab 4 2", 4, 2),
+        ("non-numeric", "# branch.ab +x -y", 0, 0),
+        ("empty", "# branch.ab ", 0, 0),
+        // No space: the scripts' first-token and last-token expansions both
+        // yield the whole string, so both counts come from it.
+        ("no-space", "# branch.ab +7", 7, 0),
+    ];
+
+    let mut failures = Failures::default();
+    for (name, line, ahead, behind) in cases {
+        let got = git::parse_porcelain_v2(&format!("{line}\n"));
+        failures.check(name, got.ahead == *ahead && got.behind == *behind, || {
+            format!(
+                "want ahead {ahead} behind {behind}, got {} {}",
+                got.ahead, got.behind
+            )
+        });
+    }
+
+    let stash = git::parse_porcelain_v2("# stash notanumber\n");
+    failures.check("stash-non-numeric", stash.stash == 0, || {
+        format!("got {}", stash.stash)
+    });
+    failures.assert_empty("malformed porcelain fields");
+}
+
+/// The `(detached)` collision: git prints the same sentinel for a detached HEAD
+/// and for a branch that is literally named `(detached)`, so both resolve to the
+/// abbreviated hash. The scripts accept that, and so does this — it is the
+/// recorded divergence, not a bug to fix here.
+#[test]
+fn the_detached_sentinel_resolves_through_git_not_by_truncation() {
+    let detached = Porcelain {
+        branch: "(detached)".into(),
+        head_oid: "abcdef1234567890abcdef1234567890abcdef12".into(),
+        ..Default::default()
+    };
+
+    assert_eq!(
+        git::resolve_branch(&detached, || Some("abcdef1".to_string())),
+        "abcdef1",
+        "the abbreviation comes from git, which lengthens it for uniqueness"
+    );
+    assert_eq!(
+        git::resolve_branch(&detached, || None),
+        "HEAD",
+        "a failed abbreviation falls back to the literal HEAD"
+    );
+    assert_eq!(
+        git::resolve_branch(&detached, || Some(String::new())),
+        "HEAD",
+        "empty output is a failure too, not a branch named nothing"
+    );
+
+    let unborn = Porcelain {
+        branch: "main".into(),
+        head_oid: "(initial)".into(),
+        ..Default::default()
+    };
+    assert_eq!(
+        git::resolve_branch(&unborn, || panic!(
+            "unborn HEAD must not spawn a second git"
+        )),
+        "",
+        "unborn HEAD renders no git segment on this platform"
+    );
+
+    let ordinary = Porcelain {
+        branch: "main".into(),
+        head_oid: "1234567890123456789012345678901234567890".into(),
+        ..Default::default()
+    };
+    assert_eq!(
+        git::resolve_branch(&ordinary, || panic!(
+            "an ordinary branch must not spawn a second git"
+        )),
+        "main"
+    );
+}
+
+#[test]
+fn shortstat_counts_are_optional_and_independent() {
+    let cases: &[(&str, &str, u64, u64)] = &[
+        (
+            "both",
+            " 3 files changed, 12 insertions(+), 4 deletions(-)",
+            12,
+            4,
+        ),
+        ("insertions-only", " 1 file changed, 7 insertions(+)", 7, 0),
+        ("deletions-only", " 1 file changed, 2 deletions(-)", 0, 2),
+        ("neither", " 1 file changed", 0, 0),
+        ("empty", "", 0, 0),
+        (
+            "single",
+            " 1 file changed, 1 insertion(+), 1 deletion(-)",
+            1,
+            1,
+        ),
+    ];
+
+    let mut failures = Failures::default();
+    for (name, text, ins, del) in cases {
+        let got = git::parse_shortstat(text);
+        failures.check(name, got == (*ins, *del), || {
+            format!("want ({ins}, {del}), got {got:?}")
+        });
+    }
+    failures.assert_empty("shortstat parsing");
+}
+
+/// The record shares its name and shape with the scripts' on purpose:
+/// `git-refresh` deletes exactly `statusline-git-<id>.txt`, so a binary caching
+/// anywhere else would keep a stale git row alive through every edit.
+#[test]
+fn the_git_cache_record_round_trips_and_fails_safe() {
+    let status = GitStatus {
+        branch: "dev-rust-migration".into(),
+        insertions: 12,
+        deletions: 4,
+        untracked: 3,
+        ahead: 2,
+        behind: 1,
+        stash: 5,
+    };
+    let line = git::cache_record(1_700_000_000, &status);
+    assert_eq!(
+        git::parse_cache_record(&line),
+        Some((1_700_000_000, status.clone()))
+    );
+
+    let mut failures = Failures::default();
+    for (name, raw) in [
+        ("empty", String::new()),
+        ("too-few-fields", "1700000000\u{1f}main".to_string()),
+        ("too-many-fields", format!("{line}\u{1f}extra")),
+        ("non-numeric-mtime", line.replacen("1700000000", "soon", 1)),
+    ] {
+        failures.check(name, git::parse_cache_record(&raw).is_none(), || {
+            "a damaged record must read as no record".to_string()
+        });
+    }
+
+    // A planted numeric field degrades to zero rather than reaching arithmetic.
+    let planted = git::cache_record(1, &status).replacen(
+        "\u{1f}12\u{1f}",
+        "\u{1f}9999999999999999999999\u{1f}",
+        1,
+    );
+    let (_, parsed) = git::parse_cache_record(&planted).expect("field count is still valid");
+    failures.check("overlong-digit-run", parsed.insertions == 0, || {
+        format!("got {}", parsed.insertions)
+    });
+    failures.assert_empty("git cache record");
+}
+
+/// The TTL, exercised through the injected clock (R26) rather than by sleeping.
+/// Its expiry is a staleness bound: `.git/index` mtime does not move when an
+/// untracked file appears or when `git fetch` rewrites `packed-refs`.
+#[test]
+fn the_git_ttl_expires_through_the_injected_clock() {
+    let dir = scratch_dir("git-ttl");
+    let index = dir.join(".git").join("index");
+    std::fs::create_dir_all(index.parent().expect("index has a parent"))
+        .expect("failed to create the fake .git directory");
+    std::fs::write(&index, b"not a real index").expect("failed to write the fake index");
+
+    let session = "git-ttl-session";
+    let cache = git::cache_path(session).expect("an ordinary session id yields a cache path");
+    let cached = GitStatus {
+        branch: "cached-branch".into(),
+        insertions: 1,
+        ..Default::default()
+    };
+    std::fs::write(&cache, git::cache_record(1000, &cached)).expect("failed to seed the cache");
+
+    let fresh = TestClock::at(2000)
+        .with_mtime(&index, 1000)
+        .with_mtime(&cache, 1996);
+    assert_eq!(
+        git::status(&fresh, &dir, session).as_ref(),
+        Some(&cached),
+        "a record 4s old, taken at the current index mtime, is a hit"
+    );
+
+    let expired = TestClock::at(2000)
+        .with_mtime(&index, 1000)
+        .with_mtime(&cache, 1995);
+    assert_ne!(
+        git::status(&expired, &dir, session).as_ref(),
+        Some(&cached),
+        "at exactly the TTL the record is stale, so git is consulted"
+    );
+
+    let moved = TestClock::at(2000)
+        .with_mtime(&index, 1001)
+        .with_mtime(&cache, 1999);
+    assert_ne!(
+        git::status(&moved, &dir, session).as_ref(),
+        Some(&cached),
+        "an index that moved invalidates the record however fresh it is"
+    );
+
+    let _ = std::fs::remove_file(&cache);
+}
+
+/// A directory with no repository in it renders no git segment, and does so
+/// without an error path — the row simply is not there.
+#[test]
+fn a_directory_without_a_repository_renders_no_git_row() {
+    let dir = scratch_dir("git-no-repo");
+    let clock = TestClock::at(2000);
+    assert_eq!(git::status(&clock, &dir, "no-repo-session"), None);
+}
+
+#[test]
+fn the_git_cache_path_cannot_escape_the_temp_root() {
+    let temp = claude_statusline::session::temp_dir();
+    let traversal =
+        git::cache_path("../../etc/passwd").expect("a traversal id still yields a path");
+    assert_eq!(traversal.parent(), Some(temp.as_path()));
+    assert_eq!(
+        traversal.file_name().and_then(|n| n.to_str()),
+        Some("statusline-git-etcpasswd.txt")
+    );
+    assert_eq!(git::cache_path("///"), None);
+}
+
+#[test]
+fn an_absent_workspace_directory_falls_back_to_the_process_directory() {
+    let expected = std::env::current_dir().expect("the test process has a working directory");
+    assert_eq!(git::resolve_cwd(""), expected);
+    assert_eq!(
+        git::resolve_cwd("/somewhere/else"),
+        Path::new("/somewhere/else")
+    );
 }

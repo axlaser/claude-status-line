@@ -257,6 +257,41 @@ idle-tick key churn, plus a structural guard (trimmed payload starts `{` and end
 re-measured to confirm the mechanism still clears 30%. The −6.9% cmdlet swap remains a
 zero-risk fallback but does not meet the bar on its own.
 
+### Git access — subprocess, not a pure-Rust library (2026-07-27)
+
+The Rust port keeps invoking `git`. The alternative considered was `gix`, which
+satisfies the same pure-Rust constraint and benchmarks faster than git itself.
+
+Measured cost of the calls being kept — fresh-process medians, 15 runs, this
+repository, git 2.48.1 on the maintainer's Windows machine. Indicative, not an
+R38 pair:
+
+| Call | Median |
+|---|---|
+| `status --porcelain=v2 --branch --show-stash` | 36.5 ms |
+| `diff --shortstat HEAD` | 37.4 ms |
+| pair | 73.9 ms |
+
+**Process-count delta: none for the git block itself** — 2 subprocesses per
+miss, 3 on detached HEAD, 0 on a cache hit, exactly as §6 records for the
+scripts. What the port removes is the interpreter around them: the bash tick
+falls from 5 execs on a hit and 14 on a miss to 0 and 2–3.
+
+The decision was not made on cost. An in-process reading means reimplementing
+git's *configuration* surface — `core.autocrlf` normalisation ahead of
+`--shortstat`, `.gitattributes` binary and textconv rules, rename detection,
+untracked-directory collapsing. Fixtures are captured on default-config scratch
+repos, so divergence in that surface passes CI and then renders a plausible
+wrong number on a user's machine, where the exit-0 contract guarantees it never
+announces itself. Subprocess `git` cannot diverge from `git` by construction,
+and this repo treats performance as tracked rather than gated.
+
+Reopen condition: a post-parity evaluation with the git-state fixtures in hand,
+run against a configuration matrix the harness does not have today — `autocrlf`
+on and off, a `.gitattributes`-marked binary file, `diff.renames` disabled.
+Porcelain parsing is kept as a pure function over text so that evaluation is a
+diff rather than a rewrite.
+
 ### Incremental transcript parser — deleted in the Rust port (2026-07-27)
 
 The scripts' incremental parse (stored byte offset, head checksum over
