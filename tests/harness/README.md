@@ -91,6 +91,24 @@ Replaying in Rust pins the clock to `clock` and each state file's mtime to
 decisions deterministically. This is what KTD6's `Clock` trait — covering
 filesystem mtimes as well as wall-clock reads — exists to make possible.
 
+## A pinned input must carry the producer's bytes, not just its data
+
+`inputs/` files stand in for what another component wrote. Where the reader
+makes assumptions about the *shape* of those bytes, an input that carries the
+right data in the wrong shape is a silently wrong fixture.
+
+`inputs/tasks-feed.json` is the live example and must stay compact single-line
+JSON. `subagent-statusline` only ever emits one line, so the status line reads
+the feed with a single `IFS= read -r`. Pretty-printed, bash reads `{`, fails the
+object check, and falls through to the transcript tier — rendering a plausible
+box with no subagent rows, on a case whose whole purpose is to show the feed
+tier being used. It was captured that way once: `feed-fresh` and `feed-stale`
+came back byte-identical on macOS and Linux while Windows, which reads the whole
+file, correctly showed the row.
+
+When adding an input, capture or copy the real producer's output rather than
+hand-writing something equivalent-looking.
+
 ## Paired measurement (R38)
 
 `measure.sh` and `measure.ps1` produce the end-to-end fresh-process medians R38

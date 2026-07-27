@@ -319,7 +319,7 @@
       "inputs": [
         { "target": "{TMP}/statusline-tasks-{SESSION}.json", "content": "inputs/tasks-feed.json", "mtime_offset": -2 }
       ],
-      "why": "Inside the 10s freshness window, so the feed is a render input."
+      "why": "Inside the 10s freshness window, so the feed is a render input. `inputs/tasks-feed.json` MUST stay compact single-line JSON: the bash status line reads the feed with `IFS= read -r`, one line, because the handler only ever writes one line. Pretty-print it and bash reads `{`, fails the object check, and silently falls through to the transcript tier — which is what this case exists to distinguish it from."
     },
     {
       "case": "feed-stale",
