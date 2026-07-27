@@ -225,62 +225,52 @@ month, and a number nobody else can reproduce is an anecdote rather than
 evidence. Repeating one pinned record keeps the token totals a pure function of
 the size.
 
-| Transcript | Host | Host class | Runs | Script | Binary | Delta |
-|---|---|---|---|---|---|---|
-| pinned (2 KB) | Windows 11 26200, Windows PowerShell 5.1.26100 | maintainer machine | 15 | 307.4 ms | 21.7 ms | **−92.9%** |
-| generated 8 MB | Windows 11 26200, Windows PowerShell 5.1.26100 | maintainer machine | 7 | 322.4 ms | 72.8 ms | **−77.4%** |
-| generated 8 MB | `macos-15`, image `macos15 20260715.0234.1` | hosted runner | 11 | 50.3 ms | 81.7 ms | **+62.5%** |
-| generated 8 MB | `ubuntu-24.04`, image `ubuntu24 20260720.247.2` | hosted runner | 11 | 15.0 ms | 61.3 ms | **+307.4%** |
+All rows use a generated 8 MB transcript. Two states, because one of them alone
+is misleading in each direction.
 
-**Read the sign before reading the size. The binary is faster on Windows and
-slower on macOS and Linux**, and both facts come from the same two design
-decisions meeting three very different interpreter floors.
+**Warm** — nothing changed since the last tick. The script's output cache (keyed
+on a 5-second bucket) and its incremental parser are both working; the binary
+skips its rescan on an unchanged `(mtime, size)`. This is the common tick.
 
-What the state actually is. Every probe in these rows runs against a *static*
-transcript, and the driver reuses one isolated root across a run that finishes
-in about a second. Both of the script's caches are therefore working at their
-best: its incremental parser has no growth to rescan, and its output cache — 
-keyed on a 5-second bucket — serves most probes without rendering anything at
-all. The binary has neither cache (R27) and does the full job every tick. So
-this is the **cache-hit state** R38 asks this pair to cover, and it is the
-script's best case against the binary's only case.
+| Host | Host class | Runs | Script | Binary | Delta |
+|---|---|---|---|---|---|
+| Windows 11 26200, Windows PowerShell 5.1.26100 | maintainer machine | 7 | 311.8 ms | 22.1 ms | **−92.9%** |
+| `macos-15`, image `macos15 20260715.0234.1` | hosted runner | 11 | 70.5 ms | 5.0 ms | **−92.9%** |
+| `ubuntu-24.04`, image `ubuntu24 20260720.247.2` | hosted runner | 11 | 13.2 ms | 1.3 ms | **−90.3%** |
 
-Why the sign flips:
+**Cold** — every per-tick cache cleared before each probe, so both variants do
+the whole job. This is the tick after the transcript grows.
 
-- Windows pays ~124 ms for the interpreter to exist before any of this tool's
-  code runs. That floor swamps everything else, so removing the interpreter wins
-  no matter what the binary then does.
-- Bash's floor is ~10 ms. There is no interpreter cost to reclaim, so what
-  remains is a straight comparison of work — and in this state the script's work
-  is *nearly zero* while the binary re-scans 8 MB. Linux's 15.0 ms is mostly
-  cache hits; the binary's 61.3 ms is a real render every time.
-- The 8 MB scan itself costs the binary ~50 ms (21.7 → 72.8 ms on Windows,
-  where the rest of the tick is constant). That is the number R27 traded away
-  the incremental parser for.
+| Host | Host class | Runs | Script | Binary | Delta |
+|---|---|---|---|---|---|
+| Windows 11 26200, Windows PowerShell 5.1.26100 | maintainer machine | 7 | 1527.1 ms | 72.4 ms | **−95.3%** |
+| `macos-15`, image `macos15 20260715.0234.1` | hosted runner | 11 | 1282.0 ms | 74.4 ms | **−94.2%** |
+| `ubuntu-24.04`, image `ubuntu24 20260720.247.2` | hosted runner | 11 | 299.8 ms | 62.1 ms | **−79.3%** |
 
-**This contradicts R27's stated justification and is not settled.** R27 argued
-the incremental machinery "buys nothing once the interpreter is gone", from a
-probe of a *growing* 13.4 MB transcript costing 568 ms. That is the script's
-worst case. Against its best case — a static transcript, which is what a session
-looks like between messages, i.e. most ticks — the machinery buys 46 ms on
-Linux. The Windows conclusion was right and was over-generalised to platforms
-whose interpreter floor is an order of magnitude lower.
+The binary is faster on every platform in both states, by 79% to 95%. Three
+things are worth keeping from how that number was arrived at:
 
-Not yet decided, and deliberately left open rather than resolved in passing:
+- **The first version of this table had the binary 4× *slower* on Linux.** The
+  port scanned the transcript unconditionally, which cost ~50 ms on 8 MB —
+  invisible under PowerShell's ~124 ms interpreter floor, four times bash's
+  entire tick. R27 had argued the scripts' incremental machinery "buys nothing
+  once the interpreter is gone", measured against a *growing* transcript. That
+  was the script's worst case, and the conclusion was over-generalised to
+  platforms whose floor is an order of magnitude lower. The port now skips the
+  rescan when `(mtime, size)` are unchanged, and Linux went from +307% to −90%.
+- **A warm-only pair is not a comparison.** The script's output cache serves
+  almost every probe of a short run, so the original measurement was the
+  script's best case against the binary's only case — the state where it renders
+  nothing at all read as 13 ms. The cold rows are the honest half, and they are
+  where the script costs 0.3–1.5 seconds.
+- **The two floors are still the whole story on Windows.** ~124 ms of the
+  script's warm 311 ms is PowerShell starting. The binary's entire warm tick is
+  22 ms, well below the floor the script cannot get under by any means.
 
-1. Accept it. 61 ms is comfortably inside a refresh tick and no user sees a
-   stall; the port is still far faster on the platform that was worst off.
-2. Restore a resume path in the port — store the byte offset and scan only the
-   tail. R27 deleted it; this would reopen that decision with new evidence,
-   which is the bar §7 sets.
-3. Skip the rescan when the transcript's `(mtime, size)` are unchanged and reuse
-   the stored totals. Cheaper than (2), but it gives up the property U12 chose
-   deliberately: totals always come from this tick's scan, which is what let the
-   head checksum go, because a same-size rewrite is otherwise invisible.
-
-**Still owed:** a cache-*miss* pair on all three platforms. These rows measure
-the script serving a warm output cache; the state where it actually renders is
-unmeasured, and it is the state the binary is compared against every tick.
+Method note: `--cold-cache` / `-ColdCache` clears `statusline-*` from the
+isolated temp root before each probe, outside the timed region. The transcript
+is generated to size rather than pointed at a real session file, so these
+numbers are reproducible on any runner instead of tied to one machine's files.
 
 Provenance note: unlike the `subagent` pair above, this one needed no throwaway
 commit. The port landed at U12 and the scripts are deleted at U13, so a commit
