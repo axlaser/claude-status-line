@@ -41,9 +41,18 @@
   "git_states": [
     {
       "name": "unborn-head",
-      "why": "Fresh clone or bare `git init`. porcelain v2 emits `# branch.oid (initial)`, and the platforms disagree here today — Windows renders `HEAD`, bash renders no git segment — so this state is R20's first divergence case.",
+      "why": "Fresh clone or bare `git init`. porcelain v2 emits `# branch.oid (initial)`, but no `.git/index` exists yet and both scripts guard the whole git block on that file — so every platform renders no git segment here, and it does NOT reach the `(initial)` handling the platforms disagree about. That is `unborn-head-staged`. Keep both: this one pins the guard, that one pins the divergence.",
       "steps": [
         ["git", "init", "-b", "main"]
+      ]
+    },
+    {
+      "name": "unborn-head-staged",
+      "why": "The state that actually reaches `# branch.oid (initial)`: `git add` creates `.git/index`, so the outer guard passes and each script's unborn-HEAD branch is executed. This is R20's divergence case — bash blanks the branch and renders no git segment, Windows substitutes the literal `HEAD`. Without an index the divergence is unreachable, which is why `unborn-head` alone made the U13 scenario pass vacuously.",
+      "steps": [
+        ["git", "init", "-b", "main"],
+        ["write", "README.md", "staged, never committed\n"],
+        ["git", "add", "-A"]
       ]
     },
     {

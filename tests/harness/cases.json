@@ -202,7 +202,16 @@
       "component": "statusline",
       "observable": "stdout",
       "payload": "payloads/full.json",
-      "git_state": "unborn-head"
+      "git_state": "unborn-head",
+      "why": "A repo with no index at all. Pins the outer `.git/index` guard, not the unborn-HEAD divergence — see git-unborn-head-staged for that."
+    },
+    {
+      "case": "git-unborn-head-staged",
+      "component": "statusline",
+      "observable": "stdout",
+      "payload": "payloads/full.json",
+      "git_state": "unborn-head-staged",
+      "why": "R20's unborn-HEAD divergence, captured from the state that actually reaches it. bash renders no git segment; Windows renders the literal `HEAD`. U13 records which one the binary keeps, and its expected output becomes a literal rather than either capture."
     },
     {
       "case": "git-clean",
