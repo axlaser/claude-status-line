@@ -368,14 +368,15 @@ Info (Format-Size (Get-Item $binPath).Length)
 Write-Host ""
 
 # --- Configure settings.json (R14) ---
-# R14 requires the recorded path to be quoted: a profile directory containing a
-# space would otherwise word-split the command. The quotes are part of the
-# stored string, so every later comparison sees them too.
-$quotedBin = '"' + $binPath + '"'
+# The bare path is passed deliberately. R14 requires the stored command to be
+# quoted, but quoting it here does not survive: PowerShell consumes the
+# surrounding quotes of a pre-quoted argument as delimiters, so the binary would
+# receive a bare path anyway and write an unquoted command. The binary adds the
+# quotes on its own side, where no shell can eat them.
 Step "Configuring Claude Code settings"
 $applyFlags = @()
 
-& $binPath settings has-foreign --binary $quotedBin statusline | Out-Null
+& $binPath settings has-foreign --binary $binPath statusline | Out-Null
 if ($LASTEXITCODE -eq 0) {
     Write-Host ""
     $answer = Read-Host "  ${YELLOW}${BOLD} ?${RESET} Existing statusLine config found. Overwrite? (${GREEN}y${RESET}/${RED}n${RESET})"
@@ -386,7 +387,7 @@ if ($LASTEXITCODE -eq 0) {
     $applyFlags += '--statusline'
 }
 
-& $binPath settings has-foreign --binary $quotedBin subagent | Out-Null
+& $binPath settings has-foreign --binary $binPath subagent | Out-Null
 if ($LASTEXITCODE -eq 0) {
     Write-Host ""
     $answer = Read-Host "  ${YELLOW}${BOLD} ?${RESET} Existing subagentStatusLine config found. Overwrite? (${GREEN}y${RESET}/${RED}n${RESET})"
@@ -425,7 +426,7 @@ if (Test-Path $configPath) {
 Write-Host ""
 Step "Notifications"
 Info "Plays a sound and shows a popup when Claude needs attention."
-& $binPath settings has --binary $quotedBin notify | Out-Null
+& $binPath settings has --binary $binPath notify | Out-Null
 if ($LASTEXITCODE -eq 0) {
     Ok "Already configured"
     $applyFlags += '--notify'
@@ -447,7 +448,7 @@ if (-not (Test-Path $iconPath)) {
 
 # --- Apply ---
 Write-Host ""
-$applyOutput = & $binPath settings apply --binary $quotedBin @applyFlags 2>&1
+$applyOutput = & $binPath settings apply --binary $binPath @applyFlags 2>&1
 if ($LASTEXITCODE -ne 0) {
     Err "Failed to update settings.json"
     if ($applyOutput) { Info ($applyOutput -join ' ') }

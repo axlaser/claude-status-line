@@ -44,11 +44,10 @@ Write-Host ""
 # Order matters: the merge logic lives in the binary, so removing the entries
 # has to happen before removing the tool that removes them.
 Step "Updating Claude Code settings"
-$quotedBin = '"' + $binPath + '"'
 if (-not (Test-Path $settingsPath)) {
     Warn "settings.json not found"
 } elseif (Test-Path $binPath) {
-    $out = & $binPath settings remove --binary $quotedBin 2>&1
+    $out = & $binPath settings remove --binary $binPath 2>&1
     if ($LASTEXITCODE -eq 0) {
         Ok "Removed statusline entries and hooks from settings.json"
         Info $settingsPath

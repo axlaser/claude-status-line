@@ -64,7 +64,10 @@ fn main() {
 fn settings_cli(rest: &[&str]) -> i32 {
     let mut binary = String::new();
     let mut path: Option<std::path::PathBuf> = None;
-    let mut spec = settings::ApplySpec::default();
+    let mut spec = settings::ApplySpec {
+        quote: settings::quote_for_this_platform(),
+        ..Default::default()
+    };
     let mut positional: Vec<&str> = Vec::new();
     let mut args = rest.iter().copied();
 
@@ -83,13 +86,14 @@ fn settings_cli(rest: &[&str]) -> i32 {
             "--git-refresh" => spec.git_refresh = true,
             "--notify" => spec.notify = true,
             "--all" => {
-                spec = settings::ApplySpec {
-                    statusline: true,
-                    subagent: true,
-                    git_refresh: true,
-                    notify: true,
-                }
+                spec.statusline = true;
+                spec.subagent = true;
+                spec.git_refresh = true;
+                spec.notify = true;
             }
+            // Testing hooks: the platform default is what installers use.
+            "--quote" => spec.quote = true,
+            "--no-quote" => spec.quote = false,
             other => positional.push(other),
         }
     }

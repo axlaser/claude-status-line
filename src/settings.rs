@@ -73,6 +73,25 @@ pub struct ApplySpec {
     pub subagent: bool,
     pub git_refresh: bool,
     pub notify: bool,
+    /// Store the binary path wrapped in quotes (R14).
+    ///
+    /// Quoting is decided here rather than by the caller because the caller is
+    /// a shell, and shells eat quotes. PowerShell consumes the surrounding
+    /// quotes of a pre-quoted argument as delimiters, so an installer that
+    /// passed `"C:\path\x.exe"` handed this code a bare path and silently wrote
+    /// an unquoted command — which word-splits on the first space in the
+    /// profile directory. Passing the bare path and quoting on this side has no
+    /// such boundary to cross.
+    pub quote: bool,
+}
+
+/// Whether this platform needs the stored command quoted.
+///
+/// Windows does: a profile directory containing a space would otherwise
+/// word-split the command. Unix entries are stored bare, which is what the
+/// shell installers always wrote.
+pub const fn quote_for_this_platform() -> bool {
+    cfg!(windows)
 }
 
 /// The notification events that get their own hook, paired with the hook event
@@ -99,6 +118,12 @@ const NOTIFY_HOOKS: [(&str, Option<&str>, &str); 4] = [
 /// this function's.
 pub fn apply(root: &mut Value, binary: &str, spec: &ApplySpec) {
     ensure_object(root);
+
+    let binary: &str = &if spec.quote && !binary.starts_with('"') {
+        format!("\"{binary}\"")
+    } else {
+        binary.to_string()
+    };
 
     if spec.statusline {
         root[STATUS_LINE] = json!({

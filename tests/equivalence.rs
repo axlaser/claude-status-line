@@ -781,6 +781,14 @@ fn all() -> settings::ApplySpec {
         subagent: true,
         git_refresh: true,
         notify: true,
+        quote: false,
+    }
+}
+
+fn all_quoted() -> settings::ApplySpec {
+    settings::ApplySpec {
+        quote: true,
+        ..all()
     }
 }
 
@@ -848,9 +856,60 @@ fn remove_restores_the_pre_install_file() {
     );
 }
 
-/// R14's Windows quoting. The path is stored quoted so a profile directory
-/// containing a space cannot word-split the command, and every query and the
-/// removal path have to recognise it in that form.
+/// R14's Windows quoting, driven the way an installer drives it: with the
+/// **bare** path.
+///
+/// Quoting is the binary's job precisely because the caller is a shell and
+/// shells eat quotes. PowerShell consumes the surrounding quotes of a pre-quoted
+/// argument as delimiters, so an installer that passed `"C:\path\x.exe"` handed
+/// the merge a bare path and silently wrote an unquoted command. That shipped
+/// once and was only caught by installing from a real release — the earlier
+/// version of this test passed a pre-quoted string straight to the function and
+/// never crossed the boundary where the bug lived.
+#[test]
+fn quoting_is_applied_on_this_side_of_the_shell_boundary() {
+    let bare = WIN_BINARY.trim_matches('"');
+
+    let mut quoted = serde_json::json!({});
+    settings::apply(&mut quoted, bare, &all_quoted());
+    let command = quoted["statusLine"]["command"].as_str().unwrap_or_default();
+    assert_eq!(
+        command, WIN_BINARY,
+        "a bare path handed in was not quoted on the way out"
+    );
+    assert!(
+        quoted["subagentStatusLine"]["command"]
+            .as_str()
+            .unwrap_or_default()
+            .starts_with(WIN_BINARY),
+        "the subcommand form lost its quoting"
+    );
+
+    // Unix entries stay bare, which is what the shell installers always wrote.
+    let mut unquoted = serde_json::json!({});
+    settings::apply(&mut unquoted, UNIX_BINARY, &all());
+    assert_eq!(
+        unquoted["statusLine"]["command"]
+            .as_str()
+            .unwrap_or_default(),
+        UNIX_BINARY,
+        "a Unix entry was quoted, which the shell installers never did"
+    );
+
+    // Quoting must also be idempotent: an already-quoted path stays as it is
+    // rather than accumulating a second pair.
+    let mut twice = serde_json::json!({});
+    settings::apply(&mut twice, WIN_BINARY, &all_quoted());
+    assert_eq!(
+        twice["statusLine"]["command"].as_str().unwrap_or_default(),
+        WIN_BINARY,
+        "an already-quoted path was quoted again"
+    );
+}
+
+/// Whatever form the command was stored in, every query and the removal path
+/// have to recognise it — the uninstaller holds a bare path where the installer
+/// wrote a quoted one.
 #[test]
 fn quoted_windows_paths_round_trip() {
     let mut root = serde_json::json!({});
