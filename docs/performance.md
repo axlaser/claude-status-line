@@ -212,6 +212,51 @@ one commit, and R38 requires these medians to be recorded *before* that commit �
 so the tree that was measured could not itself be a branch commit. The measured
 content is what the U6 port commit lands.
 
+#### `statusline` (2026-07-27)
+
+Payload `tests/harness/payloads/full.json`, with the transcript and the learned
+model-window map staged into the isolated `HOME` the payload points at, so both
+variants parse a real session rather than an empty one.
+
+R38 requires this pair to cover the large-transcript state. The transcript is
+**generated to a target size** rather than pointed at a real session file: a
+machine-local transcript is not reproducible on CI, on another machine, or next
+month, and a number nobody else can reproduce is an anecdote rather than
+evidence. Repeating one pinned record keeps the token totals a pure function of
+the size.
+
+| Transcript | Host | Host class | Runs | Script | Binary | Delta |
+|---|---|---|---|---|---|---|
+| pinned (2 KB) | Windows 11 26200, Windows PowerShell 5.1.26100 | maintainer machine | 15 | 307.4 ms | 21.7 ms | −92.9% |
+| generated 8 MB | Windows 11 26200, Windows PowerShell 5.1.26100 | maintainer machine | 7 | 322.4 ms | 72.8 ms | −77.4% |
+
+Reading them:
+
+- **The script barely notices the 8 MB transcript (307 → 322 ms) and the binary
+  clearly does (21.7 → 72.8 ms).** That is not a regression, it is R27's trade
+  showing up exactly where it was predicted to. The script keeps an incremental
+  parser and rescans only the growth; the port deleted that machinery and scans
+  the whole file every tick. The scan costs ~51 ms at 8 MB and the binary is
+  still 4.4× faster end to end, which is the measurement the deletion was
+  argued from rather than asserted against.
+- The script figure is its *best* case, not its worst. Both variants run against
+  a static transcript, so the script's incremental parser has no growth to scan
+  and its output cache is warm for part of the run. The binary's figure is its
+  only case — it has no output cache at all (R27).
+- Windows again dominates the pair: ~124 ms of the script's 307 ms is the
+  interpreter existing, before any of this tool's code runs.
+
+**Still owed before the statusline scripts are deleted:** the macOS and Linux
+halves of this pair, from `.github/workflows/measure.yml`. The Windows half is
+measured on the maintainer's machine for the same reason KTD9 keeps Windows
+capture off CI.
+
+Provenance note: unlike the `subagent` pair above, this one needed no throwaway
+commit. The port landed at U12 and the scripts are deleted at U13, so a commit
+carrying both the Rust statusline and the three scripts exists on the branch and
+could be measured directly. The R37/R38 collision only bites when a single
+commit has to do both.
+
 ## 7. Decision record (settled design questions — do not re-litigate without new evidence)
 
 ### Rendered-value cache key — no change (2026-07-26)

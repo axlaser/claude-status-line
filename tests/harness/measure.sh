@@ -88,18 +88,29 @@ while [[ $# -gt 0 ]]; do
         --payload)   PAYLOAD="${2:?}"; shift 2 ;;
         --binary)    BINARY="${2:?}"; shift 2 ;;
         --json)      JSON_OUT="${2:?}"; shift 2 ;;
+        --transcript-bytes) TRANSCRIPT_BYTES="${2:?}"; shift 2 ;;
         *)           fail "unknown argument: $1" ;;
     esac
 done
 
-[[ $COMPONENT == subagent ]] || fail "unknown component '$COMPONENT'"
+case "$COMPONENT" in
+    subagent|statusline) ;;
+    *) fail "unknown component '$COMPONENT'" ;;
+esac
 (( RUNS >= 7 )) || fail "R38 and docs/performance.md §3 require at least 7 runs; got $RUNS"
 
-SCRIPT="$REPO_ROOT/$PLATFORM/subagent-statusline.sh"
-[[ -n $PAYLOAD ]] || PAYLOAD="$REPO_ROOT/tests/harness/payloads/tasks-feed.json"
-[[ -n $BINARY ]]  || BINARY="$REPO_ROOT/target/release/claude-statusline"
-SUBCOMMAND=subagent
-FEED_NAME=statusline-tasks-fixture-session-0001.json
+if [[ $COMPONENT == statusline ]]; then
+    SCRIPT="$REPO_ROOT/$PLATFORM/statusline.sh"
+    [[ -n $PAYLOAD ]] || PAYLOAD="$REPO_ROOT/tests/harness/payloads/full.json"
+    SUBCOMMAND=statusline
+    FEED_NAME=""
+else
+    SCRIPT="$REPO_ROOT/$PLATFORM/subagent-statusline.sh"
+    [[ -n $PAYLOAD ]] || PAYLOAD="$REPO_ROOT/tests/harness/payloads/tasks-feed.json"
+    SUBCOMMAND=subagent
+    FEED_NAME=statusline-tasks-fixture-session-0001.json
+fi
+[[ -n $BINARY ]] || BINARY="$REPO_ROOT/target/release/claude-statusline"
 
 for required in "$SCRIPT" "$PAYLOAD" "$BINARY"; do
     [[ -e $required ]] || fail "missing $required (build the release binary first: cargo build --release)"
@@ -121,17 +132,59 @@ export TMPDIR="$ROOT/tmp"
 # ambient shell would charge one side an extra file append per tick.
 unset STATUSLINE_DEBUG
 
-run_script() { LC_ALL="$UTF8_LOCALE" "$SCRIPT" < "$PAYLOAD" >/dev/null 2>&1; }
-run_binary() { LC_ALL="$UTF8_LOCALE" "$BINARY" "$SUBCOMMAND" < "$PAYLOAD" >/dev/null 2>&1; }
+# The statusline reads state the payload points at, so the payload's
+# placeholders are resolved into the isolated roots and the state they name is
+# staged there. Without this both variants would parse no transcript and the
+# pair would time an empty session.
+PROBE_PAYLOAD="$PAYLOAD"
+if [[ $COMPONENT == statusline ]]; then
+    transcript="$HOME/.claude/projects/fixtures/transcript.jsonl"
+    mkdir -p "$(dirname -- "$transcript")"
+    if (( ${TRANSCRIPT_BYTES:-0} > 0 )); then
+        # R38's large-transcript state. GENERATED to a target size rather than
+        # pointed at a real session file: a machine-local transcript is not
+        # reproducible on CI, on another machine, or next month, and a number
+        # nobody else can reproduce is an anecdote. Repeating one pinned record
+        # keeps the token totals a pure function of the size.
+        line=$(head -n 1 "$REPO_ROOT/tests/harness/inputs/transcript.jsonl")
+        : > "$transcript"
+        while (( $(wc -c < "$transcript") < TRANSCRIPT_BYTES )); do
+            for _ in $(seq 1 512); do printf '%s\n' "$line"; done >> "$transcript"
+        done
+    else
+        cp "$REPO_ROOT/tests/harness/inputs/transcript.jsonl" "$transcript"
+    fi
+    cp "$REPO_ROOT/tests/harness/inputs/model-windows.json" \
+       "$HOME/.claude/statusline-model-windows.json"
+
+    PROBE_PAYLOAD="$ROOT/payload.json"
+    sed -e "s#{HOME}#$HOME#g" -e "s#{TMP}#$TMPDIR#g" -e "s#{REPO}#$ROOT#g" \
+        "$PAYLOAD" > "$PROBE_PAYLOAD"
+fi
+
+run_script() { LC_ALL="$UTF8_LOCALE" "$SCRIPT" < "$PROBE_PAYLOAD" >/dev/null 2>&1; }
+run_binary() { LC_ALL="$UTF8_LOCALE" "$BINARY" "$SUBCOMMAND" < "$PROBE_PAYLOAD" >/dev/null 2>&1; }
 
 # Each variant is proven to do its work before anything is timed. A probe that
 # silently no-opped -- a missing dependency, a changed payload contract -- would
 # otherwise be reported as a spectacular speed-up.
 for variant in script binary; do
-    rm -f "$TMPDIR/$FEED_NAME"
-    "run_$variant"
-    [[ -s "$TMPDIR/$FEED_NAME" ]] ||
-        fail "the $variant variant wrote no feed -- refusing to report a measurement of nothing"
+    if [[ $COMPONENT == statusline ]]; then
+        # The statusline's observable is stdout, so that is what proves it
+        # worked. A box carrying the model row cannot come from a variant that
+        # failed to parse the payload.
+        out=$(LC_ALL="$UTF8_LOCALE" \
+            "$(if [[ $variant == script ]]; then printf '%s' "$SCRIPT"; else printf '%s' "$BINARY"; fi)" \
+            $(if [[ $variant == binary ]]; then printf '%s' "$SUBCOMMAND"; fi) \
+            < "$PROBE_PAYLOAD" 2>/dev/null)
+        [[ $out == *"┏"* && $out == *"Opus 5"* ]] ||
+            fail "the $variant variant rendered no box -- refusing to report a measurement of nothing"
+    else
+        rm -f "$TMPDIR/$FEED_NAME"
+        "run_$variant"
+        [[ -s "$TMPDIR/$FEED_NAME" ]] ||
+            fail "the $variant variant wrote no feed -- refusing to report a measurement of nothing"
+    fi
 done
 
 probe() {

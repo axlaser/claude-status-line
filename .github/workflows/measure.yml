@@ -37,12 +37,16 @@ on:
         required: false
         type: choice
         default: subagent
-        options: [subagent]
+        options: [subagent, statusline]
       runs:
         description: "Interleaved pairs per platform (>= 7)"
         required: false
         type: string
         default: "11"
+      transcript_bytes:
+        description: "statusline only: generated transcript size in bytes (default 8388608)"
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -102,6 +106,7 @@ jobs:
         env:
           IN_COMPONENT: ${{ inputs.component }}
           IN_RUNS: ${{ inputs.runs }}
+          IN_TRANSCRIPT_BYTES: ${{ inputs.transcript_bytes }}
           # R38 requires the runner label and image version beside the numbers,
           # so a runner-measured figure is never later held against a bare-metal
           # baseline (R41).
@@ -113,7 +118,7 @@ jobs:
           # request: `measure-subagent` measures that component.
           if [ -z "$component" ] && [ "$GITHUB_EVENT_NAME" = "push" ]; then
             case "${GITHUB_REF_NAME#measure-}" in
-              subagent) component="${GITHUB_REF_NAME#measure-}" ;;
+              subagent|statusline) component="${GITHUB_REF_NAME#measure-}" ;;
               *) component="subagent" ;;
             esac
           fi
@@ -125,9 +130,19 @@ jobs:
           echo "measuring $component, $runs pairs, on $MEASURE_RUNNER ($MEASURE_IMAGE)"
 
           mkdir -p measured
+          # R38 requires the statusline pair to cover the large-transcript
+          # state. The driver generates the transcript to a target size, so the
+          # number is reproducible on any runner rather than tied to the files
+          # that happen to sit on one machine.
+          extra=""
+          if [ "$component" = statusline ]; then
+            extra="--transcript-bytes ${IN_TRANSCRIPT_BYTES:-8388608}"
+          fi
+          # shellcheck disable=SC2086
           bash tests/harness/measure.sh \
             --component "$component" \
             --runs "$runs" \
+            $extra \
             --json "measured/${{ matrix.platform }}.json"
 
       # A green run that produced no numbers is the same failure the harness's

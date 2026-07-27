@@ -32,10 +32,11 @@
 
 [CmdletBinding()]
 param(
-    [ValidateSet('subagent')]
+    [ValidateSet('subagent', 'statusline')]
     [string] $Component = 'subagent',
     [int]    $Runs = 11,
     [string] $Payload,
+    [int] $TranscriptBytes = 0,
     [string] $Binary,
     [string] $Json
 )
@@ -53,12 +54,16 @@ if ($Runs -lt 7) { Fail "R38 and docs/performance.md section 3 require at least 
 # What each component's two variants are. The script side is invoked the way
 # Claude Code invokes it -- a fresh interpreter reading the payload on stdin --
 # because that, not the script body, is where the cost lives.
+if ($Component -notin @('subagent', 'statusline')) { Fail "unknown component '$Component'" }
+
 $script = switch ($Component) {
-    'subagent' { Join-Path $RepoRoot 'windows\subagent-statusline.ps1' }
+    'subagent'   { Join-Path $RepoRoot 'windows\subagent-statusline.ps1' }
+    'statusline' { Join-Path $RepoRoot 'windows\statusline.ps1' }
 }
 if (-not $Payload) {
     $Payload = switch ($Component) {
-        'subagent' { Join-Path $RepoRoot 'tests\harness\payloads\tasks-feed.json' }
+        'subagent'   { Join-Path $RepoRoot 'tests\harness\payloads\tasks-feed.json' }
+        'statusline' { Join-Path $RepoRoot 'tests\harness\payloads\full.json' }
     }
 }
 if (-not $Binary) { $Binary = Join-Path $RepoRoot 'target\release\claude-statusline.exe' }
@@ -69,10 +74,25 @@ foreach ($required in @($script, $Payload, $Binary)) {
     }
 }
 
-$subcommand = switch ($Component) { 'subagent' { 'subagent' } }
-$feedName   = switch ($Component) { 'subagent' { 'statusline-tasks-fixture-session-0001.json' } }
+$subcommand = switch ($Component) { 'subagent' { 'subagent' } 'statusline' { 'statusline' } }
+$feedName   = switch ($Component) { 'subagent' { 'statusline-tasks-fixture-session-0001.json' } 'statusline' { $null } }
 
 $RealPowerShell = (Get-Command powershell.exe).Source
+
+# R38 requires the statusline pair to cover the large-transcript state. The
+# transcript is GENERATED to a target size rather than pointed at a real one:
+# a machine-local session file is not reproducible on CI, on another machine,
+# or next month, and a performance number nobody else can reproduce is an
+# anecdote. Repeating one pinned record keeps the token totals a pure function
+# of the size.
+function New-MeasureTranscript([string] $Path, [int] $TargetBytes) {
+    $record = [System.IO.File]::ReadAllText((Join-Path $RepoRoot 'tests\harness\inputs\transcript.jsonl'))
+    $line = ($record -split "`n" | Where-Object { $_.Trim() -ne '' } | Select-Object -First 1) + "`n"
+    $builder = [System.Text.StringBuilder]::new()
+    while ($builder.Length -lt $TargetBytes) { [void]$builder.Append($line) }
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Path) | Out-Null
+    [System.IO.File]::WriteAllText($Path, $builder.ToString(), (New-Object System.Text.UTF8Encoding $false))
+}
 
 # ---------------------------------------------------------------------------
 # Isolated roots
@@ -103,8 +123,32 @@ function Invoke-Probe([string] $CommandLine) {
     return $sw.Elapsed.TotalMilliseconds
 }
 
-$scriptLine = '"' + $RealPowerShell + '" -NoProfile -File "' + $script + '" < "' + $Payload + '"'
-$binaryLine = '"' + $Binary + '" ' + $subcommand + ' < "' + $Payload + '"'
+# The statusline reads state the payload points at, so the payload's
+# placeholders are resolved into the isolated roots and the state it names is
+# staged there. Without this both variants would parse no transcript and the
+# pair would time an empty session.
+$probePayload = $Payload
+if ($Component -eq 'statusline') {
+    $transcript = Join-Path $home_ '.claude\projects\fixtures\transcript.jsonl'
+    if ($TranscriptBytes -gt 0) {
+        New-MeasureTranscript $transcript $TranscriptBytes
+    } else {
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $transcript) | Out-Null
+        Copy-Item (Join-Path $RepoRoot 'tests\harness\inputs\transcript.jsonl') $transcript
+    }
+    Copy-Item (Join-Path $RepoRoot 'tests\harness\inputs\model-windows.json') `
+        (Join-Path $home_ '.claude\statusline-model-windows.json')
+
+    $body = [System.IO.File]::ReadAllText($Payload)
+    $body = $body.Replace('{HOME}', ($home_ -replace '\\', '/'))
+    $body = $body.Replace('{TMP}',  ($tmp   -replace '\\', '/'))
+    $body = $body.Replace('{REPO}', ($root  -replace '\\', '/'))
+    $probePayload = Join-Path $root 'payload.json'
+    [System.IO.File]::WriteAllText($probePayload, $body, (New-Object System.Text.UTF8Encoding $false))
+}
+
+$scriptLine = '"' + $RealPowerShell + '" -NoProfile -File "' + $script + '" < "' + $probePayload + '"'
+$binaryLine = '"' + $Binary + '" ' + $subcommand + ' < "' + $probePayload + '"'
 
 $scriptTimes = @()
 $binaryTimes = @()
@@ -114,11 +158,21 @@ try {
     # that silently no-opped -- a missing dependency, a changed payload
     # contract -- would otherwise be reported as a spectacular speed-up.
     foreach ($pair in @(@('script', $scriptLine), @('binary', $binaryLine))) {
-        Remove-Item -LiteralPath (Join-Path $tmp $feedName) -Force -ErrorAction SilentlyContinue
-        & cmd.exe /c $pair[1] | Out-Null
-        $produced = Join-Path $tmp $feedName
-        if (-not (Test-Path -LiteralPath $produced) -or (Get-Item -LiteralPath $produced).Length -eq 0) {
-            Fail "the $($pair[0]) variant wrote no feed -- refusing to report a measurement of nothing"
+        if ($Component -eq 'statusline') {
+            # The statusline's observable is stdout, so that is what proves it
+            # worked. A box with the model row in it cannot be produced by a
+            # variant that failed to parse the payload.
+            $out = (& cmd.exe /c $pair[1]) -join "`n"
+            if ($out -notmatch '┏' -or $out -notmatch 'Opus 5') {
+                Fail "the $($pair[0]) variant rendered no box -- refusing to report a measurement of nothing"
+            }
+        } else {
+            Remove-Item -LiteralPath (Join-Path $tmp $feedName) -Force -ErrorAction SilentlyContinue
+            & cmd.exe /c $pair[1] | Out-Null
+            $produced = Join-Path $tmp $feedName
+            if (-not (Test-Path -LiteralPath $produced) -or (Get-Item -LiteralPath $produced).Length -eq 0) {
+                Fail "the $($pair[0]) variant wrote no feed -- refusing to report a measurement of nothing"
+            }
         }
     }
 
