@@ -256,3 +256,44 @@ Reopen conditions: a live multi-tick capture confirming raw field/order stabilit
 idle-tick key churn, plus a structural guard (trimmed payload starts `{` and ends `}`)
 re-measured to confirm the mechanism still clears 30%. The −6.9% cmdlet swap remains a
 zero-risk fallback but does not meet the bar on its own.
+
+### Incremental transcript parser — deleted in the Rust port (2026-07-27)
+
+The scripts' incremental parse (stored byte offset, head checksum over
+`min(4096, size)` bytes, truncation and rewrite detection) exists because a full
+rescan of a large transcript costs ~1470 ms in PowerShell. The Rust port does not
+inherit that cost, so U9 measured a full parse before porting any of it.
+
+Fresh-process medians, maintainer's machine (Windows 11 26200), release build,
+15 runs, largest transcript available locally — 8,406,985 bytes. The plan's
+13.4 MB reference transcript no longer exists on this machine, so the row is
+smaller than the §6 script rows it is read against:
+
+| Probe | Median |
+|---|---|
+| Process only (632-byte transcript) | 6.5 ms |
+| Full parse, 8.4 MB | 46.9 ms |
+| Full parse, 8.4 MB, before search optimization | 98.8 ms |
+
+Against §6's script rows for 13.4 MB — 568 ms for an incremental growth tick and
+~1470 ms for a cold full rescan — a full Rust parse is roughly an order of
+magnitude cheaper than the incremental path it would be replacing, before
+adjusting for the smaller file. The offset, checksum and resume machinery are
+therefore deleted rather than ported (R27).
+
+Two things worth keeping from the measurement:
+
+- **Substring search dominated the scan.** Replacing `windows(n).position(..)`
+  with a first-byte scan followed by a compare halved the figure, 98.8 ms to
+  46.9 ms, with byte-identical results. The first-byte scan vectorizes; the
+  window compare does not. This is why the crate needs no search dependency.
+- **The token record is not deleted with the parser.** The per-bucket `(+N)`
+  deltas are this tick's totals minus the previous tick's, and an unchanged
+  transcript re-displays the stored deltas rather than recomputing them to zero.
+  That makes the record a render input under R28, not a performance cache. What
+  goes is the offset and checksum; what stays is mtime, size, four totals and
+  four deltas.
+
+Reopen condition: a transcript large enough that a full parse becomes visible
+next to the ~124 ms interpreter floor the migration removes — on this hardware
+that is somewhere north of 25 MB.

@@ -14,6 +14,7 @@ use claude_statusline::payload::{sanitize_display, Payload};
 use claude_statusline::platform;
 use claude_statusline::settings;
 use claude_statusline::state::{self, WriteOutcome};
+use claude_statusline::transcript::{self, Scan, TokenRecord};
 
 // ---------------------------------------------------------------------------
 // Harness
@@ -2950,4 +2951,501 @@ fn legacy_field_spellings_fall_back_in_the_scripts_order() {
     assert_eq!(p.git_cwd(), "/preferred/dir");
     assert_eq!(p.total_cost_usd(), Some(1.0));
     assert_eq!(p.duration_ms(), Some(10.0));
+}
+
+// ---------------------------------------------------------------------------
+// Transcript scan (R19, R26, R27 / U9)
+// ---------------------------------------------------------------------------
+
+fn transcript_input(name: &str) -> Vec<u8> {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("harness")
+        .join("inputs")
+        .join(name);
+    std::fs::read(&path).unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()))
+}
+
+/// One scan case. Lines are joined with a trailing newline so the table reads
+/// as a transcript rather than as an escaped blob.
+struct ScanCase {
+    name: &'static str,
+    lines: &'static [&'static str],
+    init_idle: bool,
+    want: Scan,
+}
+
+/// The counting and voting rules, case by case. Every filter here exists
+/// because its absence produced a visible bug: without the synthetic-entry
+/// filters the idle detector sticks on "working" after any slash command, and
+/// without the `"assistant"` guard a user entry quoting token counts would
+/// inflate the totals.
+#[test]
+fn scan_counts_and_votes_the_way_the_scripts_do() {
+    let cases = &[
+        ScanCase {
+            name: "user-then-assistant-is-working",
+            lines: &[
+                r#"{"type":"user","message":{"content":"go"}}"#,
+                r#"{"type":"assistant","message":{"usage":{"input_tokens":10,"cache_creation_input_tokens":2,"cache_read_input_tokens":30,"output_tokens":5}}}"#,
+            ],
+            init_idle: true,
+            want: Scan {
+                messages: 1,
+                input_tokens: 10,
+                cache_write_tokens: 2,
+                cache_read_tokens: 30,
+                output_tokens: 5,
+                idle: false,
+                ..Default::default()
+            },
+        },
+        ScanCase {
+            name: "end-turn-is-idle",
+            lines: &[
+                r#"{"type":"assistant","stop_reason":"end_turn","message":{"usage":{"output_tokens":5}}}"#,
+            ],
+            init_idle: false,
+            want: Scan {
+                output_tokens: 5,
+                idle: true,
+                ..Default::default()
+            },
+        },
+        ScanCase {
+            name: "interrupted-user-is-idle",
+            lines: &[r#"{"type":"user","message":{"content":"Request interrupted by user"}}"#],
+            init_idle: false,
+            want: Scan {
+                messages: 1,
+                idle: true,
+                ..Default::default()
+            },
+        },
+        ScanCase {
+            name: "meta-entry-neither-counts-nor-votes",
+            lines: &[
+                r#"{"type":"assistant","stop_reason":"end_turn","message":{"usage":{"output_tokens":1}}}"#,
+                r#"{"type":"user","isMeta":true,"message":{"content":"x"}}"#,
+            ],
+            init_idle: false,
+            want: Scan {
+                output_tokens: 1,
+                idle: true,
+                ..Default::default()
+            },
+        },
+        ScanCase {
+            name: "slash-command-does-not-stick-on-working",
+            lines: &[
+                r#"{"type":"assistant","stop_reason":"end_turn","message":{}}"#,
+                r#"{"type":"user","message":{"content":"<command-name>/clear</command-name>"}}"#,
+            ],
+            init_idle: false,
+            want: Scan {
+                idle: true,
+                ..Default::default()
+            },
+        },
+        ScanCase {
+            name: "local-command-stdout-neither-counts-nor-votes",
+            lines: &[
+                r#"{"type":"user","message":{"content":"<local-command-stdout>ok</local-command-stdout>"}}"#,
+            ],
+            init_idle: true,
+            want: Scan {
+                idle: true,
+                ..Default::default()
+            },
+        },
+        ScanCase {
+            name: "tool-result-neither-counts-nor-votes",
+            lines: &[r#"{"type":"user","toolUseResult":{"ok":true}}"#],
+            init_idle: true,
+            want: Scan {
+                idle: true,
+                ..Default::default()
+            },
+        },
+        ScanCase {
+            name: "tokens-come-only-from-assistant-entries",
+            lines: &[
+                r#"{"type":"user","message":{"content":"quoting \"input_tokens\": 999 back at you"}}"#,
+            ],
+            init_idle: false,
+            want: Scan {
+                messages: 1,
+                idle: false,
+                ..Default::default()
+            },
+        },
+        ScanCase {
+            name: "decoy-key-without-a-colon-does-not-clobber",
+            lines: &[
+                r#"{"type":"assistant","message":{"usage":{"input_tokens":7},"text":"the \"input_tokens\" field"}}"#,
+            ],
+            init_idle: false,
+            want: Scan {
+                input_tokens: 7,
+                idle: false,
+                ..Default::default()
+            },
+        },
+        ScanCase {
+            name: "last-colon-bearing-occurrence-wins",
+            lines: &[
+                r#"{"type":"assistant","message":{"usage":{"input_tokens":1},"retry":{"input_tokens":9}}}"#,
+            ],
+            init_idle: false,
+            want: Scan {
+                input_tokens: 9,
+                idle: false,
+                ..Default::default()
+            },
+        },
+        ScanCase {
+            name: "non-numeric-value-reads-zero",
+            lines: &[
+                r#"{"type":"assistant","message":{"usage":{"input_tokens":null,"output_tokens":4}}}"#,
+            ],
+            init_idle: false,
+            want: Scan {
+                output_tokens: 4,
+                idle: false,
+                ..Default::default()
+            },
+        },
+        ScanCase {
+            name: "whitespace-around-colons-is-tolerated",
+            lines: &[r#"{"type" : "assistant","message":{"usage":{"input_tokens"  :   12}}}"#],
+            init_idle: false,
+            want: Scan {
+                input_tokens: 12,
+                idle: false,
+                ..Default::default()
+            },
+        },
+        ScanCase {
+            name: "nothing-votes-so-the-initial-verdict-holds",
+            lines: &[r#"{"type":"system","subtype":"init"}"#],
+            init_idle: true,
+            want: Scan {
+                idle: true,
+                ..Default::default()
+            },
+        },
+    ];
+
+    let mut failures = Failures::default();
+    for case in cases {
+        let body = format!("{}\n", case.lines.join("\n"));
+        let got = transcript::scan(body.as_bytes(), Some(body.len() as u64), case.init_idle);
+        let want = Scan {
+            consumed: body.len() as u64,
+            ..case.want.clone()
+        };
+        failures.check(case.name, got == want, || {
+            format!("want {want:?}, got {got:?}")
+        });
+    }
+    failures.assert_empty("transcript scan");
+}
+
+/// The pinned inputs the fixture captures use. Their totals are the sum of
+/// every assistant entry's four usage fields, which is what the tokens row
+/// renders.
+#[test]
+fn pinned_transcript_inputs_scan_to_their_recorded_totals() {
+    let plain = transcript_input("transcript.jsonl");
+    let got = transcript::scan(&plain, Some(plain.len() as u64), true);
+    assert_eq!(
+        got,
+        Scan {
+            messages: 2,
+            input_tokens: 2700,
+            cache_write_tokens: 1400,
+            cache_read_tokens: 82000,
+            output_tokens: 400,
+            idle: false,
+            consumed: plain.len() as u64,
+        }
+    );
+}
+
+/// The gawk incident, pinned. A UTF-8-aware extractor mis-sliced any line
+/// carrying a character outside the BMP and returned zero for its token
+/// counts, which reads as a plausible total rather than as an obvious break.
+/// Both entries in this fixture carry astral-plane characters, so a regression
+/// shows up as a total, not as a rounding difference.
+#[test]
+fn astral_plane_characters_do_not_zero_the_token_counts() {
+    let astral = transcript_input("transcript-astral.jsonl");
+    let got = transcript::scan(&astral, Some(astral.len() as u64), true);
+    assert_eq!(
+        got,
+        Scan {
+            messages: 1,
+            input_tokens: 2100,
+            cache_write_tokens: 1100,
+            cache_read_tokens: 81000,
+            output_tokens: 320,
+            idle: false,
+            consumed: astral.len() as u64,
+        }
+    );
+    assert!(
+        got.input_tokens > 0 && got.output_tokens > 0,
+        "the incident's signature is zeroed totals, not wrong ones"
+    );
+}
+
+/// A trailing line with no newline is being written right now. Counting it
+/// would double-count when the rest of it arrives, so it is left for the next
+/// scan and the consumed count stops before it.
+#[test]
+fn a_torn_trailing_line_is_left_for_the_next_scan() {
+    let complete = "{\"type\":\"assistant\",\"message\":{\"usage\":{\"output_tokens\":5}}}\n";
+    let torn = "{\"type\":\"assistant\",\"message\":{\"usage\":{\"output_to";
+    let body = format!("{complete}{torn}");
+
+    let got = transcript::scan(body.as_bytes(), Some(body.len() as u64), true);
+    assert_eq!(got.output_tokens, 5, "the torn line must not be counted");
+    assert_eq!(
+        got.consumed,
+        complete.len() as u64,
+        "the consumed count must stop at the last complete record"
+    );
+}
+
+/// The size is sampled before the read, so a transcript that grows during the
+/// scan yields the same numbers it would have a moment earlier. Everything
+/// after the first record that does not fit is skipped, including records that
+/// would have fit — the prefix has to stay unbroken.
+#[test]
+fn records_appended_after_the_size_was_sampled_are_not_consumed() {
+    let first = "{\"type\":\"assistant\",\"message\":{\"usage\":{\"output_tokens\":5}}}\n";
+    let appended = "{\"type\":\"assistant\",\"message\":{\"usage\":{\"output_tokens\":7}}}\n";
+    let body = format!("{first}{appended}");
+
+    let sampled = transcript::scan(body.as_bytes(), Some(first.len() as u64), true);
+    assert_eq!(sampled.output_tokens, 5);
+    assert_eq!(sampled.consumed, first.len() as u64);
+
+    let ungated = transcript::scan(body.as_bytes(), None, true);
+    assert_eq!(
+        ungated.output_tokens, 12,
+        "without a sampled size every record present is consumed"
+    );
+    assert_eq!(ungated.consumed, body.len() as u64);
+}
+
+/// The record is what makes the `(+N)` deltas renderable, so its round trip is
+/// a render-correctness test, not a serialization detail.
+#[test]
+fn the_token_record_round_trips_through_the_state_guard() {
+    let dir = scratch_dir("token-record");
+    let path = dir.join("statusline-tokens-session.txt");
+    let record = TokenRecord {
+        mtime: 1_700_000_000,
+        size: 8_406_985,
+        input_tokens: 425_266,
+        cache_write_tokens: 26_436_150,
+        cache_read_tokens: 486_683_613,
+        output_tokens: 4_243_856,
+        delta_in: 12,
+        delta_cache_write: 34,
+        delta_cache_read: 56,
+        delta_out: 78,
+    };
+
+    assert_eq!(
+        state::write_guarded(&path, record.to_line().as_bytes()),
+        WriteOutcome::Written
+    );
+    let bytes = state::read_trusted(&path).expect("the record must read back through the guard");
+    let text = String::from_utf8(bytes).expect("the record is ASCII");
+    assert_eq!(
+        TokenRecord::parse(&text).as_ref(),
+        Some(&record),
+        "the record must survive the guarded write it is stored through"
+    );
+}
+
+/// Every rejection lands where an absent record lands — deltas against zero —
+/// so being strict here costs one inflated increment, never a wrong number.
+#[test]
+fn a_damaged_token_record_reads_as_no_record() {
+    let good = TokenRecord {
+        mtime: 10,
+        size: 20,
+        input_tokens: 1,
+        cache_write_tokens: 2,
+        cache_read_tokens: 3,
+        output_tokens: 4,
+        delta_in: 5,
+        delta_cache_write: 6,
+        delta_cache_read: 7,
+        delta_out: 8,
+    }
+    .to_line();
+
+    let cases: &[(&str, String, bool)] = &[
+        ("well-formed", good.clone(), true),
+        ("trailing-newline", format!("{good}\n"), true),
+        ("trailing-crlf", format!("{good}\r\n"), true),
+        ("empty", String::new(), false),
+        ("wrong-version", good.replacen("v3", "v2", 1), false),
+        ("too-few-fields", "v3|10|20|1|2|3|4".to_string(), false),
+        ("too-many-fields", format!("{good}|9"), false),
+        ("non-numeric", good.replacen("|20|", "|twenty|", 1), false),
+        (
+            "negative-size",
+            "v3|10|-20|1|2|3|4|5|6|7|8".to_string(),
+            false,
+        ),
+        (
+            "overlong-digit-run",
+            format!("v3|10|20|{}|2|3|4|5|6|7|8", "9".repeat(25)),
+            false,
+        ),
+    ];
+
+    let mut failures = Failures::default();
+    for (name, raw, want_ok) in cases {
+        let got = TokenRecord::parse(raw).is_some();
+        failures.check(name, got == *want_ok, || {
+            format!("want parse ok = {want_ok}, got {got}")
+        });
+    }
+    failures.assert_empty("token record parsing");
+}
+
+/// The delta rules, which are rendered output: the `(+N)` beside each bucket.
+#[test]
+fn deltas_follow_the_scripts_rules() {
+    let scan = Scan {
+        input_tokens: 100,
+        cache_write_tokens: 200,
+        cache_read_tokens: 300,
+        output_tokens: 400,
+        ..Default::default()
+    };
+
+    // First run: no record, so the whole total renders as one increment. This
+    // is the scripts' behaviour, not an accident of the port.
+    let (first, write) = TokenRecord::fold(None, &scan, 10, 20);
+    assert!(write);
+    assert_eq!(
+        (
+            first.delta_in,
+            first.delta_cache_write,
+            first.delta_cache_read,
+            first.delta_out
+        ),
+        (100, 200, 300, 400)
+    );
+
+    // Transcript grew: deltas are the difference.
+    let grown = Scan {
+        input_tokens: 130,
+        cache_write_tokens: 200,
+        cache_read_tokens: 350,
+        output_tokens: 480,
+        ..Default::default()
+    };
+    let (second, write) = TokenRecord::fold(Some(&first), &grown, 11, 25);
+    assert!(write);
+    assert_eq!(
+        (
+            second.delta_in,
+            second.delta_cache_write,
+            second.delta_cache_read,
+            second.delta_out
+        ),
+        (30, 0, 50, 80)
+    );
+
+    // Unchanged transcript: the stored deltas are re-displayed rather than
+    // recomputed to zero, and nothing needs writing.
+    let (idle_tick, write) = TokenRecord::fold(Some(&second), &grown, 11, 25);
+    assert_eq!(idle_tick, second);
+    assert!(!write, "an idle tick must not rewrite an identical record");
+
+    // Same mtime and size, different content — the same-size rewrite the
+    // scripts needed a head checksum to notice. Scanning every tick sees it.
+    let rewritten = Scan {
+        input_tokens: 999,
+        ..Default::default()
+    };
+    let (after, write) = TokenRecord::fold(Some(&second), &rewritten, 11, 25);
+    assert_eq!(
+        after.input_tokens, 999,
+        "totals always come from this tick's scan"
+    );
+    assert_eq!(
+        after.delta_in, second.delta_in,
+        "an unchanged mtime and size still re-displays the stored delta"
+    );
+    assert!(write, "changed totals must be stored");
+
+    // A shrinking transcript clamps rather than rendering a negative increment.
+    let shrunk = Scan {
+        input_tokens: 1,
+        ..Default::default()
+    };
+    let (smaller, _) = TokenRecord::fold(Some(&second), &shrunk, 12, 5);
+    assert_eq!(
+        (smaller.delta_in, smaller.delta_out),
+        (0, 0),
+        "deltas saturate at zero"
+    );
+}
+
+/// The record's path is derived from the payload's session id, so it is a
+/// path-traversal sink like every other per-session file.
+#[test]
+fn the_record_path_cannot_escape_the_temp_root() {
+    let temp = claude_statusline::session::temp_dir();
+
+    let ordinary = transcript::record_path("abc-123").expect("an ordinary id yields a path");
+    assert_eq!(ordinary.parent(), Some(temp.as_path()));
+    assert_eq!(
+        ordinary.file_name().and_then(|n| n.to_str()),
+        Some("statusline-tokens-abc-123.txt")
+    );
+
+    let traversal =
+        transcript::record_path("../../etc/passwd").expect("a traversal id still yields a path");
+    assert_eq!(
+        traversal.parent(),
+        Some(temp.as_path()),
+        "the sanitized id must not reintroduce a separator"
+    );
+    assert_eq!(
+        traversal.file_name().and_then(|n| n.to_str()),
+        Some("statusline-tokens-etcpasswd.txt")
+    );
+
+    assert_eq!(
+        transcript::record_path("///"),
+        None,
+        "an id that sanitizes to nothing must not share one record with every other such session"
+    );
+}
+
+/// Absent and empty transcripts are ordinary, not errors: a session renders
+/// before its first entry is written.
+#[test]
+fn an_empty_transcript_scans_to_zero_without_voting() {
+    for (name, init_idle) in [("idle", true), ("working", false)] {
+        let got = transcript::scan(b"", Some(0), init_idle);
+        assert_eq!(
+            got,
+            Scan {
+                idle: init_idle,
+                ..Default::default()
+            },
+            "empty transcript with a {name} starting verdict"
+        );
+    }
 }
