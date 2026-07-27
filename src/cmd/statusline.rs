@@ -137,6 +137,44 @@ fn transcript_state(
         .and_then(|b| String::from_utf8(b).ok())
         .and_then(|t| TokenRecord::parse(&t));
 
+    // An unchanged transcript is not read at all. Everything the tokens row and
+    // the model row render is already in the record, so re-scanning reproduces
+    // it byte for byte at the cost of the whole file.
+    //
+    // This is the one place the port keeps a *computation* cache, and it is
+    // here on measured grounds rather than by symmetry with the scripts. R38's
+    // statusline pair found the unconditional rescan costing ~50 ms on an 8 MB
+    // transcript, which is invisible next to PowerShell's ~124 ms interpreter
+    // floor but is four times bash's entire tick — so dropping the scripts'
+    // incremental parser (R27) was right on Windows and a regression on Linux.
+    // A static transcript is what a session looks like between messages, which
+    // is most ticks.
+    //
+    // What U12 gave up to always scan was noticing a same-size rewrite. That
+    // trade is reversed here deliberately: transcripts are append-only JSONL,
+    // a rewrite landing on the byte-identical length is close to unreachable,
+    // and the mtime has to match as well. The scripts' version of this bug came
+    // from caching totals behind a key that could go stale *and* having no
+    // second signal; `(mtime, size)` together is that second signal.
+    if let Some(record) = previous
+        .clone()
+        .filter(|p| p.mtime == mtime && p.size == size)
+    {
+        crate::debug::log(|| "transcript: unchanged, scan skipped".to_string());
+        let scan = Scan {
+            messages: record.messages,
+            input_tokens: record.input_tokens,
+            cache_write_tokens: record.cache_write_tokens,
+            cache_read_tokens: record.cache_read_tokens,
+            output_tokens: record.output_tokens,
+            idle: record.idle,
+            // Not stored and not rendered: `consumed` exists for the scan's own
+            // torn-tail bound, and nothing downstream reads it.
+            consumed: 0,
+        };
+        return (Some(scan), Some(record));
+    }
+
     let bytes = std::fs::read(path).unwrap_or_default();
     let scan = transcript::scan(&bytes, Some(size), true);
     let (record, needs_write) = TokenRecord::fold(previous.as_ref(), &scan, mtime, size);

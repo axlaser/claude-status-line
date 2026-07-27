@@ -89,6 +89,7 @@ while [[ $# -gt 0 ]]; do
         --binary)    BINARY="${2:?}"; shift 2 ;;
         --json)      JSON_OUT="${2:?}"; shift 2 ;;
         --transcript-bytes) TRANSCRIPT_BYTES="${2:?}"; shift 2 ;;
+        --cold-cache) COLD_CACHE=1; shift ;;
         *)           fail "unknown argument: $1" ;;
     esac
 done
@@ -202,8 +203,17 @@ probe() {
 
 script_times=()
 binary_times=()
+# --cold-cache measures the state where both variants actually do their work.
+# Without it the script serves a warm output cache -- keyed on a 5-second
+# bucket, and a whole run finishes inside one -- so most of its probes render
+# nothing at all, and the pair reads as the script's best case against the
+# binary's only case.
+clear_tick_caches() { rm -f "$TMPDIR"/statusline-* 2>/dev/null || true; }
+
 for (( i = 0; i < RUNS; i++ )); do
+    (( ${COLD_CACHE:-0} )) && clear_tick_caches
     script_times+=("$(probe run_script)")
+    (( ${COLD_CACHE:-0} )) && clear_tick_caches
     binary_times+=("$(probe run_binary)")
 done
 

@@ -45,7 +45,7 @@ pub struct Scan {
 /// different path and carries fields this one deliberately drops, and a shared
 /// version number across two incompatible formats is how a stale record gets
 /// read as a fresh one. Bump this whenever the field list changes.
-pub const RECORD_VERSION: &str = "v3";
+pub const RECORD_VERSION: &str = "v4";
 
 /// The per-session token record (R28), the only part of the scripts' transcript
 /// cache that survives the port.
@@ -64,6 +64,11 @@ pub const RECORD_VERSION: &str = "v3";
 pub struct TokenRecord {
     pub mtime: i64,
     pub size: u64,
+    /// Carried so an unchanged transcript needs no scan at all. Everything the
+    /// tokens row and the model row render is then reconstructable from this
+    /// record, which is what makes the skip in `cmd::statusline` possible.
+    pub messages: u64,
+    pub idle: bool,
     pub input_tokens: u64,
     pub cache_write_tokens: u64,
     pub cache_read_tokens: u64,
@@ -78,10 +83,12 @@ impl TokenRecord {
     /// Serializes to the scripts' pipe-separated shape, version first.
     pub fn to_line(&self) -> String {
         format!(
-            "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+            "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
             RECORD_VERSION,
             self.mtime,
             self.size,
+            self.messages,
+            self.idle,
             self.input_tokens,
             self.cache_write_tokens,
             self.cache_read_tokens,
@@ -106,20 +113,29 @@ impl TokenRecord {
     /// of wrapping.
     pub fn parse(raw: &str) -> Option<Self> {
         let fields: Vec<&str> = raw.trim_end_matches(['\r', '\n']).split('|').collect();
-        if fields.len() != 11 || fields[0] != RECORD_VERSION {
+        if fields.len() != 13 || fields[0] != RECORD_VERSION {
             return None;
         }
         Some(Self {
             mtime: fields[1].parse().ok()?,
             size: fields[2].parse().ok()?,
-            input_tokens: fields[3].parse().ok()?,
-            cache_write_tokens: fields[4].parse().ok()?,
-            cache_read_tokens: fields[5].parse().ok()?,
-            output_tokens: fields[6].parse().ok()?,
-            delta_in: fields[7].parse().ok()?,
-            delta_cache_write: fields[8].parse().ok()?,
-            delta_cache_read: fields[9].parse().ok()?,
-            delta_out: fields[10].parse().ok()?,
+            messages: fields[3].parse().ok()?,
+            // Strict: anything that is not exactly `true` or `false` rejects
+            // the whole record rather than defaulting, because this field now
+            // decides whether the transcript is read at all.
+            idle: match fields[4] {
+                "true" => true,
+                "false" => false,
+                _ => return None,
+            },
+            input_tokens: fields[5].parse().ok()?,
+            cache_write_tokens: fields[6].parse().ok()?,
+            cache_read_tokens: fields[7].parse().ok()?,
+            output_tokens: fields[8].parse().ok()?,
+            delta_in: fields[9].parse().ok()?,
+            delta_cache_write: fields[10].parse().ok()?,
+            delta_cache_read: fields[11].parse().ok()?,
+            delta_out: fields[12].parse().ok()?,
         })
     }
 
@@ -157,6 +173,8 @@ impl TokenRecord {
         let record = Self {
             mtime,
             size,
+            messages: scan.messages,
+            idle: scan.idle,
             input_tokens: scan.input_tokens,
             cache_write_tokens: scan.cache_write_tokens,
             cache_read_tokens: scan.cache_read_tokens,

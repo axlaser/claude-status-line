@@ -3257,6 +3257,8 @@ fn the_token_record_round_trips_through_the_state_guard() {
     let record = TokenRecord {
         mtime: 1_700_000_000,
         size: 8_406_985,
+        messages: 41,
+        idle: false,
         input_tokens: 425_266,
         cache_write_tokens: 26_436_150,
         cache_read_tokens: 486_683_613,
@@ -3287,6 +3289,8 @@ fn a_damaged_token_record_reads_as_no_record() {
     let good = TokenRecord {
         mtime: 10,
         size: 20,
+        messages: 9,
+        idle: true,
         input_tokens: 1,
         cache_write_tokens: 2,
         cache_read_tokens: 3,
@@ -3303,18 +3307,30 @@ fn a_damaged_token_record_reads_as_no_record() {
         ("trailing-newline", format!("{good}\n"), true),
         ("trailing-crlf", format!("{good}\r\n"), true),
         ("empty", String::new(), false),
-        ("wrong-version", good.replacen("v3", "v2", 1), false),
-        ("too-few-fields", "v3|10|20|1|2|3|4".to_string(), false),
+        ("wrong-version", good.replacen("v4", "v3", 1), false),
+        (
+            "too-few-fields",
+            "v4|10|20|9|true|1|2|3|4".to_string(),
+            false,
+        ),
         ("too-many-fields", format!("{good}|9"), false),
         ("non-numeric", good.replacen("|20|", "|twenty|", 1), false),
         (
             "negative-size",
-            "v3|10|-20|1|2|3|4|5|6|7|8".to_string(),
+            "v4|10|-20|9|true|1|2|3|4|5|6|7|8".to_string(),
             false,
         ),
         (
             "overlong-digit-run",
-            format!("v3|10|20|{}|2|3|4|5|6|7|8", "9".repeat(25)),
+            format!("v4|10|20|9|true|{}|2|3|4|5|6|7|8", "9".repeat(25)),
+            false,
+        ),
+        // `idle` now decides whether the transcript is read at all, so a value
+        // that is not exactly one of the two literals rejects the record rather
+        // than defaulting to a verdict nobody computed.
+        (
+            "idle-not-a-bool",
+            "v4|10|20|9|maybe|1|2|3|4|5|6|7|8".to_string(),
             false,
         ),
     ];
@@ -5211,4 +5227,83 @@ fn the_self_check_renders_the_box_rather_than_echoing_a_literal() {
         !plain.contains(&leaf),
         "self-check leaked the real working directory `{leaf}`: {plain:?}"
     );
+}
+
+/// The rescan skip, and precisely what it costs.
+///
+/// An unchanged transcript is not read at all: everything the tokens and model
+/// rows render is already in the record. R38's statusline pair measured the
+/// unconditional rescan at ~50 ms on 8 MB — invisible next to PowerShell's
+/// ~124 ms interpreter floor, four times bash's entire tick.
+///
+/// The second half of this test is the part worth reading. It rewrites the
+/// transcript to *different content at the identical byte length* and pins the
+/// same mtime, and asserts the render does not change. That is the trade, made
+/// executable rather than described: `(mtime, size)` is the freshness signal,
+/// and a same-length rewrite defeats it. Transcripts are append-only JSONL, so
+/// this is close to unreachable in practice — but it is not nothing, and a
+/// future reader deserves to see it fail deliberately rather than discover it.
+#[test]
+fn an_unchanged_transcript_is_not_rescanned() {
+    let root = scratch_dir("rescan-skip");
+    let home = root.join("home");
+    let temp = root.join("tmp");
+    let transcript = home.join(".claude/projects/fixtures/transcript.jsonl");
+    std::fs::create_dir_all(transcript.parent().expect("the transcript has a parent"))
+        .expect("failed to create the transcript directory");
+    std::fs::create_dir_all(&temp).expect("failed to create the temp root");
+
+    let original = std::fs::read_to_string(repo_file("tests/harness/inputs/transcript.jsonl"))
+        .expect("the pinned transcript is readable");
+    std::fs::write(&transcript, &original).expect("failed to stage the transcript");
+
+    let payload = format!(
+        r#"{{"session_id":"rescan","workspace":{{"current_dir":"/a/b/c"}},
+             "model":{{"display_name":"Opus 5","id":"claude-opus-5"}},
+             "transcript_path":"{}"}}"#,
+        transcript.to_string_lossy().replace('\\', "/")
+    );
+    let roots = cmd_statusline::Roots {
+        home: Some(home.clone()),
+        temp: temp.clone(),
+    };
+    let clock = TestClock::at(1_767_225_600).with_mtime(&transcript, 1_767_225_000);
+
+    let first = cmd_statusline::run(&clock, &roots, &payload);
+    assert!(
+        strip_ansi(&first).contains("in 2.7K"),
+        "the first render must actually scan the transcript: {}",
+        strip_ansi(&first)
+    );
+
+    // Same bytes, same everything: the record is now warm.
+    let second = cmd_statusline::run(&clock, &roots, &payload);
+    assert_eq!(second, first, "a warm record must render identically");
+
+    // Different content, identical length, identical mtime. The scan is
+    // skipped, so the new numbers are not seen — the accepted cost.
+    let rewritten = original.replacen("\"input_tokens\":1200", "\"input_tokens\":9900", 1);
+    assert_eq!(
+        rewritten.len(),
+        original.len(),
+        "the rewrite must be the same length or it is not testing the hazard"
+    );
+    assert_ne!(rewritten, original);
+    std::fs::write(&transcript, &rewritten).expect("failed to rewrite the transcript");
+
+    let third = cmd_statusline::run(&clock, &roots, &payload);
+    assert_eq!(
+        third, first,
+        "a same-length, same-mtime rewrite is invisible: this is the documented \
+         cost of skipping the rescan, not a bug to be fixed silently"
+    );
+
+    // A length change is seen immediately, which is what makes the trade
+    // acceptable: real transcripts only ever grow.
+    std::fs::write(&transcript, format!("{original}{}", &original[..200]))
+        .expect("failed to grow the transcript");
+    let grown_mtime = 1_767_225_100;
+    let grown_clock = TestClock::at(1_767_225_600).with_mtime(&transcript, grown_mtime);
+    let fourth = cmd_statusline::run(&grown_clock, &roots, &payload);
+    assert_ne!(fourth, first, "a transcript that grew must be rescanned");
 }

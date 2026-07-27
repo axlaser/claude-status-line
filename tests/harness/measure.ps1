@@ -37,6 +37,7 @@ param(
     [int]    $Runs = 11,
     [string] $Payload,
     [int] $TranscriptBytes = 0,
+    [switch] $ColdCache,
     [string] $Binary,
     [string] $Json
 )
@@ -176,8 +177,20 @@ try {
         }
     }
 
+    # -ColdCache measures the state where both variants actually do their work.
+    # Without it the script serves a warm output cache -- keyed on a 5-second
+    # bucket, and a whole run finishes inside one -- so most of its probes
+    # render nothing at all, and the pair reads as the script's best case
+    # against the binary's only case.
+    function Clear-TickCaches {
+        Get-ChildItem -LiteralPath $tmp -Filter 'statusline-*' -ErrorAction SilentlyContinue |
+            Remove-Item -Force -ErrorAction SilentlyContinue
+    }
+
     for ($i = 0; $i -lt $Runs; $i++) {
+        if ($ColdCache) { Clear-TickCaches }
         $scriptTimes += Invoke-Probe $scriptLine
+        if ($ColdCache) { Clear-TickCaches }
         $binaryTimes += Invoke-Probe $binaryLine
     }
 } finally {
