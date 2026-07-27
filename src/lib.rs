@@ -6,6 +6,7 @@
 //! crate cannot expose.
 
 pub mod clock;
+pub mod cmd;
 pub mod debug;
 pub mod platform;
 pub mod settings;

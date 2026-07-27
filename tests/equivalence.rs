@@ -599,6 +599,326 @@ fn stable_releases_are_gated_until_parity() {
 }
 
 // ---------------------------------------------------------------------------
+// git-refresh (R1, R31, R34 / U5)
+// ---------------------------------------------------------------------------
+//
+// The pilot component. Its observable is the exact set of paths deleted, so
+// these cases assert on that set rather than on side effects — a port that
+// deleted the right files plus one more would pass any "the cache is gone"
+// check.
+
+use claude_statusline::cmd::git_refresh;
+
+/// Characters are removed, not replaced. `../../a/b` becomes `ab`, not
+/// `______a_b`: a port that substituted would derive a different filename for
+/// the same session and silently stop invalidating anything.
+#[test]
+fn session_ids_are_sanitised_by_removal() {
+    struct Case {
+        name: &'static str,
+        raw: &'static str,
+        want: &'static str,
+    }
+
+    let cases = [
+        Case {
+            name: "plain",
+            raw: "fixture-session-0001",
+            want: "fixture-session-0001",
+        },
+        Case {
+            name: "traversal",
+            raw: "../../fixture/escape",
+            want: "fixtureescape",
+        },
+        Case {
+            name: "windows-separators",
+            raw: "..\\..\\evil",
+            want: "evil",
+        },
+        Case {
+            name: "absolute",
+            raw: "/etc/passwd",
+            want: "etcpasswd",
+        },
+        Case {
+            name: "underscores-and-dashes-kept",
+            raw: "a_b-c",
+            want: "a_b-c",
+        },
+        Case {
+            name: "all-stripped",
+            raw: "../..",
+            want: "",
+        },
+        Case {
+            name: "nul-and-newline",
+            raw: "abc\0def\nghi",
+            want: "abcdefghi",
+        },
+    ];
+
+    let mut failures = Failures::default();
+    for c in cases {
+        let got = git_refresh::sanitize_session_id(c.raw);
+        failures.check(c.name, got == c.want, || {
+            format!("{:?} -> {:?}, expected {:?}", c.raw, got, c.want)
+        });
+    }
+    failures.assert_empty("session id sanitisation");
+}
+
+/// The session id reaches a filename, so a separator surviving sanitisation
+/// would let a hook delete outside the temp directory. This asserts the
+/// property directly rather than trusting the sanitiser's unit test.
+#[test]
+fn no_payload_can_produce_a_path_outside_the_temp_root() {
+    let temp = scratch_dir("git-refresh-escape");
+    let hostile = [
+        "../../../../etc/passwd",
+        "..\\..\\..\\Windows\\System32",
+        "/absolute/path",
+        "C:\\Windows",
+        "a/../../b",
+        "....//....//x",
+    ];
+
+    let mut failures = Failures::default();
+    for raw in hostile {
+        let payload = serde_json::json!({ "tool_name": "Edit", "session_id": raw }).to_string();
+        for path in git_refresh::targets(&payload, &temp) {
+            failures.check(raw, path.starts_with(&temp), || {
+                format!("escaped the temp root: {}", path.display())
+            });
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
+            failures.check(raw, !name.contains(".."), || {
+                format!("filename still carries a traversal: {name}")
+            });
+        }
+    }
+    failures.assert_empty("path traversal");
+}
+
+/// Only the two performance caches. The tasks feed and the notification latch
+/// are data stores under R28 — deleting them here would drop subagent rows and
+/// re-fire the context alert on every edit.
+#[test]
+fn only_the_git_and_output_caches_are_invalidated() {
+    let temp = scratch_dir("git-refresh-scope");
+    let session = "fixture-session-0001";
+
+    let files = [
+        format!("statusline-git-{session}.txt"),
+        format!("statusline-oc-{session}.txt"),
+        format!("statusline-tasks-{session}.json"),
+        format!("statusline-notify-{session}.json"),
+        format!("statusline-sa-{session}-task-0001.txt"),
+        "unrelated.txt".to_string(),
+    ];
+    for f in &files {
+        std::fs::write(temp.join(f), b"x").unwrap();
+    }
+
+    let payload = serde_json::json!({ "tool_name": "Edit", "session_id": session }).to_string();
+    git_refresh::run(&payload, &temp);
+
+    let mut failures = Failures::default();
+    for f in &files {
+        let gone = !temp.join(f).exists();
+        let should_go = f.starts_with("statusline-git-") || f.starts_with("statusline-oc-");
+        failures.check(f, gone == should_go, || {
+            if should_go {
+                "should have been deleted but survived".to_string()
+            } else {
+                "was deleted but is a data store, not a cache".to_string()
+            }
+        });
+    }
+    failures.assert_empty("invalidation scope");
+}
+
+/// Every degraded input is a no-op, and a tool that cannot change files is too.
+#[test]
+fn only_file_modifying_tools_invalidate_anything() {
+    let temp = scratch_dir("git-refresh-tools");
+
+    struct Case {
+        name: &'static str,
+        payload: String,
+        expect: usize,
+    }
+    let session = "fixture-session-0001";
+    let with =
+        |tool: &str| serde_json::json!({ "tool_name": tool, "session_id": session }).to_string();
+
+    let cases = [
+        Case {
+            name: "Edit",
+            payload: with("Edit"),
+            expect: 2,
+        },
+        Case {
+            name: "Write",
+            payload: with("Write"),
+            expect: 2,
+        },
+        Case {
+            name: "MultiEdit",
+            payload: with("MultiEdit"),
+            expect: 2,
+        },
+        Case {
+            name: "Bash",
+            payload: with("Bash"),
+            expect: 2,
+        },
+        Case {
+            name: "NotebookEdit",
+            payload: with("NotebookEdit"),
+            expect: 2,
+        },
+        Case {
+            name: "Read",
+            payload: with("Read"),
+            expect: 0,
+        },
+        Case {
+            name: "Glob",
+            payload: with("Glob"),
+            expect: 0,
+        },
+        Case {
+            name: "empty-stdin",
+            payload: String::new(),
+            expect: 0,
+        },
+        Case {
+            name: "malformed",
+            payload: "{not json".to_string(),
+            expect: 0,
+        },
+        Case {
+            name: "not-an-object",
+            payload: "[1,2,3]".to_string(),
+            expect: 0,
+        },
+        Case {
+            name: "no-session-id",
+            payload: r#"{"tool_name":"Edit"}"#.to_string(),
+            expect: 0,
+        },
+        Case {
+            name: "session-id-sanitises-to-empty",
+            payload: r#"{"tool_name":"Edit","session_id":"../.."}"#.to_string(),
+            expect: 0,
+        },
+        Case {
+            name: "tool-name-wrong-type",
+            payload: r#"{"tool_name":123,"session_id":"abc"}"#.to_string(),
+            expect: 0,
+        },
+    ];
+
+    let mut failures = Failures::default();
+    for c in cases {
+        let got = git_refresh::targets(&c.payload, &temp).len();
+        failures.check(c.name, got == c.expect, || {
+            format!("expected {} target(s), got {got}", c.expect)
+        });
+    }
+    failures.assert_empty("tool matcher");
+}
+
+/// A missing cache file is the common case — the status line may not have
+/// rendered since the last edit — and must not be an error.
+#[test]
+fn missing_cache_files_are_a_no_op() {
+    let temp = scratch_dir("git-refresh-missing");
+    let payload =
+        serde_json::json!({ "tool_name": "Edit", "session_id": "nothing-here" }).to_string();
+    assert!(
+        git_refresh::run(&payload, &temp).is_empty(),
+        "reported deleting files that were never there"
+    );
+}
+
+/// AE-style equivalence against the captured fixture (R31): the set of paths
+/// the Rust port deletes must equal the set the script deleted, for the same
+/// payload. This is the check the whole harness exists to make possible.
+#[test]
+fn deleted_paths_match_the_captured_fixtures() {
+    let root = repo_file("tests/fixtures/git-refresh");
+    let Ok(entries) = std::fs::read_dir(&root) else {
+        println!("no git-refresh fixtures captured yet");
+        return;
+    };
+
+    let mut failures = Failures::default();
+    let mut checked = 0usize;
+
+    for entry in entries.flatten() {
+        let dir = entry.path();
+        if !dir.is_dir() {
+            continue;
+        }
+        let case = dir
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
+        let meta = std::fs::read_to_string(dir.join("case.json")).unwrap_or_default();
+        let payload_rel = json_string_field(&meta, "payload").unwrap_or("");
+        let payload = std::fs::read_to_string(repo_file(&format!("tests/harness/{payload_rel}")))
+            .unwrap_or_default();
+
+        // Every platform that has been captured must agree with the port. A
+        // fixture recorded on a platform this test is not running on is still
+        // asserted: the deleted-path set is platform-independent, which is
+        // exactly the claim R20 will later have to make about rendered output.
+        for platform in ["macos", "linux", "windows"] {
+            let expected_path = dir.join("expected").join(format!("{platform}.txt"));
+            let Ok(expected_raw) = std::fs::read_to_string(&expected_path) else {
+                continue;
+            };
+            checked += 1;
+
+            let mut expected: Vec<String> = expected_raw
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .map(str::to_string)
+                .collect();
+            expected.sort();
+
+            let temp = scratch_dir(&format!("gr-fixture-{case}-{platform}"));
+            // Recreate what the harness supplied, so the port has the same
+            // files available to delete that the script did.
+            for name in &expected {
+                std::fs::write(temp.join(name), b"cache").unwrap();
+            }
+
+            let mut got: Vec<String> = git_refresh::run(&payload, &temp)
+                .iter()
+                .map(|p| {
+                    p.file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .into_owned()
+                })
+                .collect();
+            got.sort();
+
+            failures.check(&format!("{case}/{platform}"), got == expected, || {
+                format!("script deleted {expected:?}, port deleted {got:?}")
+            });
+        }
+    }
+
+    println!("compared {checked} captured platform fixture(s)");
+    failures.assert_empty("git-refresh fixture equivalence");
+}
+
+// ---------------------------------------------------------------------------
 // Installer contract (R7, R8, R10, R17 / U4)
 // ---------------------------------------------------------------------------
 //

@@ -7,7 +7,20 @@
 
 use std::io::Write;
 
-use claude_statusline::{debug, platform, self_check, settings};
+use claude_statusline::{cmd, debug, platform, self_check, settings};
+
+/// Reads all of stdin, treating an unreadable or non-UTF-8 stream as empty.
+///
+/// Every caller degrades to "no payload" rather than failing: a hook that
+/// errored on odd input would break the tool call that triggered it.
+fn read_stdin() -> String {
+    use std::io::Read;
+    let mut buf = Vec::new();
+    if std::io::stdin().read_to_end(&mut buf).is_err() {
+        return String::new();
+    }
+    String::from_utf8_lossy(&buf).into_owned()
+}
 
 fn main() {
     // Layer 1: take fd 2 away before any code can write to it. The panic hook
@@ -158,8 +171,10 @@ fn dispatch(sub: &str, _rest: &[&str]) {
         "statusline" => {}
         // U7.
         "notify" => {}
-        // U5.
-        "git-refresh" => {}
+        "git-refresh" => {
+            let payload = read_stdin();
+            cmd::git_refresh::run(&payload, &cmd::git_refresh::temp_dir());
+        }
         // U6.
         "subagent" => {}
         // AE4's trigger. Kept in release builds so the shipped artifact is the
