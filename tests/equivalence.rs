@@ -5147,3 +5147,68 @@ fn first_difference(expected: &str, got: &str) -> String {
     }
     "line contents agree; the difference is the trailing newline".to_string()
 }
+
+/// KTD15. The self-check's expectation is compiled in from a fixture the case
+/// table also asserts, so the two cannot drift.
+///
+/// This test is the joint. `rendered_output_matches_the_captured_fixtures`
+/// proves the renderer reproduces the `self-check` case; this proves the bytes
+/// the *binary* carries are that same case's. Without it the `include_str!`
+/// could be repointed at a stale or hand-edited file and everything would still
+/// pass — which is exactly the failure KTD15 names: a self-check that drifts
+/// from the renderer starts refusing every install.
+#[test]
+fn the_self_check_expectation_is_the_captured_fixture() {
+    let dir = repo_file("tests/fixtures/statusline/self-check/expected");
+    let mut compared = 0usize;
+    for platform in ["linux", "macos", "windows"] {
+        let Ok(captured) = std::fs::read_to_string(dir.join(format!("{platform}.txt"))) else {
+            continue;
+        };
+        compared += 1;
+        assert_eq!(
+            claude_statusline::SELF_CHECK_FIXTURE,
+            captured,
+            "the compiled-in expectation is not what {platform} captured"
+        );
+    }
+    assert!(
+        compared == 3,
+        "the self-check case must be captured on all three platforms; found {compared}"
+    );
+}
+
+/// The self-check has to fail a broken renderer, which means it must actually
+/// render. A stub that returns its own expectation passes forever.
+#[test]
+fn the_self_check_renders_the_box_rather_than_echoing_a_literal() {
+    let run = run_bin(&["self-check"], "", &[]);
+    assert_eq!(run.code, Some(0));
+
+    let plain = strip_ansi(&run.stdout);
+    assert!(
+        plain.lines().count() >= 8 && plain.contains('┏') && plain.contains('┛'),
+        "self-check output is not a rendered box: {plain:?}"
+    );
+    assert!(
+        plain.contains(".../repo/work"),
+        "the payload's placeholder should render as a truncated path: {plain:?}"
+    );
+    assert!(
+        !plain.contains(" on "),
+        "the hermetic case must render no git segment, whatever repository the \
+         check happens to run inside: {plain:?}"
+    );
+
+    // The real working directory must not reach the output. Running the test
+    // from inside this repository is precisely the situation that would leak.
+    let cwd = std::env::current_dir().expect("the test process has a working directory");
+    let leaf = cwd
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    assert!(
+        !plain.contains(&leaf),
+        "self-check leaked the real working directory `{leaf}`: {plain:?}"
+    );
+}
