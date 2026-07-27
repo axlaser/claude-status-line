@@ -1,0 +1,44 @@
+{
+  "schema": 1,
+  "case": "git-clean",
+  "component": "statusline",
+  "observable": "stdout",
+  "source_commit": "513ae1a567453c4d89cc26be16f73c34974fafc6",
+  "clock": 1767225600,
+  "git_state": "clean",
+  "payload": "payloads/full.json",
+  "args": [],
+  "notify_config": "configs/default.json",
+  "session_id": "fixture-session-0001",
+  "inputs": [
+    {
+      "target": "{HOME}/.claude/statusline-model-windows.json",
+      "content": "inputs/model-windows.json",
+      "mtime_offset": -600
+    },
+    {
+      "target": "{HOME}/.claude/projects/fixtures/transcript.jsonl",
+      "content": "inputs/transcript.jsonl",
+      "mtime_offset": -30
+    },
+    {
+      "target": "{HOME}/.claude/projects/fixtures/transcript-astral.jsonl",
+      "content": "inputs/transcript-astral.jsonl",
+      "mtime_offset": -30
+    }
+  ],
+  "captured": [
+    {
+      "platform": "linux",
+      "expected": "expected/linux.txt"
+    },
+    {
+      "platform": "macos",
+      "expected": "expected/macos.txt"
+    },
+    {
+      "platform": "windows",
+      "expected": "expected/windows.txt"
+    }
+  ]
+}
