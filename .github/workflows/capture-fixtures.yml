@@ -14,6 +14,17 @@ name: capture-fixtures
 # scheduled job gets to do on their behalf.
 
 on:
+  # Pushing a `capture/**` branch runs a capture and throws the branch away.
+  #
+  # This exists because `workflow_dispatch` is only offered for workflows that
+  # are already on the default branch, and this one will not be there until the
+  # migration merges at full parity — so during the migration there is no way to
+  # ask for a capture from the feature branch. A tag would work, but tags are
+  # for releases; a throwaway branch leaves nothing behind.
+  push:
+    branches:
+      - "capture/**"
+
   workflow_dispatch:
     inputs:
       commit:
@@ -75,25 +86,41 @@ jobs:
           git --version
 
       - name: Capture
+        env:
+          IN_COMMIT: ${{ inputs.commit }}
+          IN_COMPONENT: ${{ inputs.component }}
+          IN_VERIFY: ${{ inputs.verify }}
         run: |
           args=()
-          if [ -n "${{ inputs.commit }}" ]; then
-            args+=(--at "${{ inputs.commit }}")
+
+          # A push-triggered run carries no inputs, so the branch name is the
+          # request: `capture/git-refresh` captures that component, and a bare
+          # `capture/anything-else` captures everything.
+          component="$IN_COMPONENT"
+          if [ -z "$component" ] && [ "$GITHUB_EVENT_NAME" = "push" ]; then
+            case "${GITHUB_REF_NAME#capture/}" in
+              git-refresh|subagent|notify|statusline) component="${GITHUB_REF_NAME#capture/}" ;;
+              *) component="all" ;;
+            esac
           fi
-          if [ "${{ inputs.component }}" != "all" ]; then
-            args+=(--component "${{ inputs.component }}")
+
+          [ -n "$IN_COMMIT" ] && args+=(--at "$IN_COMMIT")
+          if [ -n "$component" ] && [ "$component" != "all" ]; then
+            args+=(--component "$component")
           fi
-          if [ "${{ inputs.verify }}" = "true" ]; then
+          if [ "$IN_VERIFY" = "true" ]; then
             args+=(--verify)
           else
             args+=(--out "$GITHUB_WORKSPACE/captured")
           fi
+
+          echo "capturing: ${args[*]:-<everything>}"
           bash tests/harness/capture.sh "${args[@]}"
 
       # A capture that produced nothing is a green run that shipped no fixture,
       # which is the same failure the harness's own guards exist to prevent.
       - name: Confirm something was captured
-        if: inputs.verify != true
+        if: inputs.verify != true && inputs.verify != 'true'
         run: |
           count=$(find captured -name case.json | wc -l)
           echo "captured $count fixture(s)"
@@ -103,7 +130,7 @@ jobs:
           fi
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        if: inputs.verify != true
+        if: inputs.verify != true && inputs.verify != 'true'
         with:
           name: fixtures-${{ matrix.platform }}
           path: captured
