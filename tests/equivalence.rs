@@ -15,6 +15,7 @@ use claude_statusline::payload::{sanitize_display, Payload};
 use claude_statusline::platform;
 use claude_statusline::settings;
 use claude_statusline::state::{self, WriteOutcome};
+use claude_statusline::subagent::{self, Row, Windows};
 use claude_statusline::transcript::{self, Scan, TokenRecord};
 
 // ---------------------------------------------------------------------------
@@ -934,7 +935,7 @@ fn deleted_paths_match_the_captured_fixtures() {
 // status line's output-cache key, so a reordering would miss the cache on every
 // tick while rendering identically.
 
-use claude_statusline::cmd::subagent;
+use claude_statusline::cmd::subagent as cmd_subagent;
 
 struct ProjectionCase {
     name: &'static str,
@@ -1046,7 +1047,7 @@ fn the_projection_resolves_every_tasks_feed_state() {
 
     let mut failures = Failures::default();
     for c in cases {
-        let got = subagent::project(c.payload).map(|(_, bytes)| bytes);
+        let got = cmd_subagent::project(c.payload).map(|(_, bytes)| bytes);
         failures.check(c.name, got.as_deref() == c.want, || {
             format!("got {got:?}, expected {:?}", c.want)
         });
@@ -1072,10 +1073,10 @@ fn no_payload_can_tee_outside_the_temp_root() {
     let mut failures = Failures::default();
     for raw in hostile {
         let payload = serde_json::json!({ "session_id": raw, "tasks": [] }).to_string();
-        let Some((safe_id, _)) = subagent::project(&payload) else {
+        let Some((safe_id, _)) = cmd_subagent::project(&payload) else {
             continue;
         };
-        let path = subagent::feed_path(&temp, &safe_id);
+        let path = cmd_subagent::feed_path(&temp, &safe_id);
         failures.check(raw, path.starts_with(&temp), || {
             format!("escaped the temp root: {}", path.display())
         });
@@ -1094,7 +1095,7 @@ fn no_payload_can_tee_outside_the_temp_root() {
 fn a_hostile_feed_target_is_refused_not_followed() {
     let dir = scratch_dir("subagent-hostile");
     let victim = dir.join("victim.txt");
-    let link = subagent::feed_path(&dir, "s1");
+    let link = cmd_subagent::feed_path(&dir, "s1");
     std::fs::write(&victim, b"original").unwrap();
 
     if !make_symlink(&victim, &link) {
@@ -1103,9 +1104,12 @@ fn a_hostile_feed_target_is_refused_not_followed() {
     }
 
     let payload = r#"{"session_id":"s1","tasks":[{"id":"a"}]}"#;
-    let outcome = subagent::run(payload, &dir);
+    let outcome = cmd_subagent::run(payload, &dir);
     assert!(
-        matches!(outcome, subagent::Tick::Wrote(_) | subagent::Tick::Hostile),
+        matches!(
+            outcome,
+            cmd_subagent::Tick::Wrote(_) | cmd_subagent::Tick::Hostile
+        ),
         "unexpected outcome: {outcome:?}"
     );
     assert_eq!(
@@ -1149,7 +1153,8 @@ fn the_subagent_handler_prints_nothing_while_still_teeing() {
         });
     }
 
-    let feed = std::fs::read_to_string(subagent::feed_path(&dir, "silent-1")).unwrap_or_default();
+    let feed =
+        std::fs::read_to_string(cmd_subagent::feed_path(&dir, "silent-1")).unwrap_or_default();
     failures.check("valid", !feed.is_empty(), || {
         "the valid payload wrote no feed, so silence here proves nothing".to_string()
     });
@@ -1218,10 +1223,10 @@ fn feed_bytes_match_the_captured_fixtures() {
                 std::fs::write(temp.join(rel.replace("{SESSION}", session)), bytes).unwrap();
             }
 
-            subagent::run(&payload, &temp);
+            cmd_subagent::run(&payload, &temp);
 
-            let got =
-                std::fs::read_to_string(subagent::feed_path(&temp, session)).unwrap_or_default();
+            let got = std::fs::read_to_string(cmd_subagent::feed_path(&temp, session))
+                .unwrap_or_default();
             failures.check(&label, got == expected, || {
                 format!("script wrote {expected:?}, port wrote {got:?}")
             });
@@ -3863,5 +3868,520 @@ fn an_absent_workspace_directory_falls_back_to_the_process_directory() {
     assert_eq!(
         git::resolve_cwd("/somewhere/else"),
         Path::new("/somewhere/else")
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Subagent rows and window resolution (R19, R26, R28 / U11)
+// ---------------------------------------------------------------------------
+
+/// Removes any per-task state left by an earlier run, so a linger assertion
+/// cannot pass or fail on a stale stamp.
+fn clear_task_state(session_id: &str) {
+    let prefix = format!("statusline-sa-{session_id}-task-");
+    if let Ok(entries) = std::fs::read_dir(claude_statusline::session::temp_dir()) {
+        for entry in entries.flatten() {
+            if entry
+                .file_name()
+                .to_str()
+                .is_some_and(|n| n.starts_with(&prefix))
+            {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+}
+
+fn learned(pairs: &[(&str, u64)]) -> std::collections::BTreeMap<String, u64> {
+    pairs.iter().map(|(k, v)| ((*k).to_string(), *v)).collect()
+}
+
+/// Every tier of the resolver, in order. The order is the point: the session's
+/// own window is live truth for this session, while a learned entry is a
+/// historical observation that may have come from another machine.
+#[test]
+fn window_resolution_walks_every_tier_in_order() {
+    let session = Windows::new(
+        "claude-opus-5",
+        Some(1_000_000),
+        learned(&[("claude-sonnet-5", 123_456), ("claude-opus-5", 999)]),
+    );
+
+    let mut failures = Failures::default();
+    let mut check = |name: &str, got: u64, want: u64| {
+        failures.check(name, got == want, || format!("want {want}, got {got}"))
+    };
+
+    check(
+        "session-tier-wins-over-learned",
+        session.resolve("claude-opus-5"),
+        1_000_000,
+    );
+    check(
+        "session-tier-matches-across-the-1m-variant",
+        session.resolve("claude-opus-5[1m]"),
+        1_000_000,
+    );
+    check(
+        "session-tier-ignores-a-date-suffix",
+        session.resolve("claude-opus-5-20260101"),
+        1_000_000,
+    );
+    check("learned-tier", session.resolve("claude-sonnet-5"), 123_456);
+    check(
+        "learned-tier-after-normalizing-the-date",
+        session.resolve("claude-sonnet-5-20260715"),
+        123_456,
+    );
+
+    let seeds = Windows::new("", None, learned(&[]));
+    check(
+        "seed-tier-million",
+        seeds.resolve("claude-sonnet-5"),
+        1_000_000,
+    );
+    check("seed-tier-200k", seeds.resolve("claude-haiku-4-5"), 200_000);
+    check(
+        "seed-tier-tolerates-a-bare-id",
+        seeds.resolve("sonnet-4-6"),
+        1_000_000,
+    );
+    check(
+        "marker-tier-bracketed",
+        seeds.resolve("claude-experimental-9[1m]"),
+        1_000_000,
+    );
+    check(
+        "marker-tier-suffixed",
+        seeds.resolve("claude-experimental-9-1m"),
+        1_000_000,
+    );
+    check("default-tier", seeds.resolve("claude-unknown-7"), 200_000);
+    check("default-for-an-absent-model", seeds.resolve(""), 200_000);
+
+    // A session window of zero is no window at all: the tier is skipped rather
+    // than resolving to something that would divide by zero downstream.
+    let zeroed = Windows::new("claude-opus-5", Some(0), learned(&[]));
+    check(
+        "a-zero-session-window-is-skipped",
+        zeroed.resolve("claude-opus-5"),
+        200_000,
+    );
+
+    failures.assert_empty("window resolution");
+}
+
+/// The learned map is an optimization over the seed table, never a
+/// prerequisite: every way it can fail leaves the seeds reachable.
+#[test]
+fn an_unusable_learned_map_degrades_to_the_seed_table() {
+    let dir = scratch_dir("learned-map");
+
+    let absent = dir.join("missing.json");
+    assert!(Windows::load_learned(&absent).is_empty());
+
+    let mut failures = Failures::default();
+    for (name, body) in [
+        ("malformed", "{\"claude-sonnet-5\": "),
+        ("not-an-object", "[1, 2, 3]"),
+        ("empty-file", ""),
+    ] {
+        let path = dir.join(format!("{name}.json"));
+        std::fs::write(&path, body).expect("failed to write the learned map fixture");
+        failures.check(name, Windows::load_learned(&path).is_empty(), || {
+            "an unusable map must read as empty".to_string()
+        });
+    }
+
+    // A usable map with junk entries keeps the usable ones and drops the rest.
+    let mixed = dir.join("mixed.json");
+    std::fs::write(
+        &mixed,
+        r#"{"claude-sonnet-5": 400000, "quoted": "500000", "bad": "not a number", "null": null, "": 1}"#,
+    )
+    .expect("failed to write the mixed learned map");
+    let map = Windows::load_learned(&mixed);
+    failures.check(
+        "keeps-numbers",
+        map.get("claude-sonnet-5") == Some(&400_000),
+        || format!("{map:?}"),
+    );
+    failures.check(
+        "keeps-numeric-strings",
+        map.get("quoted") == Some(&500_000),
+        || format!("{map:?}"),
+    );
+    failures.check("drops-junk", map.len() == 2, || format!("{map:?}"));
+
+    // And the seed table is still reachable for anything the map lacks.
+    let windows = Windows::new("", None, Windows::load_learned(&absent));
+    failures.check(
+        "seed-still-reachable",
+        windows.resolve("claude-haiku-4-5") == 200_000,
+        || "the seed tier became unreachable".to_string(),
+    );
+    failures.assert_empty("learned map degradation");
+}
+
+#[test]
+fn feed_statuses_fail_open_to_working() {
+    let mut failures = Failures::default();
+    for done in [
+        "completed",
+        "complete",
+        "done",
+        "finished",
+        "failed",
+        "cancelled",
+        "canceled",
+        "killed",
+        "stopped",
+        "error",
+        "COMPLETED",
+        "Done",
+    ] {
+        failures.check(done, !subagent::status_is_active(done), || {
+            "a terminal status must not read as active".to_string()
+        });
+    }
+    // Anything unrecognized reads as working, so a status Claude Code adds
+    // later shows up as a visible row rather than silently vanishing.
+    for active in ["running", "in_progress", "", "queued", "something-new"] {
+        failures.check(active, subagent::status_is_active(active), || {
+            "an unknown status must read as active".to_string()
+        });
+    }
+    failures.assert_empty("feed status polarity");
+}
+
+#[test]
+fn the_feed_display_chain_falls_through_blank_candidates() {
+    let feed = r#"{"tasks": [
+        {"id": "a", "description": "  build the thing  ", "type": "explore", "name": "n"},
+        {"id": "b", "description": "|||", "type": "explore", "name": "n"},
+        {"id": "c", "description": "", "type": "", "name": "last resort"},
+        {"id": "d"}
+    ]}"#;
+    let tasks = subagent::parse_feed(feed).expect("a well-formed feed parses");
+    let displays: Vec<&str> = tasks.iter().map(|t| t.display.as_str()).collect();
+    assert_eq!(
+        displays,
+        vec!["build the thing", "explore", "last resort", ""],
+        "description, then type, then name — first non-blank *after* scrubbing"
+    );
+}
+
+#[test]
+fn a_payload_that_is_not_a_feed_drops_the_tier() {
+    let mut failures = Failures::default();
+    for (name, raw, want) in [
+        ("object-without-tasks", r#"{"session_id": "s"}"#, Some(0)),
+        ("null-tasks", r#"{"tasks": null}"#, Some(0)),
+        ("empty-tasks", r#"{"tasks": []}"#, Some(0)),
+        ("tasks-not-an-array", r#"{"tasks": {"a": 1}}"#, None),
+        ("not-an-object", "[1,2,3]", None),
+        ("malformed", "{", None),
+        (
+            "non-object-entries-are-dropped",
+            r#"{"tasks": [1, "two", null, {"id": "real"}]}"#,
+            Some(1),
+        ),
+    ] {
+        let got = subagent::parse_feed(raw).map(|t| t.len());
+        failures.check(name, got == want, || format!("want {want:?}, got {got:?}"));
+    }
+    failures.assert_empty("feed parsing");
+}
+
+/// A fresh feed is the whole tier: per-task model and window come from it, not
+/// from the resolver, and rows sort by start time rather than feed order.
+#[test]
+fn a_fresh_feed_renders_its_own_models_and_windows() {
+    let session = "feedsession1";
+    clear_task_state(session);
+    let clock = TestClock::at(1_000);
+    let windows = Windows::new("", None, learned(&[]));
+
+    let feed = r#"{"tasks": [
+        {"id": "second", "startTime": "2026-07-27T10:05:00Z", "description": "later task",
+         "status": "running", "model": "claude-haiku-4-5", "contextWindowSize": 200000,
+         "tokenCount": 4321, "effort": "low"},
+        {"id": "first", "startTime": "2026-07-27T10:00:00Z", "description": "earlier task",
+         "status": "running", "model": "claude-unknown-9", "contextWindowSize": 777000,
+         "tokenCount": 1234}
+    ]}"#;
+
+    let rows = subagent::rows_from_feed(&clock, session, feed, &windows)
+        .expect("a well-formed feed yields rows");
+
+    assert_eq!(
+        rows,
+        vec![
+            Row {
+                used: 1234,
+                // From the feed, not the resolver: the resolver would have
+                // returned the 200K default for this unknown model.
+                window: 777_000,
+                model: "claude-unknown-9".into(),
+                display: "earlier task".into(),
+                effort: String::new(),
+                done: false,
+            },
+            Row {
+                used: 4321,
+                window: 200_000,
+                model: "claude-haiku-4-5".into(),
+                display: "later task".into(),
+                effort: "low".into(),
+                done: false,
+            },
+        ],
+        "rows sort by start time, and each carries the feed's own window"
+    );
+    clear_task_state(session);
+}
+
+/// Without a per-task window the row falls back to the tiered resolver — the
+/// Claude Code < v2.1.205 case.
+#[test]
+fn a_feed_without_windows_falls_back_to_the_resolver() {
+    let session = "feedsession2";
+    clear_task_state(session);
+    let clock = TestClock::at(1_000);
+    let windows = Windows::new("", None, learned(&[("claude-sonnet-5", 424_242)]));
+
+    let feed = r#"{"tasks": [
+        {"id": "a", "status": "running", "model": "claude-sonnet-5", "tokenCount": 10},
+        {"id": "b", "status": "running", "model": "claude-mystery-1", "tokenCount": 20}
+    ]}"#;
+    let rows = subagent::rows_from_feed(&clock, session, feed, &windows).expect("feed parses");
+    let sizes: Vec<u64> = rows.iter().map(|r| r.window).collect();
+    assert_eq!(sizes, vec![424_242, 200_000]);
+    clear_task_state(session);
+}
+
+/// The done linger, both signals: a task reporting a terminal status, and a
+/// task that simply stops appearing in the feed. Both stamp once, stay visible
+/// for the linger, and then disappear.
+#[test]
+fn finished_tasks_linger_then_disappear() {
+    let session = "feedsession3";
+    clear_task_state(session);
+    let windows = Windows::new("", None, learned(&[]));
+    let running = r#"{"tasks": [{"id": "t1", "status": "running", "model": "claude-haiku-4-5",
+                                 "tokenCount": 5, "description": "the task"}]}"#;
+    let finished = r#"{"tasks": [{"id": "t1", "status": "completed", "model": "claude-haiku-4-5",
+                                  "tokenCount": 5, "description": "the task"}]}"#;
+    let empty = r#"{"tasks": []}"#;
+
+    // Running.
+    let rows = subagent::rows_from_feed(&TestClock::at(1_000), session, running, &windows)
+        .expect("feed parses");
+    assert_eq!(rows.len(), 1);
+    assert!(!rows[0].done);
+
+    // Completed at t=1000: still visible, now marked done.
+    let rows = subagent::rows_from_feed(&TestClock::at(1_000), session, finished, &windows)
+        .expect("feed parses");
+    assert_eq!(rows.len(), 1);
+    assert!(rows[0].done, "a terminal status marks the row done");
+
+    // Still inside the linger at t=1030, measured from completion rather than
+    // from this observation.
+    let rows = subagent::rows_from_feed(&TestClock::at(1_030), session, finished, &windows)
+        .expect("feed parses");
+    assert_eq!(rows.len(), 1, "30s is still within the linger");
+
+    // Past it at t=1031.
+    let rows = subagent::rows_from_feed(&TestClock::at(1_031), session, finished, &windows)
+        .expect("feed parses");
+    assert!(rows.is_empty(), "past the linger the row is gone");
+
+    // The other done signal: a task that vanishes from a fresh feed. Its state
+    // file is still there, so it renders as done and then expires.
+    clear_task_state(session);
+    let _ = subagent::rows_from_feed(&TestClock::at(2_000), session, running, &windows);
+    let rows = subagent::rows_from_feed(&TestClock::at(2_001), session, empty, &windows)
+        .expect("feed parses");
+    assert_eq!(rows.len(), 1, "a task that left the feed has finished");
+    assert!(rows[0].done);
+    assert_eq!(rows[0].display, "the task", "its last known title survives");
+
+    let rows = subagent::rows_from_feed(&TestClock::at(2_040), session, empty, &windows)
+        .expect("feed parses");
+    assert!(rows.is_empty(), "and then it expires");
+
+    let leftover = std::fs::read_dir(claude_statusline::session::temp_dir())
+        .expect("the temp directory is readable")
+        .flatten()
+        .filter(|e| {
+            e.file_name()
+                .to_str()
+                .is_some_and(|n| n.starts_with(&format!("statusline-sa-{session}-task-")))
+        })
+        .count();
+    assert_eq!(leftover, 0, "an expired task's state file is removed");
+}
+
+// --- Fallback tier -------------------------------------------------------
+
+#[test]
+fn the_subagents_directory_is_derived_from_the_transcript_path() {
+    assert_eq!(
+        subagent::subagents_dir("/home/u/.claude/projects/p/abc123.jsonl"),
+        Some(PathBuf::from("/home/u/.claude/projects/p/abc123/subagents"))
+    );
+    assert_eq!(subagent::subagents_dir(""), None);
+}
+
+#[test]
+fn terminal_stop_reasons_mean_done_and_nothing_else_does() {
+    let mut failures = Failures::default();
+    for done in [
+        "end_turn",
+        "max_tokens",
+        "refusal",
+        "model_context_window_exceeded",
+        "stop_sequence",
+    ] {
+        failures.check(done, subagent::stop_reason_is_done(done), || {
+            "a terminal reason must read as done".to_string()
+        });
+    }
+    for working in ["tool_use", "pause_turn", "", "something_new"] {
+        failures.check(working, !subagent::stop_reason_is_done(working), || {
+            "a non-terminal reason must read as working".to_string()
+        });
+    }
+    failures.assert_empty("stop reasons");
+}
+
+/// The last assistant entry wins, and a torn or malformed line is skipped
+/// rather than ending the scan — the file is being appended to while it reads.
+#[test]
+fn an_agent_transcript_reports_its_last_assistant_entry() {
+    let body = concat!(
+        r#"{"type":"user","message":{"content":"go"}}"#,
+        "\n",
+        r#"{"type":"assistant","message":{"stop_reason":"tool_use","model":"claude-haiku-4-5","usage":{"input_tokens":10,"cache_creation_input_tokens":2,"cache_read_input_tokens":30,"output_tokens":1}}}"#,
+        "\n",
+        r#"{"type":"assistant","message":{"stop_reason":"end_turn","model":"claude-sonnet-5","usage":{"input_tokens":100,"cache_creation_input_tokens":20,"cache_read_input_tokens":300,"output_tokens":9}}}"#,
+        "\n",
+        r#"{"type":"assistant","message":{"stop_re"#,
+    );
+    let reading = subagent::read_agent(body.as_bytes());
+    assert_eq!(reading.stop_reason, "end_turn");
+    assert_eq!(reading.model, "claude-sonnet-5");
+    assert_eq!(
+        reading.used(),
+        420,
+        "used is input plus both cache buckets, and excludes output"
+    );
+
+    let empty = subagent::read_agent(b"{\"type\":\"user\"}\n");
+    assert_eq!(
+        empty,
+        Default::default(),
+        "no assistant entry yet is zeros and no model, not an error"
+    );
+}
+
+#[test]
+fn the_agent_title_chain_falls_through_to_the_filename() {
+    let mut failures = Failures::default();
+    for (name, meta, want) in [
+        (
+            "description",
+            Some(r#"{"description": "  read the docs  ", "agentType": "Explore"}"#),
+            "read the docs",
+        ),
+        ("agent-type", Some(r#"{"agentType": "Explore"}"#), "Explore"),
+        (
+            "blank-description",
+            Some(r#"{"description": "|||", "agentType": "Explore"}"#),
+            "Explore",
+        ),
+        ("no-meta", None, "abc123"),
+        ("malformed-meta", Some("{"), "abc123"),
+        ("empty-meta-object", Some("{}"), "abc123"),
+    ] {
+        let got = subagent::agent_display(meta, "agent-abc123");
+        failures.check(name, got == want, || format!("want {want:?}, got {got:?}"));
+    }
+    failures.assert_empty("agent title chain");
+}
+
+/// The fallback tier reads the transcripts directly, skips agents whose files
+/// have gone quiet, and resolves each window through the tiers.
+#[test]
+fn the_fallback_tier_reads_transcripts_and_skips_stale_agents() {
+    let dir = scratch_dir("fallback-tier");
+    let transcript = dir.join("session-abc.jsonl");
+    let agents = dir.join("session-abc").join("subagents");
+    std::fs::create_dir_all(&agents).expect("failed to create the subagents directory");
+
+    let live = agents.join("agent-live.jsonl");
+    std::fs::write(
+        &live,
+        concat!(
+            r#"{"type":"assistant","message":{"stop_reason":"tool_use","model":"claude-sonnet-5","usage":{"input_tokens":50,"cache_read_input_tokens":50}}}"#,
+            "\n"
+        ),
+    )
+    .expect("failed to write the live agent transcript");
+    std::fs::write(
+        agents.join("agent-live.meta.json"),
+        r#"{"description": "the live one"}"#,
+    )
+    .expect("failed to write the live agent meta");
+
+    let stale = agents.join("agent-stale.jsonl");
+    std::fs::write(&stale, "{\"type\":\"assistant\",\"message\":{}}\n")
+        .expect("failed to write the stale agent transcript");
+
+    let clock = TestClock::at(10_000)
+        .with_mtime(&live, 9_990)
+        .with_mtime(&stale, 9_000);
+    let windows = Windows::new("", None, learned(&[]));
+
+    let rows = subagent::rows_from_transcripts(
+        &clock,
+        transcript.to_str().expect("the scratch path is UTF-8"),
+        &windows,
+    );
+
+    assert_eq!(
+        rows,
+        vec![Row {
+            used: 100,
+            window: 1_000_000,
+            model: "claude-sonnet-5".into(),
+            display: "the live one".into(),
+            // A transcript cannot report an effort override, and nothing is
+            // inferred from the session's own effort.
+            effort: String::new(),
+            done: false,
+        }],
+        "an agent quiet for more than three minutes is not this session's"
+    );
+}
+
+#[test]
+fn feed_freshness_is_measured_through_the_injected_clock() {
+    let dir = scratch_dir("feed-freshness");
+    let feed = dir.join("statusline-tasks-session.json");
+    std::fs::write(&feed, "{}").expect("failed to write the feed");
+
+    assert!(subagent::feed_is_fresh(
+        &TestClock::at(1_000).with_mtime(&feed, 990),
+        &feed
+    ));
+    assert!(
+        !subagent::feed_is_fresh(&TestClock::at(1_000).with_mtime(&feed, 989), &feed),
+        "past the window the feed tier is dropped and the fallback tier runs"
+    );
+    assert!(
+        !subagent::feed_is_fresh(&TestClock::at(1_000), &feed),
+        "an unreadable mtime is not freshness"
     );
 }

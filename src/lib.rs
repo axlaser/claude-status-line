@@ -15,6 +15,7 @@ pub mod platform;
 pub mod session;
 pub mod settings;
 pub mod state;
+pub mod subagent;
 pub mod transcript;
 
 use std::path::PathBuf;
