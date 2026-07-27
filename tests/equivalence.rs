@@ -434,6 +434,159 @@ fn debug_log_writes_only_when_enabled() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// Release workflow contract (R2, R3, R36, R43, KTD2 / U2)
+// ---------------------------------------------------------------------------
+//
+// A release workflow is only exercised by pushing a tag, which is a slow and
+// irreversible way to learn that an action reference went unpinned or that the
+// arm runner label drifted back to an alias. These cases assert the properties
+// that are decidable from the file itself, so the tag push only has to prove
+// the parts that genuinely need a runner.
+
+fn repo_file(rel: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join(rel)
+}
+
+fn read_repo_file(rel: &str) -> String {
+    std::fs::read_to_string(repo_file(rel)).unwrap_or_else(|e| panic!("could not read {rel}: {e}"))
+}
+
+const RELEASE_WORKFLOW: &str = ".github/workflows/release.yml";
+
+/// R2's six targets, each with the artifact suffix its family carries.
+const PUBLISHED_TARGETS: [&str; 6] = [
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "x86_64-unknown-linux-musl",
+    "aarch64-unknown-linux-musl",
+    "x86_64-pc-windows-msvc",
+    "aarch64-pc-windows-msvc",
+];
+
+/// Every target R2 publishes builds, tests, and is attested. A target that is
+/// silently absent ships an installer that resolves a URL returning 404.
+#[test]
+fn release_workflow_covers_every_published_target() {
+    let wf = read_repo_file(RELEASE_WORKFLOW);
+    let mut failures = Failures::default();
+
+    for target in PUBLISHED_TARGETS {
+        failures.check(target, wf.contains(&format!("target: {target}")), || {
+            "missing from the build matrix".to_string()
+        });
+        failures.check(target, wf.contains(&format!("Attest {target}")), || {
+            "has no attestation step, so R4 would ship it unattested".to_string()
+        });
+    }
+    failures.assert_empty("published targets");
+}
+
+/// A mutable tag reference is a supply-chain hole: the SHA a release was built
+/// with must be the SHA the reference names.
+#[test]
+fn every_action_reference_is_pinned_to_a_full_sha() {
+    let wf = read_repo_file(RELEASE_WORKFLOW);
+    let mut failures = Failures::default();
+    let mut seen = 0usize;
+
+    for (n, line) in wf.lines().enumerate() {
+        let Some((_, reference)) = line.trim().split_once("uses:") else {
+            continue;
+        };
+        let reference = reference.trim();
+        seen += 1;
+        // Strip the trailing `# v5` comment the pin carries for readability.
+        let pin = reference.split('#').next().unwrap_or("").trim();
+        let sha = pin.rsplit('@').next().unwrap_or("");
+        let pinned = sha.len() == 40 && sha.chars().all(|c| c.is_ascii_hexdigit());
+        failures.check(&format!("line {}", n + 1), pinned, || {
+            format!("`{pin}` is not pinned to a full 40-character commit SHA")
+        });
+    }
+
+    assert!(seen > 0, "no `uses:` references found — did the file move?");
+    failures.assert_empty("action pinning");
+}
+
+/// Approach item 7: alias labels move under you. `windows-latest` silently
+/// became a different image more than once, and neither arm label has an alias
+/// that resolves to arm at all.
+#[test]
+fn runner_labels_are_explicit_not_aliases() {
+    let wf = read_repo_file(RELEASE_WORKFLOW);
+    let mut failures = Failures::default();
+
+    for (n, line) in wf.lines().enumerate() {
+        let trimmed = line.trim();
+        if !trimmed.starts_with("runner:") && !trimmed.starts_with("runs-on:") {
+            continue;
+        }
+        failures.check(
+            &format!("line {}", n + 1),
+            !trimmed.contains("-latest"),
+            || format!("`{trimmed}` uses a moving alias"),
+        );
+    }
+
+    for label in ["windows-11-arm", "ubuntu-24.04-arm"] {
+        failures.check(label, wf.contains(label), || {
+            "the explicit arm runner label is missing".to_string()
+        });
+    }
+    failures.assert_empty("runner labels");
+}
+
+/// The workflow grants nothing beyond read at its own scope, and the write
+/// grants appear exactly once — on the single attesting and publishing job.
+#[test]
+fn write_permissions_are_confined_to_the_publishing_job() {
+    let wf = read_repo_file(RELEASE_WORKFLOW);
+
+    let scope = wf
+        .find("\npermissions:\n")
+        .expect("the workflow declares no top-level `permissions:` block");
+    let scope_block: String = wf[scope + 1..]
+        .lines()
+        .take(2)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        scope_block.contains("contents: read"),
+        "workflow scope must be read-only, got:\n{scope_block}"
+    );
+
+    let mut failures = Failures::default();
+    for grant in [
+        "contents: write",
+        "id-token: write",
+        "attestations: write",
+        "artifact-metadata: write",
+    ] {
+        let count = wf.matches(grant).count();
+        failures.check(grant, count == 1, || {
+            format!("appears {count} times; it belongs to the publishing job alone")
+        });
+    }
+    failures.assert_empty("elevated permissions");
+}
+
+/// R36. Until U17's dogfood gate passes, a stable tag must not be able to
+/// publish. The guard is a step rather than a convention so promoting a
+/// verification tag by accident fails loudly instead of shipping.
+#[test]
+fn stable_releases_are_gated_until_parity() {
+    let wf = read_repo_file(RELEASE_WORKFLOW);
+    assert!(
+        wf.contains("name: Parity gate"),
+        "the R36 parity gate step is gone — stable tags can now publish"
+    );
+    assert!(
+        wf.contains("--prerelease"),
+        "nothing marks verification tags as prereleases, so R5's resolution would pick them up"
+    );
+}
+
 /// The message closure must not be evaluated when logging is off — this is the
 /// Rust equivalent of the PowerShell rule that arguments evaluate before the
 /// callee's guard.
