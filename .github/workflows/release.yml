@@ -334,7 +334,13 @@ jobs:
           if [ "${{ steps.tag.outputs.prerelease }}" = "true" ]; then
             flags+=(--prerelease)
           fi
+          # --repo is required, not decorative: this job downloads artifacts and
+          # never checks out the repository, so gh has no git remote to infer
+          # from and fails with "not a git repository". Adding a checkout just to
+          # give it that context would widen the surface of the one job holding
+          # the signing and release permissions.
           gh release create "$TAG" \
+            --repo "${{ github.repository }}" \
             --title "$TAG" \
             --notes "Verify before use:
 
