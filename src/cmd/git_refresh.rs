@@ -11,50 +11,12 @@
 use std::path::{Path, PathBuf};
 
 use crate::debug;
+use crate::session::sanitize_session_id;
 
 /// The tools whose use can change git state. Kept verbatim from the scripts:
 /// this list also appears as the hook's `matcher` in `settings.json`, so the
 /// two have to agree or the hook fires for tools this ignores.
 pub const INVALIDATING_TOOLS: [&str; 5] = ["Edit", "Write", "MultiEdit", "Bash", "NotebookEdit"];
-
-/// Strips everything outside `[a-zA-Z0-9_-]` from a session id.
-///
-/// Characters are *removed*, not replaced, which is what both scripts do —
-/// `../../foo/bar` becomes `foobar`, not `______foo_bar`. Any port that
-/// substituted instead would derive different paths for the same session and
-/// silently stop invalidating the cache.
-///
-/// This is also the whole defence against path traversal: the session id
-/// arrives from the payload and lands in a filename, so a separator or a `..`
-/// surviving here would let the hook delete outside the temp directory.
-pub fn sanitize_session_id(raw: &str) -> String {
-    raw.chars()
-        .filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
-        .collect()
-}
-
-/// The temp directory the scripts use.
-///
-/// Spelled out rather than deferring to `std::env::temp_dir`, which consults
-/// `TMP` before `TEMP` on Windows. The scripts read `%TEMP%`, and a machine
-/// where the two differ would have the hook deleting from one directory while
-/// the status line writes to the other — invisible, because a cache that is
-/// never invalidated still renders correctly.
-pub fn temp_dir() -> PathBuf {
-    #[cfg(windows)]
-    {
-        std::env::var_os("TEMP")
-            .map(PathBuf::from)
-            .unwrap_or_else(std::env::temp_dir)
-    }
-    #[cfg(unix)]
-    {
-        std::env::var_os("TMPDIR")
-            .filter(|v| !v.is_empty())
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("/tmp"))
-    }
-}
 
 /// The two caches a file-modifying tool invalidates.
 ///

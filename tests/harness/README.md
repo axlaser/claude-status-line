@@ -43,7 +43,11 @@ tests/harness/capture.sh --verify            # capture twice, require byte-ident
 .\tests\harness\capture.ps1 -Verify
 ```
 
-macOS and Linux capture runs on CI via `.github/workflows/capture-fixtures.yml`.
+macOS and Linux capture runs on CI via `.github/workflows/capture-fixtures.yml`,
+triggered by pushing a `capture-<component>` tag and deleting it afterwards.
+Once a component's scripts are deleted (R37) its fixtures can only be
+regenerated against the tree that still had them, so the tag takes an optional
+commit: `capture-git-refresh@7ac72b8`. Locally that is `--at`/`-At`.
 Windows capture runs on the maintainer's machine (KTD9) — the Windows script
 tree is the one with no hosted equivalent of a real developer environment.
 

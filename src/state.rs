@@ -69,20 +69,26 @@ pub fn read_trusted(path: &Path) -> Option<Vec<u8>> {
     std::fs::read(path).ok()
 }
 
-/// Writes atomically through the guard.
+/// Removes a hostile path and **re-evaluates** the guard. `false` means the
+/// path could not be made safe and nothing may be written to it.
 ///
-/// A hostile target is removed and the guard is then **re-evaluated**: on a
-/// sticky directory the unlink fails silently, and a remove-then-write without
-/// the re-check would write straight through an attacker's symlink into a
-/// victim-owned file.
+/// The re-check is the load-bearing half: on a sticky directory the unlink
+/// fails silently, and a remove-then-write without it would write straight
+/// through an attacker's symlink into a victim-owned file.
+fn make_safe(path: &Path) -> bool {
+    if !is_hostile(path) {
+        return true;
+    }
+    if std::fs::remove_file(path).is_err() {
+        return false;
+    }
+    !is_hostile(path)
+}
+
+/// Writes atomically through the guard.
 pub fn write_guarded(path: &Path, bytes: &[u8]) -> WriteOutcome {
-    if is_hostile(path) {
-        if std::fs::remove_file(path).is_err() {
-            return WriteOutcome::SkippedHostile;
-        }
-        if is_hostile(path) {
-            return WriteOutcome::SkippedHostile;
-        }
+    if !make_safe(path) {
+        return WriteOutcome::SkippedHostile;
     }
 
     let Some(parent) = path.parent() else {
@@ -99,6 +105,15 @@ pub fn write_guarded(path: &Path, bytes: &[u8]) -> WriteOutcome {
         path.file_name().and_then(|n| n.to_str()).unwrap_or("state"),
         std::process::id()
     ));
+    // The staging path is guarded too, and it is the one that matters most:
+    // `rename` replaces the final path without ever following it, so the
+    // symlink an attacker can actually exploit is the one planted at this
+    // predictable temporary name. Both shell handlers drop a planted temp
+    // target and skip the write if it survives; an unguarded `write` here
+    // would follow it instead.
+    if !make_safe(&tmp) {
+        return WriteOutcome::SkippedHostile;
+    }
     if std::fs::write(&tmp, bytes).is_err() {
         let _ = std::fs::remove_file(&tmp);
         return WriteOutcome::Failed;

@@ -9,6 +9,7 @@ pub mod clock;
 pub mod cmd;
 pub mod debug;
 pub mod platform;
+pub mod session;
 pub mod settings;
 pub mod state;
 

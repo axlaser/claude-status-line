@@ -660,7 +660,7 @@ fn session_ids_are_sanitised_by_removal() {
 
     let mut failures = Failures::default();
     for c in cases {
-        let got = git_refresh::sanitize_session_id(c.raw);
+        let got = claude_statusline::session::sanitize_session_id(c.raw);
         failures.check(c.name, got == c.want, || {
             format!("{:?} -> {:?}, expected {:?}", c.raw, got, c.want)
         });
@@ -916,6 +916,331 @@ fn deleted_paths_match_the_captured_fixtures() {
 
     println!("compared {checked} captured platform fixture(s)");
     failures.assert_empty("git-refresh fixture equivalence");
+}
+
+// ---------------------------------------------------------------------------
+// subagent tasks feed (R1, R28, R31, R34 / U6)
+// ---------------------------------------------------------------------------
+//
+// The handler's observable is the exact bytes it writes to the tasks feed, and
+// its second contract is that it writes nothing to stdout — output there
+// replaces Claude Code's default agent panel rather than adding to it, so an
+// accidental byte does not degrade the display, it deletes it.
+//
+// Field order is part of the observable. The feed's bytes are an input to the
+// status line's output-cache key, so a reordering would miss the cache on every
+// tick while rendering identically.
+
+use claude_statusline::cmd::subagent;
+
+struct ProjectionCase {
+    name: &'static str,
+    payload: &'static str,
+    /// The exact bytes written, or `None` when the tick must be skipped and the
+    /// previous feed left in place.
+    want: Option<&'static str>,
+}
+
+/// Every state of the tasks-feed contract, resolved to one answer each (R32).
+///
+/// Two of these record a resolution rather than a port: the shell handlers
+/// disagree, and a single behaviour had to be chosen. Both are stored here as
+/// literals rather than captured from a script run, which is the mechanism R20
+/// prescribes for exactly this situation.
+#[test]
+fn the_projection_resolves_every_tasks_feed_state() {
+    let cases = [
+        ProjectionCase {
+            name: "drops-absent-and-null-fields",
+            payload: r#"{"session_id":"s1","tasks":[{"id":"a","effort":null,"status":"running"}]}"#,
+            // `effort` is the field that makes this load-bearing: Claude Code
+            // reports it only when the task carries an explicit override, so
+            // presence is the signal to render the segment at all. An empty
+            // string would render an override that does not exist.
+            want: Some(r#"{"tasks":[{"id":"a","status":"running"}]}"#),
+        },
+        ProjectionCase {
+            name: "keeps-falsy-values",
+            payload: r#"{"session_id":"s1","tasks":[{"id":"a","tokenCount":0,"description":""}]}"#,
+            want: Some(r#"{"tasks":[{"id":"a","description":"","tokenCount":0}]}"#),
+        },
+        ProjectionCase {
+            name: "emits-fields-in-reader-order",
+            payload: r#"{"session_id":"s1","tasks":[{"tokenCount":7,"id":"a","status":"x","name":"n"}]}"#,
+            want: Some(r#"{"tasks":[{"id":"a","name":"n","status":"x","tokenCount":7}]}"#),
+        },
+        ProjectionCase {
+            name: "drops-fields-the-reader-does-not-consume",
+            payload: r#"{"session_id":"s1","tasks":[{"id":"a","tokenSamples":[1,2],"extra":"x"}]}"#,
+            want: Some(r#"{"tasks":[{"id":"a"}]}"#),
+        },
+        // RESOLVED DIVERGENCE. jq's `select(type == "object")` drops a
+        // non-object task; the PowerShell handler emits `{}` for it, which
+        // reaches the reader as a task with no id. Resolved to the bash
+        // behaviour on both platforms: `{}` is not a task.
+        ProjectionCase {
+            name: "non-object-task-is-dropped-not-emitted-as-empty",
+            payload: r#"{"session_id":"s1","tasks":[{"id":"a"},"nope",42,null]}"#,
+            want: Some(r#"{"tasks":[{"id":"a"}]}"#),
+        },
+        // RESOLVED DIVERGENCE. Windows PowerShell 5.1 escapes `'`, `<`, `>` and
+        // every non-ASCII character as \uXXXX; jq and PowerShell 7 emit them
+        // raw. The Windows handler therefore has no single byte-exact
+        // behaviour of its own — it depends on which interpreter the user runs.
+        // Resolved to the minimal-escaping form, which matches jq, matches
+        // PowerShell 7, and is what the only consumer — a JSON parser in the
+        // status line — reads identically either way.
+        ProjectionCase {
+            name: "escapes-minimally-like-jq-not-like-powershell-51",
+            payload: r#"{"session_id":"s1","tasks":[{"id":"a","description":"the user's <tag> & ✅"}]}"#,
+            want: Some(r#"{"tasks":[{"id":"a","description":"the user's <tag> & ✅"}]}"#),
+        },
+        ProjectionCase {
+            name: "absent-tasks-writes-an-empty-list",
+            payload: r#"{"session_id":"s1"}"#,
+            want: Some(r#"{"tasks":[]}"#),
+        },
+        ProjectionCase {
+            name: "empty-tasks-writes-an-empty-list",
+            payload: r#"{"session_id":"s1","tasks":[]}"#,
+            want: Some(r#"{"tasks":[]}"#),
+        },
+        // Everything below leaves the previous feed alone. A tee that
+        // overwrote on garbage would silently drop the subagent rows until the
+        // next good tick — the contract half that got the raw-tee prototype
+        // rejected in docs/performance.md §7.
+        ProjectionCase {
+            name: "tasks-of-the-wrong-type-is-a-malformed-tick",
+            payload: r#"{"session_id":"s1","tasks":"nope"}"#,
+            want: None,
+        },
+        ProjectionCase {
+            name: "unparseable-payload",
+            payload: "{not json",
+            want: None,
+        },
+        ProjectionCase {
+            name: "payload-is-not-an-object",
+            payload: "[1,2,3]",
+            want: None,
+        },
+        ProjectionCase {
+            name: "no-session-id",
+            payload: r#"{"tasks":[{"id":"a"}]}"#,
+            want: None,
+        },
+        ProjectionCase {
+            name: "session-id-sanitises-to-nothing",
+            payload: r#"{"session_id":"../..","tasks":[{"id":"a"}]}"#,
+            want: None,
+        },
+        ProjectionCase {
+            name: "empty-payload",
+            payload: "",
+            want: None,
+        },
+    ];
+
+    let mut failures = Failures::default();
+    for c in cases {
+        let got = subagent::project(c.payload).map(|(_, bytes)| bytes);
+        failures.check(c.name, got.as_deref() == c.want, || {
+            format!("got {got:?}, expected {:?}", c.want)
+        });
+    }
+    failures.assert_empty("tasks-feed projection");
+}
+
+/// The session id reaches a filename, so a separator surviving sanitisation
+/// would let the handler write outside the temp directory — and unlike
+/// `git-refresh`, this component *creates* files, so an escape plants content
+/// rather than deleting it.
+#[test]
+fn no_payload_can_tee_outside_the_temp_root() {
+    let temp = scratch_dir("subagent-escape");
+    let hostile = [
+        "../../../../etc/cron.d/x",
+        "..\\..\\..\\Windows\\System32\\x",
+        "/absolute/path",
+        "C:\\Windows",
+        "a/../../b",
+    ];
+
+    let mut failures = Failures::default();
+    for raw in hostile {
+        let payload = serde_json::json!({ "session_id": raw, "tasks": [] }).to_string();
+        let Some((safe_id, _)) = subagent::project(&payload) else {
+            continue;
+        };
+        let path = subagent::feed_path(&temp, &safe_id);
+        failures.check(raw, path.starts_with(&temp), || {
+            format!("escaped the temp root: {}", path.display())
+        });
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        failures.check(raw, !name.contains(".."), || {
+            format!("filename still carries a traversal: {name}")
+        });
+    }
+    failures.assert_empty("tasks-feed path traversal");
+}
+
+/// The feed path is entirely predictable from the session id, and on a shared
+/// `/tmp` that is the difference between a state file and an arbitrary-write
+/// primitive. Both shell handlers refuse rather than follow; so must this.
+#[test]
+fn a_hostile_feed_target_is_refused_not_followed() {
+    let dir = scratch_dir("subagent-hostile");
+    let victim = dir.join("victim.txt");
+    let link = subagent::feed_path(&dir, "s1");
+    std::fs::write(&victim, b"original").unwrap();
+
+    if !make_symlink(&victim, &link) {
+        eprintln!("skipped: this platform/session cannot create symlinks unprivileged");
+        return;
+    }
+
+    let payload = r#"{"session_id":"s1","tasks":[{"id":"a"}]}"#;
+    let outcome = subagent::run(payload, &dir);
+    assert!(
+        matches!(outcome, subagent::Tick::Wrote(_) | subagent::Tick::Hostile),
+        "unexpected outcome: {outcome:?}"
+    );
+    assert_eq!(
+        std::fs::read(&victim).unwrap(),
+        b"original",
+        "the tee followed the symlink and clobbered the victim file"
+    );
+}
+
+/// Anything on stdout replaces Claude Code's default agent panel. This runs the
+/// real binary because stdout emptiness is a process-level fact, and it asserts
+/// the feed was written in the same breath — otherwise "prints nothing" would
+/// be satisfied by a handler that does nothing.
+#[test]
+fn the_subagent_handler_prints_nothing_while_still_teeing() {
+    let dir = scratch_dir("subagent-silent");
+    let root = dir.to_string_lossy().into_owned();
+    let env: &[(&str, &str)] = &[("TMPDIR", &root), ("TEMP", &root), ("TMP", &root)];
+
+    let valid = r#"{"session_id":"silent-1","tasks":[{"id":"a","status":"running"}]}"#;
+    let mut failures = Failures::default();
+
+    for (name, stdin) in [
+        ("valid", valid),
+        ("malformed", "{not json"),
+        ("empty", ""),
+        ("not-an-object", "[1,2,3]"),
+    ] {
+        let run = run_bin(&["subagent"], stdin, env);
+        failures.check(name, run.code == Some(0), || {
+            format!("expected exit 0, got {:?}", run.code)
+        });
+        failures.check(name, run.stdout.is_empty(), || {
+            format!(
+                "wrote to stdout, which replaces the agent panel: {:?}",
+                run.stdout
+            )
+        });
+        failures.check(name, run.stderr.is_empty(), || {
+            format!("wrote to stderr: {:?}", run.stderr)
+        });
+    }
+
+    let feed = std::fs::read_to_string(subagent::feed_path(&dir, "silent-1")).unwrap_or_default();
+    failures.check("valid", !feed.is_empty(), || {
+        "the valid payload wrote no feed, so silence here proves nothing".to_string()
+    });
+    failures.assert_empty("subagent stdout contract");
+}
+
+/// R31 equivalence against the captured fixtures: the bytes the port writes to
+/// the feed must equal the bytes each platform's script wrote, for the same
+/// payload and the same supplied state.
+#[test]
+fn feed_bytes_match_the_captured_fixtures() {
+    let root = repo_file("tests/fixtures/subagent");
+    let Ok(entries) = std::fs::read_dir(&root) else {
+        println!("no subagent fixtures captured yet");
+        return;
+    };
+
+    let mut failures = Failures::default();
+    let mut checked = 0usize;
+
+    for entry in entries.flatten() {
+        let dir = entry.path();
+        if !dir.is_dir() {
+            continue;
+        }
+        let case = dir
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
+        let meta: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.join("case.json")).unwrap_or_default(),
+        )
+        .unwrap_or(serde_json::Value::Null);
+        let payload_rel = meta["payload"].as_str().unwrap_or("");
+        let payload = std::fs::read_to_string(repo_file(&format!("tests/harness/{payload_rel}")))
+            .unwrap_or_default();
+        let session = meta["session_id"].as_str().unwrap_or("");
+
+        // Every platform that has been captured is asserted, including ones
+        // this test is not running on: the feed's bytes are platform
+        // independent, which is the claim the fixtures exist to prove.
+        for platform in ["macos", "linux", "windows"] {
+            let expected_path = dir.join("expected").join(format!("{platform}.txt"));
+            let Ok(expected) = std::fs::read_to_string(&expected_path) else {
+                continue;
+            };
+            checked += 1;
+            let label = format!("{case}/{platform}");
+
+            let temp = scratch_dir(&format!("subagent-fixture-{case}-{platform}"));
+            // Recreate what the harness supplied, so the port starts from the
+            // same state the script did — the malformed case is only meaningful
+            // if a previous feed is actually there to survive.
+            for input in meta["inputs"].as_array().into_iter().flatten() {
+                let target = input["target"].as_str().unwrap_or("");
+                let content = input["content"].as_str().unwrap_or("");
+                let Some(rel) = target.strip_prefix("{TMP}/") else {
+                    failures.check(&label, false, || {
+                        format!("unsupported input target `{target}`: this replay only stages {{TMP}} files")
+                    });
+                    continue;
+                };
+                let bytes = std::fs::read(repo_file(&format!("tests/harness/{content}")))
+                    .unwrap_or_default();
+                std::fs::write(temp.join(rel.replace("{SESSION}", session)), bytes).unwrap();
+            }
+
+            subagent::run(&payload, &temp);
+
+            let got =
+                std::fs::read_to_string(subagent::feed_path(&temp, session)).unwrap_or_default();
+            failures.check(&label, got == expected, || {
+                format!("script wrote {expected:?}, port wrote {got:?}")
+            });
+
+            // An empty expectation means no feed exists at all, which a plain
+            // string compare cannot distinguish from an empty file.
+            if expected.is_empty() {
+                let stray: Vec<String> = std::fs::read_dir(&temp)
+                    .into_iter()
+                    .flatten()
+                    .flatten()
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .collect();
+                failures.check(&label, stray.is_empty(), || {
+                    format!("expected no feed file, found {stray:?}")
+                });
+            }
+        }
+    }
+
+    println!("compared {checked} captured platform fixture(s)");
+    failures.assert_empty("subagent fixture equivalence");
 }
 
 // ---------------------------------------------------------------------------

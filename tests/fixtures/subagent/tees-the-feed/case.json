@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "case": "tees-the-feed",
+  "component": "subagent",
+  "observable": "feed-bytes",
+  "source_commit": "d7ce2d8e1c75d70c44a5ff5889826ad0c4c669bf",
+  "clock": 1767225600,
+  "git_state": null,
+  "payload": "payloads/tasks-feed.json",
+  "args": [],
+  "notify_config": "configs/default.json",
+  "session_id": "fixture-session-0001",
+  "inputs": [],
+  "captured": [
+    {
+      "platform": "linux",
+      "expected": "expected/linux.txt"
+    },
+    {
+      "platform": "macos",
+      "expected": "expected/macos.txt"
+    },
+    {
+      "platform": "windows",
+      "expected": "expected/windows.txt"
+    }
+  ]
+}

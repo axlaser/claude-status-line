@@ -7,7 +7,7 @@
 
 use std::io::Write;
 
-use claude_statusline::{cmd, debug, platform, self_check, settings};
+use claude_statusline::{cmd, debug, platform, self_check, session, settings};
 
 /// Reads all of stdin, treating an unreadable or non-UTF-8 stream as empty.
 ///
@@ -173,10 +173,14 @@ fn dispatch(sub: &str, _rest: &[&str]) {
         "notify" => {}
         "git-refresh" => {
             let payload = read_stdin();
-            cmd::git_refresh::run(&payload, &cmd::git_refresh::temp_dir());
+            cmd::git_refresh::run(&payload, &session::temp_dir());
         }
-        // U6.
-        "subagent" => {}
+        // Prints nothing on purpose: stdout here replaces Claude Code's default
+        // agent panel rather than adding to it.
+        "subagent" => {
+            let payload = read_stdin();
+            cmd::subagent::run(&payload, &session::temp_dir());
+        }
         // AE4's trigger. Kept in release builds so the shipped artifact is the
         // one the acceptance example exercises.
         "__panic-probe" => panic!("deliberate panic probe"),

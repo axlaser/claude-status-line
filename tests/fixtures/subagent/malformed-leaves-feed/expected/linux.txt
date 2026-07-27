@@ -1,0 +1,12 @@
+{
+  "tasks": [
+    {
+      "id": "task-0001",
+      "description": "Explore the crate layout",
+      "status": "in_progress",
+      "model": "claude-sonnet-5",
+      "contextWindowSize": 200000,
+      "tokenCount": 18000
+    }
+  ]
+}
