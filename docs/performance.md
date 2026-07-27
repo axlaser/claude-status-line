@@ -227,29 +227,60 @@ the size.
 
 | Transcript | Host | Host class | Runs | Script | Binary | Delta |
 |---|---|---|---|---|---|---|
-| pinned (2 KB) | Windows 11 26200, Windows PowerShell 5.1.26100 | maintainer machine | 15 | 307.4 ms | 21.7 ms | −92.9% |
-| generated 8 MB | Windows 11 26200, Windows PowerShell 5.1.26100 | maintainer machine | 7 | 322.4 ms | 72.8 ms | −77.4% |
+| pinned (2 KB) | Windows 11 26200, Windows PowerShell 5.1.26100 | maintainer machine | 15 | 307.4 ms | 21.7 ms | **−92.9%** |
+| generated 8 MB | Windows 11 26200, Windows PowerShell 5.1.26100 | maintainer machine | 7 | 322.4 ms | 72.8 ms | **−77.4%** |
+| generated 8 MB | `macos-15`, image `macos15 20260715.0234.1` | hosted runner | 11 | 50.3 ms | 81.7 ms | **+62.5%** |
+| generated 8 MB | `ubuntu-24.04`, image `ubuntu24 20260720.247.2` | hosted runner | 11 | 15.0 ms | 61.3 ms | **+307.4%** |
 
-Reading them:
+**Read the sign before reading the size. The binary is faster on Windows and
+slower on macOS and Linux**, and both facts come from the same two design
+decisions meeting three very different interpreter floors.
 
-- **The script barely notices the 8 MB transcript (307 → 322 ms) and the binary
-  clearly does (21.7 → 72.8 ms).** That is not a regression, it is R27's trade
-  showing up exactly where it was predicted to. The script keeps an incremental
-  parser and rescans only the growth; the port deleted that machinery and scans
-  the whole file every tick. The scan costs ~51 ms at 8 MB and the binary is
-  still 4.4× faster end to end, which is the measurement the deletion was
-  argued from rather than asserted against.
-- The script figure is its *best* case, not its worst. Both variants run against
-  a static transcript, so the script's incremental parser has no growth to scan
-  and its output cache is warm for part of the run. The binary's figure is its
-  only case — it has no output cache at all (R27).
-- Windows again dominates the pair: ~124 ms of the script's 307 ms is the
-  interpreter existing, before any of this tool's code runs.
+What the state actually is. Every probe in these rows runs against a *static*
+transcript, and the driver reuses one isolated root across a run that finishes
+in about a second. Both of the script's caches are therefore working at their
+best: its incremental parser has no growth to rescan, and its output cache — 
+keyed on a 5-second bucket — serves most probes without rendering anything at
+all. The binary has neither cache (R27) and does the full job every tick. So
+this is the **cache-hit state** R38 asks this pair to cover, and it is the
+script's best case against the binary's only case.
 
-**Still owed before the statusline scripts are deleted:** the macOS and Linux
-halves of this pair, from `.github/workflows/measure.yml`. The Windows half is
-measured on the maintainer's machine for the same reason KTD9 keeps Windows
-capture off CI.
+Why the sign flips:
+
+- Windows pays ~124 ms for the interpreter to exist before any of this tool's
+  code runs. That floor swamps everything else, so removing the interpreter wins
+  no matter what the binary then does.
+- Bash's floor is ~10 ms. There is no interpreter cost to reclaim, so what
+  remains is a straight comparison of work — and in this state the script's work
+  is *nearly zero* while the binary re-scans 8 MB. Linux's 15.0 ms is mostly
+  cache hits; the binary's 61.3 ms is a real render every time.
+- The 8 MB scan itself costs the binary ~50 ms (21.7 → 72.8 ms on Windows,
+  where the rest of the tick is constant). That is the number R27 traded away
+  the incremental parser for.
+
+**This contradicts R27's stated justification and is not settled.** R27 argued
+the incremental machinery "buys nothing once the interpreter is gone", from a
+probe of a *growing* 13.4 MB transcript costing 568 ms. That is the script's
+worst case. Against its best case — a static transcript, which is what a session
+looks like between messages, i.e. most ticks — the machinery buys 46 ms on
+Linux. The Windows conclusion was right and was over-generalised to platforms
+whose interpreter floor is an order of magnitude lower.
+
+Not yet decided, and deliberately left open rather than resolved in passing:
+
+1. Accept it. 61 ms is comfortably inside a refresh tick and no user sees a
+   stall; the port is still far faster on the platform that was worst off.
+2. Restore a resume path in the port — store the byte offset and scan only the
+   tail. R27 deleted it; this would reopen that decision with new evidence,
+   which is the bar §7 sets.
+3. Skip the rescan when the transcript's `(mtime, size)` are unchanged and reuse
+   the stored totals. Cheaper than (2), but it gives up the property U12 chose
+   deliberately: totals always come from this tick's scan, which is what let the
+   head checksum go, because a same-size rewrite is otherwise invisible.
+
+**Still owed:** a cache-*miss* pair on all three platforms. These rows measure
+the script serving a warm output cache; the state where it actually renders is
+unmeasured, and it is the state the binary is compared against every tick.
 
 Provenance note: unlike the `subagent` pair above, this one needed no throwaway
 commit. The port landed at U12 and the scripts are deleted at U13, so a commit
