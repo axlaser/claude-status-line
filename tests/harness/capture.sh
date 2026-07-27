@@ -448,7 +448,12 @@ capture_case() {
             [[ -s $stdout_file ]] && fail "$component/$case_name: the subagent handler wrote to stdout"
             ;;
         notify-argv)
-            cp "$capture_file" "$observable_file"
+            # Sorted, because this observable is a *set* of invocations and not
+            # a sequence. Both scripts background their sound helper, so its
+            # record races the visual one: the same case captured twice really
+            # does produce the two lines in either order. `deleted-paths` sorts
+            # for the same reason.
+            LC_ALL=C sort "$capture_file" > "$observable_file"
             ;;
         *)
             fail "unknown observable '$observable'"

@@ -415,7 +415,20 @@ function Invoke-CaptureCase($Spec, [string] $OutRoot) {
             if ($out) { Fail "$component/$caseName`: the subagent handler wrote to stdout" }
         }
         'notify-argv' {
-            $captured = if (Test-Path $captureFile) { Read-Utf8 $captureFile } else { '' }
+            # Sorted, because this observable is a *set* of invocations and not
+            # a sequence. Both scripts background their sound helper, so its
+            # record races the visual one: the same case captured twice really
+            # does produce the two lines in either order. `deleted-paths` sorts
+            # for the same reason.
+            #
+            # Ordinal, to match the bash driver's `LC_ALL=C sort`. A culture
+            # comparison would order the two drivers differently and turn a
+            # matching pair of fixtures into a divergence.
+            $raw = if (Test-Path $captureFile) { Read-Utf8 $captureFile } else { '' }
+            $lines = @($raw -split "`r?`n" | Where-Object { $_ -ne '' })
+            if ($lines.Count -gt 1) { [Array]::Sort($lines, [System.StringComparer]::Ordinal) }
+            $captured = ($lines -join "`n")
+            if ($captured) { $captured += "`n" }
         }
         default { Fail "unknown observable '$observable'" }
     }

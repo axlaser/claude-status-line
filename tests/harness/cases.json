@@ -180,7 +180,7 @@
       "git_state": null,
       "inputs": [],
       "platforms": ["macos", "linux"],
-      "platform_note": "Windows delivery is entirely in-process — System.Media.SoundPlayer, SystemSounds, and the BurntToast module — so it spawns nothing a PATH shim can observe, and an empty capture here would be indistinguishable from a notification that never fired. U7 owns choosing the Windows observable; until it does, this case is captured on the two platforms where R31's observable exists.",
+      "platform_note": "The Windows *script* delivers entirely in-process — System.Media.SoundPlayer, SystemSounds, and the BurntToast module — so it spawns nothing a PATH shim can observe, and an empty capture would be indistinguishable from a notification that never fired. U7 resolved this: the port cannot call BurntToast in-process, so it raises the toast by invoking powershell.exe at its absolute path, which gives Windows an external observable for the first time. That observable has no script counterpart to be captured from, so it is asserted against a literal in tests/equivalence.rs instead (R20's mechanism). Windows sound stays in-process via winmm and remains unobservable by design.",
       "why": "R31: the observable is the command and arguments notify invokes, captured through the PATH shims."
     },
     {
@@ -193,8 +193,8 @@
       "git_state": null,
       "inputs": [],
       "platforms": ["macos", "linux"],
-      "platform_note": "Same Windows gap as permission-event. On macOS and Linux the point of the case survives: the visual helper is invoked and the sound helper is not, which an empty capture could not distinguish from either being missing.",
-      "why": "AE15: with `sound: false` for the event, no sound helper is invoked at all."
+      "platform_note": "Same Windows situation as permission-event.",
+      "why": "AE15: with `sound: false` for the event, no sound helper is invoked at all. THE CAPTURE DOES NOT SHOW THAT, and is kept as the record of why. Both bash scripts read the flag as `jq -r '.[$e].sound // true'`, and jq's `//` yields its right-hand side when the left is `false` as well as when it is null — so `false // true` is `true` and muting has never worked on macOS or Linux. R44 makes the flags gate delivery and the Product Contract wins on behaviour, so the port mutes correctly and this fixture is a divergence record rather than the port's target. tests/equivalence.rs names it in DIVERGENT_FIXTURES and asserts the required behaviour against a literal (R20)."
     },
 
     {
