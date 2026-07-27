@@ -1,215 +1,25 @@
 #!/usr/bin/env bash
-# Removes statusline.sh and strips the statusLine entry from settings.json.
-# No `set -e`: this script can be sourced (see CLAUDE.md), and errexit would
-# leak into the caller's shell and persist after return. Every step below
-# already degrades with warn-and-continue semantics.
+# Compatibility entry point. The real uninstaller is install/uninstall.sh, which
+# covers macOS and Linux from one file (R6); this path exists because it is the
+# one the README has always published and a documented one-liner URL must keep
+# working.
+#
+# No `set -e` and no bare `exit`: this runs in the user's live shell via the
+# published one-liner. See install/install.sh for the full reasoning.
 
-CLAUDE_DIR="$HOME/.claude"
-SCRIPT_PATH="$CLAUDE_DIR/statusline.sh"
-SETTINGS_PATH="$CLAUDE_DIR/settings.json"
-NOTIFY_PATH="$CLAUDE_DIR/notify.sh"
-GIT_REFRESH_PATH="$CLAUDE_DIR/git-refresh.sh"
-SUBAGENT_PATH="$CLAUDE_DIR/subagent-statusline.sh"
+_SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)"
 
-# --- Helpers ---
-RESET=$'\033[0m'
-BOLD=$'\033[1m'
-DIM=$'\033[2m'
-CYAN=$'\033[36m'
-GREEN=$'\033[32m'
-YELLOW=$'\033[33m'
-RED=$'\033[31m'
-GRAY=$'\033[90m'
-
-step() { printf "  ${CYAN}${BOLD}>>>${RESET} %s\n" "$1"; }
-ok()   { printf "  ${GREEN}${BOLD} +${RESET} %s\n" "$1"; }
-warn() { printf "  ${YELLOW}${BOLD} !${RESET} %s\n" "$1"; }
-err()  { printf "  ${RED}${BOLD} x${RESET} %s\n" "$1"; }
-info() { printf "  ${DIM}   %s${RESET}\n" "$1"; }
-file_bytes() { wc -c < "$1" | tr -d ' '; }
-human_size() {
-    local b=$1
-    if (( b >= 1048576 )); then awk -v b="$b" 'BEGIN{printf "%.1f MB",b/1048576}'
-    elif (( b >= 1024 )); then awk -v b="$b" 'BEGIN{printf "%.1f KB",b/1024}'
-    else printf "%d B" "$b"; fi
-}
-
-# --- Header ---
-echo ""
-printf "  ${DIM}claude-statusline · Uninstaller${RESET}\n"
-printf "  ${GRAY}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}\n"
-echo ""
-
-# --- Remove the script ---
-step "Removing status line script"
-if [[ -f "$SCRIPT_PATH" ]]; then
-    _sz=$(human_size $(file_bytes "$SCRIPT_PATH"))
-    rm -f "$SCRIPT_PATH"
-    ok "Deleted $SCRIPT_PATH ($_sz)"
+if [[ -n $_SELF_DIR && -f "$_SELF_DIR/../install/uninstall.sh" ]]; then
+    # Running from a clone.
+    source "$_SELF_DIR/../install/uninstall.sh"
 else
-    warn "Script not found (already removed?)"
-fi
-echo ""
-
-# --- Remove subagent status line handler ---
-step "Removing subagent status line handler"
-if [[ -f "$SUBAGENT_PATH" ]]; then
-    _sz=$(human_size $(file_bytes "$SUBAGENT_PATH"))
-    rm -f "$SUBAGENT_PATH"
-    ok "Deleted $SUBAGENT_PATH ($_sz)"
-else
-    info "Subagent handler not found (not installed)"
-fi
-
-# --- Remove learned model window map ---
-MODEL_WINDOWS_PATH="$CLAUDE_DIR/statusline-model-windows.json"
-if [[ -f "$MODEL_WINDOWS_PATH" ]]; then
-    _sz=$(human_size $(file_bytes "$MODEL_WINDOWS_PATH"))
-    rm -f "$MODEL_WINDOWS_PATH"
-    ok "Deleted $MODEL_WINDOWS_PATH ($_sz)"
-fi
-echo ""
-
-# --- Remove from settings.json ---
-step "Updating Claude Code settings"
-if [[ -f "$SETTINGS_PATH" ]]; then
-    if command -v jq &>/dev/null; then
-        tmp=$(mktemp "$SETTINGS_PATH.XXXXXX")
-        # Only remove subagentStatusLine when it points at this install's handler;
-        # a declined overwrite at install time may have preserved a foreign entry.
-        if jq 'del(.statusLine) | if (.subagentStatusLine.command? // "" | tostring | contains("subagent-statusline")) then del(.subagentStatusLine) else . end' "$SETTINGS_PATH" > "$tmp"; then
-            mv "$tmp" "$SETTINGS_PATH"
-            ok "Removed statusline entries from settings.json"
-        else
-            rm -f "$tmp"
-            warn "Failed to update settings.json — remove the \"statusLine\" and \"subagentStatusLine\" keys manually"
-        fi
-    else
-        warn "jq not installed — please remove the \"statusLine\" and \"subagentStatusLine\" keys from settings.json manually"
-        info "$SETTINGS_PATH"
+    # Fetched. The body is sourced rather than piped so the prompts inside it
+    # can still read from /dev/tty -- stdin is already the pipe carrying this
+    # script.
+    _BODY=$(curl -fsSL "https://raw.githubusercontent.com/axlaser/claude-statusline/master/install/uninstall.sh")
+    if [[ -z $_BODY ]]; then
+        printf '  Could not fetch install/uninstall.sh\n' >&2
+        return 1 2>/dev/null || exit 1
     fi
-else
-    warn "settings.json not found"
+    eval "$_BODY"
 fi
-
-# --- Remove notification script ---
-echo ""
-step "Removing notification script"
-if [[ -f "$NOTIFY_PATH" ]]; then
-    _sz=$(human_size $(file_bytes "$NOTIFY_PATH"))
-    rm -f "$NOTIFY_PATH"
-    ok "Deleted $NOTIFY_PATH ($_sz)"
-else
-    info "Notification script not found (not installed)"
-fi
-
-# --- Remove notification config ---
-NOTIFY_CONFIG_PATH="$CLAUDE_DIR/notify-config.json"
-if [[ -f "$NOTIFY_CONFIG_PATH" ]]; then
-    _sz=$(human_size $(file_bytes "$NOTIFY_CONFIG_PATH"))
-    rm -f "$NOTIFY_CONFIG_PATH"
-    ok "Deleted $NOTIFY_CONFIG_PATH ($_sz)"
-fi
-
-# --- Remove notification icon ---
-ICON_PATH="$CLAUDE_DIR/claude-icon.png"
-if [[ -f "$ICON_PATH" ]]; then
-    _sz=$(human_size $(file_bytes "$ICON_PATH"))
-    rm -f "$ICON_PATH"
-    ok "Deleted $ICON_PATH ($_sz)"
-fi
-
-# --- Remove git-refresh script ---
-echo ""
-step "Removing git-refresh script"
-if [[ -f "$GIT_REFRESH_PATH" ]]; then
-    _sz=$(human_size $(file_bytes "$GIT_REFRESH_PATH"))
-    rm -f "$GIT_REFRESH_PATH"
-    ok "Deleted $GIT_REFRESH_PATH ($_sz)"
-else
-    info "Git-refresh script not found (not installed)"
-fi
-
-# --- Remove notification hooks ---
-if [[ -f "$SETTINGS_PATH" ]] && command -v jq &>/dev/null; then
-    if jq -e '
-      (.hooks.PermissionRequest // []) + (.hooks.Stop // []) + (.hooks.PreCompact // []) + (.hooks.PostCompact // []) | any(any(.hooks[]?; .command? | contains("notify.sh")))
-    ' "$SETTINGS_PATH" &>/dev/null; then
-        echo ""
-        step "Removing notification hooks"
-        tmp=$(mktemp "$SETTINGS_PATH.XXXXXX")
-        if jq '
-          (if .hooks.PermissionRequest then
-            .hooks.PermissionRequest |= [.[] | select(any(.hooks[]?; .command? | contains("notify.sh")) | not)]
-          else . end) |
-          (if .hooks.Stop then
-            .hooks.Stop |= [.[] | select(any(.hooks[]?; .command? | contains("notify.sh")) | not)]
-          else . end) |
-          (if .hooks.PreCompact then
-            .hooks.PreCompact |= [.[] | select(any(.hooks[]?; .command? | contains("notify.sh")) | not)]
-          else . end) |
-          (if .hooks.PostCompact then
-            .hooks.PostCompact |= [.[] | select(any(.hooks[]?; .command? | contains("notify.sh")) | not)]
-          else . end) |
-          (if .hooks then .hooks |= with_entries(select(.value | length > 0)) else . end) |
-          (if .hooks and (.hooks | keys | length == 0) then del(.hooks) else . end)
-        ' "$SETTINGS_PATH" > "$tmp"; then
-            mv "$tmp" "$SETTINGS_PATH"
-            ok "Removed notification hooks from settings.json"
-        else
-            rm -f "$tmp"
-            warn "Failed to update settings.json — remove notification hooks manually"
-        fi
-    fi
-fi
-
-# --- Remove PostToolUse git-refresh hook ---
-if [[ -f "$SETTINGS_PATH" ]] && command -v jq &>/dev/null; then
-    if jq -e '
-      (.hooks.PostToolUse // []) | any(any(.hooks[]?; .command? | contains("git-refresh.sh")))
-    ' "$SETTINGS_PATH" &>/dev/null; then
-        echo ""
-        step "Removing git-refresh hook"
-        tmp=$(mktemp "$SETTINGS_PATH.XXXXXX")
-        if jq '
-          (if .hooks.PostToolUse then
-            .hooks.PostToolUse |= [.[] | select(any(.hooks[]?; .command? | contains("git-refresh.sh")) | not)]
-          else . end) |
-          (if .hooks then .hooks |= with_entries(select(.value | length > 0)) else . end) |
-          (if .hooks and (.hooks | keys | length == 0) then del(.hooks) else . end)
-        ' "$SETTINGS_PATH" > "$tmp"; then
-            mv "$tmp" "$SETTINGS_PATH"
-            ok "Removed PostToolUse hook from settings.json"
-        else
-            rm -f "$tmp"
-            warn "Failed to update settings.json — remove PostToolUse hook manually"
-        fi
-    fi
-fi
-
-# --- Clean up temp state files ---
-echo ""
-step "Cleaning up temporary files"
-removed=0
-for f in "${TMPDIR:-/tmp}"/statusline-*.txt "${TMPDIR:-/tmp}"/statusline-*.json; do
-    [[ -f "$f" ]] || continue
-    _sz=$(human_size $(file_bytes "$f"))
-    rm -f "$f"
-    ok "Deleted $f ($_sz)"
-    removed=$((removed + 1))
-done
-if [[ -f "$HOME/.claude/statusline-debug.log" ]]; then
-    _sz=$(human_size $(file_bytes "$HOME/.claude/statusline-debug.log"))
-    rm -f "$HOME/.claude/statusline-debug.log"
-    ok "Deleted $HOME/.claude/statusline-debug.log ($_sz)"
-    removed=$((removed + 1))
-fi
-if (( removed == 0 )); then
-    info "No temporary state files found"
-fi
-
-# --- Done ---
-echo ""
-printf "  ${GRAY}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}\n"
-printf "  ${GREEN}${BOLD}Done!${RESET} Restart Claude Code to use the default status bar.\n"
-echo ""

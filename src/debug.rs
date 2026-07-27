@@ -22,18 +22,7 @@ pub fn is_enabled() -> bool {
 /// Default log path: `~/.claude/statusline-debug.log`, matching what the
 /// scripts write and what README's troubleshooting section tells users to read.
 pub fn default_path() -> Option<PathBuf> {
-    home_dir().map(|h| h.join(".claude").join("statusline-debug.log"))
-}
-
-fn home_dir() -> Option<PathBuf> {
-    #[cfg(windows)]
-    {
-        std::env::var_os("USERPROFILE").map(PathBuf::from)
-    }
-    #[cfg(unix)]
-    {
-        std::env::var_os("HOME").map(PathBuf::from)
-    }
+    crate::claude_dir().map(|d| d.join("statusline-debug.log"))
 }
 
 /// Appends one line to `path` when `enabled`. Never evaluates `msg` otherwise.

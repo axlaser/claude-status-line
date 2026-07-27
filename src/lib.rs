@@ -8,7 +8,31 @@
 pub mod clock;
 pub mod debug;
 pub mod platform;
+pub mod settings;
 pub mod state;
+
+use std::path::PathBuf;
+
+/// The user's home directory, however this platform spells it.
+///
+/// One resolver for the whole crate: two of them would eventually disagree, and
+/// every predictable state path is derived from this one.
+pub fn home_dir() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        std::env::var_os("USERPROFILE").map(PathBuf::from)
+    }
+    #[cfg(unix)]
+    {
+        std::env::var_os("HOME").map(PathBuf::from)
+    }
+}
+
+/// `~/.claude`, where Claude Code keeps `settings.json` and this tool keeps its
+/// config, its data stores, and its binary.
+pub fn claude_dir() -> Option<PathBuf> {
+    home_dir().map(|h| h.join(".claude"))
+}
 
 /// Output the `self-check` subcommand compares against (R11, KTD15).
 ///

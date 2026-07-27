@@ -7,7 +7,7 @@
 
 use std::io::Write;
 
-use claude_statusline::{debug, platform, self_check};
+use claude_statusline::{debug, platform, self_check, settings};
 
 fn main() {
     // Layer 1: take fd 2 away before any code can write to it. The panic hook
@@ -31,6 +31,15 @@ fn main() {
         std::process::exit(code);
     }
 
+    // `settings` is exempt for the same reason, from the other direction. The
+    // exit-0 contract exists for the tick path, where a failure must never
+    // break the user's status line. Here the caller is an installer deciding
+    // whether it just configured Claude Code — a subcommand that reported
+    // success while having written nothing is the worst outcome available.
+    if sub == "settings" {
+        std::process::exit(settings_cli(&rest));
+    }
+
     // Layer 3: an unwinding panic anywhere below becomes a silent no-op.
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| dispatch(sub, &rest)));
     if result.is_err() {
@@ -44,6 +53,99 @@ fn main() {
 
     // Layer 5.
     std::process::exit(0);
+}
+
+/// `settings apply|remove|has|has-foreign`, the installers' JSON editor.
+///
+/// Returns the process exit code: 0 for success or a true query, 1 otherwise.
+/// Errors go to stdout, not stderr — fd 2 is already redirected to the null
+/// device by the time this runs, so anything written there would vanish and
+/// leave a failing installer with nothing to show the user.
+fn settings_cli(rest: &[&str]) -> i32 {
+    let mut binary = String::new();
+    let mut path: Option<std::path::PathBuf> = None;
+    let mut spec = settings::ApplySpec::default();
+    let mut positional: Vec<&str> = Vec::new();
+    let mut args = rest.iter().copied();
+
+    while let Some(arg) = args.next() {
+        match arg {
+            "--binary" => match args.next() {
+                Some(v) => binary = v.to_string(),
+                None => return fail("--binary needs a value"),
+            },
+            "--settings" => match args.next() {
+                Some(v) => path = Some(std::path::PathBuf::from(v)),
+                None => return fail("--settings needs a value"),
+            },
+            "--statusline" => spec.statusline = true,
+            "--subagent" => spec.subagent = true,
+            "--git-refresh" => spec.git_refresh = true,
+            "--notify" => spec.notify = true,
+            "--all" => {
+                spec = settings::ApplySpec {
+                    statusline: true,
+                    subagent: true,
+                    git_refresh: true,
+                    notify: true,
+                }
+            }
+            other => positional.push(other),
+        }
+    }
+
+    let action = match positional.first() {
+        Some(a) => *a,
+        None => return fail("usage: settings <apply|remove|has|has-foreign> --binary <path>"),
+    };
+    if binary.is_empty() {
+        return fail("--binary is required");
+    }
+
+    let path = match path.or_else(settings::default_path) {
+        Some(p) => p,
+        None => return fail("cannot resolve the home directory"),
+    };
+
+    let mut root = match settings::load(&path) {
+        Ok(v) => v,
+        Err(e) => return fail(&e),
+    };
+
+    match action {
+        "apply" => {
+            settings::apply(&mut root, &binary, &spec);
+            match settings::save(&path, &root) {
+                Ok(()) => 0,
+                Err(e) => fail(&e),
+            }
+        }
+        "remove" => {
+            settings::remove(&mut root, &binary);
+            match settings::save(&path, &root) {
+                Ok(()) => 0,
+                Err(e) => fail(&e),
+            }
+        }
+        // Query forms report through the exit code so a shell can branch on
+        // them without parsing output.
+        "has" => match positional.get(1) {
+            Some(f) if settings::has(&root, &binary, f) => 0,
+            Some(_) => 1,
+            None => fail("has needs a feature name"),
+        },
+        "has-foreign" => match positional.get(1) {
+            Some(f) if settings::has_foreign(&root, &binary, f) => 0,
+            Some(_) => 1,
+            None => fail("has-foreign needs a feature name"),
+        },
+        other => fail(&format!("unknown settings action: {other}")),
+    }
+}
+
+fn fail(message: &str) -> i32 {
+    emit(&format!("claude-statusline settings: {message}\n"));
+    1
 }
 
 fn dispatch(sub: &str, _rest: &[&str]) {

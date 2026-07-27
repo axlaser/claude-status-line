@@ -406,6 +406,48 @@ bash linux/install.sh      # Linux
 
 To update, `git pull` and re-run the install script. To uninstall, run the uninstall script for your platform.
 
+### Without piping to a shell
+
+Piping a URL into `bash` or `iex` runs code you have not read. If you would rather
+not, download the installer first, read it, then run it:
+
+```bash
+curl -fsSL -O https://raw.githubusercontent.com/axlaser/claude-statusline/master/install/install.sh
+less install.sh          # read it
+bash install.sh
+```
+
+```powershell
+Invoke-WebRequest -UseBasicParsing -OutFile install.ps1 `
+  -Uri https://raw.githubusercontent.com/axlaser/claude-statusline/master/install/install.ps1
+Get-Content install.ps1  # read it
+.\install.ps1
+```
+
+The installer downloads a prebuilt binary, verifies its SHA-256 against the
+`checksums.txt` published with the release, and only then places it and sets the
+execute bit. A checksum that cannot be fetched or computed stops the install —
+there is no path that skips verification.
+
+If the [GitHub CLI](https://cli.github.com) is installed, the installer also
+verifies the release's build-provenance attestation. That check is skipped when
+`gh` is absent, and you can demand it instead:
+
+```bash
+bash install.sh --require-attestation
+```
+
+To verify by hand at any time:
+
+```bash
+gh attestation verify ~/.claude/bin/claude-statusline \
+  --repo axlaser/claude-statusline \
+  --signer-workflow axlaser/claude-statusline/.github/workflows/release.yml
+```
+
+To install a specific release rather than the latest, set
+`CLAUDE_STATUSLINE_VERSION` to its tag.
+
 ---
 
 ## Customization

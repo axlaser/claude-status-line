@@ -15,7 +15,12 @@ name = "claude-statusline"
 path = "src/main.rs"
 
 [dependencies]
-serde_json = "1"
+# `preserve_order` keeps settings.json's existing keys in the user's order
+# instead of re-sorting them alphabetically. Without it, installing rewrites the
+# whole file and the diff shows every line rather than only the entries the
+# installer meant to add — which is both alarming to read and useless as
+# verification. jq, which the shell installers used, preserves order too.
+serde_json = { version = "1", features = ["preserve_order"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
