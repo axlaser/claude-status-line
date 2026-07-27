@@ -10,6 +10,7 @@ use std::process::{Command, Stdio};
 
 use claude_statusline::clock::{Clock, TestClock};
 use claude_statusline::debug;
+use claude_statusline::payload::{sanitize_display, Payload};
 use claude_statusline::platform;
 use claude_statusline::settings;
 use claude_statusline::state::{self, WriteOutcome};
@@ -2516,4 +2517,437 @@ fn debug_log_does_not_evaluate_its_message_when_disabled() {
         !evaluated,
         "the message closure ran even though logging was disabled"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Payload (R21, R24, KTD14 / AE6, AE13 / U8)
+// ---------------------------------------------------------------------------
+
+/// Reads a pinned payload from `tests/harness/payloads/`, resolving the two
+/// placeholders the capture harness substitutes. The same files feed the
+/// fixture captures, so a payload that drifts breaks both at once.
+fn payload_fixture(name: &str) -> String {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("harness")
+        .join("payloads")
+        .join(name);
+    std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()))
+        .replace("{REPO}", "/scratch/repo")
+        .replace("{HOME}", "/scratch/home")
+}
+
+fn shown<T: std::fmt::Display>(v: Option<T>) -> String {
+    v.map(|x| x.to_string()).unwrap_or_default()
+}
+
+/// One name-to-value lookup so the tables below read as the parity block does,
+/// rather than as twenty separate assertions.
+fn field(p: &Payload, name: &str) -> String {
+    match name {
+        "session_id" => p.session_id().to_string(),
+        "cwd" => p.cwd().to_string(),
+        "git_cwd" => p.git_cwd().to_string(),
+        "model_display_name" => p.model_display_name().to_string(),
+        "model_id" => p.model_id().to_string(),
+        "context_window_size" => shown(p.context_window_size()),
+        "used_percentage" => shown(p.used_percentage()),
+        "total_input_tokens" => shown(p.total_input_tokens()),
+        "effort_level" => p.effort_level().to_string(),
+        "total_cost_usd" => shown(p.total_cost_usd()),
+        "duration_ms" => shown(p.duration_ms()),
+        "transcript_path" => p.transcript_path().to_string(),
+        "rate_five_hour_percentage" => shown(p.rate_five_hour_percentage()),
+        "rate_five_hour_resets_at" => p.rate_five_hour_resets_at().to_string(),
+        "rate_seven_day_percentage" => shown(p.rate_seven_day_percentage()),
+        "rate_seven_day_resets_at" => p.rate_seven_day_resets_at().to_string(),
+        "agent_name" => p.agent_name().to_string(),
+        "agent_input_tokens" => p.agent_input_tokens().to_string(),
+        "agent_output_tokens" => p.agent_output_tokens().to_string(),
+        other => panic!("no accessor named {other} — the table and the model disagree"),
+    }
+}
+
+/// Every field the parity block extracts, with the value `full.json` carries.
+/// The three duplicated spellings — the second `workspace.current_dir` read,
+/// and the legacy cost and duration keys — are covered by `git_cwd` and by the
+/// fallback tests below rather than by separate rows.
+const FULL_PAYLOAD_FIELDS: &[(&str, &str)] = &[
+    ("session_id", "fixture-session-0001"),
+    ("cwd", "/scratch/repo"),
+    ("git_cwd", "/scratch/repo"),
+    ("model_display_name", "Opus 5"),
+    ("model_id", "claude-opus-5"),
+    ("context_window_size", "200000"),
+    ("used_percentage", "42.5"),
+    ("total_input_tokens", "85000"),
+    ("effort_level", "high"),
+    ("total_cost_usd", "1.2345"),
+    ("duration_ms", "654321"),
+    (
+        "transcript_path",
+        "/scratch/home/.claude/projects/fixtures/transcript.jsonl",
+    ),
+    ("rate_five_hour_percentage", "31"),
+    ("rate_five_hour_resets_at", "2026-01-01T05:00:00Z"),
+    ("rate_seven_day_percentage", "12"),
+    ("rate_seven_day_resets_at", "2026-01-05T00:00:00Z"),
+    ("agent_name", "main"),
+    ("agent_input_tokens", "84000"),
+    ("agent_output_tokens", "1000"),
+];
+
+#[test]
+fn full_payload_reads_every_documented_field() {
+    let raw = payload_fixture("full.json");
+    let p = Payload::parse(&raw).expect("the full fixture is a JSON object");
+
+    let mut failures = Failures::default();
+    for (name, want) in FULL_PAYLOAD_FIELDS {
+        let got = field(&p, name);
+        failures.check(name, got == *want, || format!("want {want:?}, got {got:?}"));
+    }
+    failures.assert_empty("full-payload extraction");
+}
+
+/// A payload carrying only `session_id` and the workspace directory. Absent is
+/// not an error anywhere: every other field reads as its fallback, and the two
+/// token counts read as 0 rather than as absent, which is what both scripts pin
+/// them to.
+#[test]
+fn minimal_payload_falls_back_without_failing() {
+    let raw = payload_fixture("minimal.json");
+    let p = Payload::parse(&raw).expect("the minimal fixture is a JSON object");
+
+    let expected: &[(&str, &str)] = &[
+        ("session_id", "fixture-session-0001"),
+        ("cwd", "/scratch/repo"),
+        ("git_cwd", "/scratch/repo"),
+        ("model_display_name", ""),
+        ("model_id", ""),
+        ("context_window_size", ""),
+        ("used_percentage", ""),
+        ("total_input_tokens", ""),
+        ("effort_level", ""),
+        ("total_cost_usd", ""),
+        ("duration_ms", ""),
+        ("transcript_path", ""),
+        ("rate_five_hour_percentage", ""),
+        ("rate_five_hour_resets_at", ""),
+        ("agent_name", ""),
+        ("agent_input_tokens", "0"),
+        ("agent_output_tokens", "0"),
+    ];
+
+    let mut failures = Failures::default();
+    for (name, want) in expected {
+        let got = field(&p, name);
+        failures.check(name, got == *want, || format!("want {want:?}, got {got:?}"));
+    }
+    failures.assert_empty("minimal-payload fallback");
+}
+
+/// AE6. One field carrying the wrong JSON type costs exactly its own row. The
+/// whole reason the payload is read as a generic value (KTD14): a derived model
+/// would reject the document and blank the entire status line.
+#[test]
+fn one_wrong_typed_field_degrades_only_its_own_row() {
+    let raw = payload_fixture("full.json")
+        .replace("\"used_percentage\": 42.5", "\"used_percentage\": {}");
+    let p = Payload::parse(&raw).expect("a wrong-typed field must not fail the document");
+
+    assert_eq!(
+        p.used_percentage(),
+        None,
+        "an object where a number belongs must read as absent"
+    );
+
+    let mut failures = Failures::default();
+    for (name, want) in FULL_PAYLOAD_FIELDS {
+        if *name == "used_percentage" {
+            continue;
+        }
+        let got = field(&p, name);
+        failures.check(name, got == *want, || {
+            format!("collateral damage: want {want:?}, got {got:?}")
+        });
+    }
+    failures.assert_empty("AE6 single-row degradation");
+}
+
+/// The scripts read the payload as 23 newline-separated rows, so a field whose
+/// *value* looks like more payload is the classic way to shift every field
+/// after it. Structured parsing cannot be fooled that way, and this pins it.
+#[test]
+fn decoy_field_names_inside_values_do_not_shift_extraction() {
+    let raw = r#"{
+      "session_id": "real-session",
+      "model": { "display_name": "\"session_id\": \"decoy\", \"model\": {" },
+      "effort": { "level": "high" }
+    }"#;
+    let p = Payload::parse(raw).expect("decoy payload is a JSON object");
+
+    assert_eq!(p.session_id(), "real-session");
+    assert_eq!(p.effort_level(), "high");
+    assert_eq!(
+        p.model_display_name(),
+        "\"session_id\": \"decoy\", \"model\": {"
+    );
+}
+
+/// A newline inside a string value shifts every later field in the bash
+/// scripts: `jq -r` prints it literally and `mapfile` splits on it, so
+/// `_jf[4]` onward move by one. Rust reads fields by name and cannot shift.
+/// A deliberate divergence in an exotic case, recorded rather than reproduced —
+/// the bash behaviour is a bug, and no fixture exercises it.
+#[test]
+fn a_newline_inside_a_value_does_not_shift_later_fields() {
+    let raw = r#"{
+      "session_id": "line-one\nline-two",
+      "model": { "display_name": "Opus 5" },
+      "context_window": { "context_window_size": 200000 }
+    }"#;
+    let p = Payload::parse(raw).expect("multi-line value payload is a JSON object");
+
+    assert_eq!(p.session_id(), "line-one\nline-two");
+    assert_eq!(p.model_display_name(), "Opus 5");
+    assert_eq!(p.context_window_size(), Some(200_000));
+}
+
+/// Astral-plane characters survive the round trip. The token-extraction
+/// incident behind this fixture is U9's, but the payload has to carry the
+/// characters intact before the transcript scan can mishandle them.
+#[test]
+fn astral_plane_characters_survive_the_round_trip() {
+    let raw = payload_fixture("astral.json");
+    let p = Payload::parse(&raw).expect("the astral fixture is a JSON object");
+
+    assert_eq!(p.model_display_name(), "Opus 5 🚀");
+    assert_eq!(p.agent_name(), "𝕬gent 🧪");
+    assert_eq!(
+        sanitize_display(p.agent_name()),
+        "𝕬gent 🧪",
+        "the render scrub must not damage characters outside the BMP"
+    );
+}
+
+/// Paths are read, never validated. A payload from a machine whose paths this
+/// host could not create still has to parse, because the binary that reads it
+/// may be running on a different platform than the one that wrote the session.
+#[test]
+fn hostile_and_overlong_paths_read_without_error() {
+    let illegal = r#"/tmp/a<b>c:d"e|f?g*h/transcript.jsonl"#;
+    let overlong = format!("/tmp/{}/transcript.jsonl", "d".repeat(300));
+    // The quote is part of the hostile input, so it has to reach the parser as
+    // a JSON escape rather than as a string terminator.
+    let escaped = illegal.replace('"', "\\\"");
+    let raw = format!(
+        r#"{{ "session_id": "s", "transcript_path": "{escaped}", "workspace": {{ "current_dir": "{overlong}" }} }}"#
+    );
+    let p = Payload::parse(&raw).expect("hostile paths must not fail the parse");
+
+    assert_eq!(
+        p.transcript_path(),
+        illegal,
+        "the transcript path is opened, not rendered, so it is never scrubbed — \
+         including the pipe, which the display scrub would have replaced"
+    );
+    assert_eq!(p.cwd(), overlong);
+}
+
+/// AE13. The render sink strips anything that could move the cursor, colour the
+/// line, or forge a column separator.
+#[test]
+fn display_scrub_removes_escape_and_control_bytes() {
+    let cases: &[(&str, &str, &str)] = &[
+        ("esc-sequence", "\u{1b}[31mred\u{1b}[0m", "[31mred [0m"),
+        ("bare-esc", "a\u{1b}b", "a b"),
+        ("c0-bell-and-soh", "a\u{7}b\u{1}c", "a b c"),
+        ("del", "a\u{7f}b", "a b"),
+        ("nul", "a\u{0}b", "a b"),
+        ("carriage-return", "a\rb", "a b"),
+        ("pipe-forges-a-separator", "main|fake", "main fake"),
+        ("trims-to-empty", "\u{1b}\u{1}\u{7f}", ""),
+        ("leading-and-trailing", "  branch  ", "branch"),
+        ("interior-spaces-kept", "a  b", "a  b"),
+        (
+            "clean-value-untouched",
+            "dev-rust-migration",
+            "dev-rust-migration",
+        ),
+    ];
+
+    let mut failures = Failures::default();
+    for (name, input, want) in cases {
+        let got = sanitize_display(input);
+        failures.check(name, got == *want, || format!("want {want:?}, got {got:?}"));
+    }
+    failures.assert_empty("display scrub");
+}
+
+/// R21's fatal cases: the two inputs that make the scripts print
+/// `[statusline: bad JSON]` instead of a status line.
+#[test]
+fn parse_rejects_exactly_what_the_scripts_reject() {
+    let malformed = payload_fixture("malformed.json");
+    let cases: &[(&str, &str, bool)] = &[
+        ("empty", "", false),
+        ("whitespace-only", "   \n  ", false),
+        ("malformed-fixture", &malformed, false),
+        ("json-array", "[1, 2, 3]", false),
+        ("json-string", "\"just a string\"", false),
+        ("json-number", "42", false),
+        ("json-null", "null", false),
+        ("json-true", "true", false),
+        ("trailing-garbage", "{} trailing", false),
+        ("empty-object", "{}", true),
+        ("object", "{\"session_id\": \"s\"}", true),
+    ];
+
+    let mut failures = Failures::default();
+    for (name, raw, want_ok) in cases {
+        let got = Payload::parse(raw).is_some();
+        failures.check(name, got == *want_ok, || {
+            format!("want parse ok = {want_ok}, got {got}")
+        });
+    }
+    failures.assert_empty("parse acceptance");
+}
+
+/// The tolerant helpers, at the type boundaries that decide whether a row
+/// renders. Numeric strings are accepted because jq hands bash every field as
+/// text and bash re-parses it, so quoting a number has never changed the
+/// rendered line.
+#[test]
+fn tolerant_reads_match_the_scripts_accepted_types() {
+    let raw = r#"{
+      "session_id": "s",
+      "quoted_int": "200000",
+      "quoted_float": "42.5",
+      "integral_float": 200000.0,
+      "negative": -5,
+      "signed_string": "-5",
+      "spaced_string": " 42 ",
+      "flag_false": false,
+      "flag_true": true,
+      "as_object": {},
+      "as_array": [],
+      "as_null": null,
+      "empty_string": ""
+    }"#;
+    let p = Payload::parse(raw).expect("type-matrix payload is a JSON object");
+
+    let mut f = Failures::default();
+    let mut check = |name: &str, ok: bool, detail: String| f.check(name, ok, || detail);
+
+    check(
+        "quoted-int-as-uint",
+        p.uint(&["quoted_int"]) == Some(200_000),
+        format!("{:?}", p.uint(&["quoted_int"])),
+    );
+    check(
+        "quoted-float-as-number",
+        p.number(&["quoted_float"]) == Some(42.5),
+        format!("{:?}", p.number(&["quoted_float"])),
+    );
+    check(
+        "integral-float-as-uint",
+        p.uint(&["integral_float"]) == Some(200_000),
+        format!("{:?}", p.uint(&["integral_float"])),
+    );
+    check(
+        "negative-rejected-by-uint",
+        p.uint(&["negative"]).is_none(),
+        format!("{:?}", p.uint(&["negative"])),
+    );
+    check(
+        "negative-accepted-by-number",
+        p.number(&["negative"]) == Some(-5.0),
+        format!("{:?}", p.number(&["negative"])),
+    );
+    check(
+        "signed-string-rejected-by-uint",
+        p.uint(&["signed_string"]).is_none(),
+        format!("{:?}", p.uint(&["signed_string"])),
+    );
+    check(
+        "spaced-string-rejected-by-uint",
+        p.uint(&["spaced_string"]).is_none(),
+        format!("{:?}", p.uint(&["spaced_string"])),
+    );
+    // jq's `//` returns its right-hand side for `false` as well as null, so a
+    // false-valued field has always read as absent. Reproduced, not fixed.
+    check(
+        "false-reads-as-absent",
+        p.number(&["flag_false"]).is_none() && p.text(&["flag_false"]).is_empty(),
+        "false leaked through".to_string(),
+    );
+    check(
+        "true-is-not-a-string",
+        p.text(&["flag_true"]).is_empty(),
+        format!("{:?}", p.text(&["flag_true"])),
+    );
+    for name in ["as_object", "as_array", "as_null", "empty_string"] {
+        check(
+            name,
+            p.text(&[name]).is_empty() && p.number(&[name]).is_none(),
+            format!("{name} did not read as absent"),
+        );
+    }
+    check(
+        "absent-path",
+        p.text(&["nope", "deeper"]).is_empty() && p.uint(&["nope"]).is_none(),
+        "a missing path must not panic or invent a value".to_string(),
+    );
+    check(
+        "descend-through-a-scalar",
+        p.text(&["session_id", "deeper"]).is_empty(),
+        "walking into a string must read as absent".to_string(),
+    );
+
+    f.assert_empty("tolerant type handling");
+}
+
+/// The fallback chains, which live in the model rather than at each call site
+/// because both scripts spell them out identically and a second copy would
+/// eventually disagree.
+#[test]
+fn legacy_field_spellings_fall_back_in_the_scripts_order() {
+    let legacy = r#"{
+      "session_id": "s",
+      "cwd": "/fallback/dir",
+      "total_cost_usd": 9.99,
+      "duration_ms": 1234
+    }"#;
+    let p = Payload::parse(legacy).expect("legacy payload is a JSON object");
+
+    assert_eq!(
+        p.cwd(),
+        "/fallback/dir",
+        "cwd falls back to the top-level key"
+    );
+    assert_eq!(
+        p.git_cwd(),
+        "",
+        "the git row reads workspace.current_dir only — it has no cwd fallback"
+    );
+    assert_eq!(p.total_cost_usd(), Some(9.99));
+    assert_eq!(p.duration_ms(), Some(1234.0));
+
+    let preferred = r#"{
+      "session_id": "s",
+      "cwd": "/fallback/dir",
+      "workspace": { "current_dir": "/preferred/dir" },
+      "cost": { "total_cost_usd": 1.0, "total_duration_ms": 10 },
+      "total_cost_usd": 9.99,
+      "total_duration_ms": 20,
+      "duration_ms": 30
+    }"#;
+    let p = Payload::parse(preferred).expect("preferred payload is a JSON object");
+
+    assert_eq!(p.cwd(), "/preferred/dir");
+    assert_eq!(p.git_cwd(), "/preferred/dir");
+    assert_eq!(p.total_cost_usd(), Some(1.0));
+    assert_eq!(p.duration_ms(), Some(10.0));
 }
