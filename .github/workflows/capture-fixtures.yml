@@ -14,16 +14,19 @@ name: capture-fixtures
 # scheduled job gets to do on their behalf.
 
 on:
-  # Pushing a `capture/**` branch runs a capture and throws the branch away.
+  # Pushing a `capture-<component>` tag runs a capture; the tag is deleted
+  # afterwards.
   #
   # This exists because `workflow_dispatch` is only offered for workflows that
-  # are already on the default branch, and this one will not be there until the
-  # migration merges at full parity — so during the migration there is no way to
-  # ask for a capture from the feature branch. A tag would work, but tags are
-  # for releases; a throwaway branch leaves nothing behind.
+  # are already on the default branch, and this one does not get there until the
+  # migration merges at full parity — so during the migration there is otherwise
+  # no way to ask CI for a capture from the feature branch.
+  #
+  # `capture-*` cannot collide with the release workflow, which triggers only on
+  # `v<major>.<minor>.<patch>[-suffix]` and `verify-*`.
   push:
-    branches:
-      - "capture/**"
+    tags:
+      - "capture-*"
 
   workflow_dispatch:
     inputs:
@@ -93,13 +96,13 @@ jobs:
         run: |
           args=()
 
-          # A push-triggered run carries no inputs, so the branch name is the
-          # request: `capture/git-refresh` captures that component, and a bare
-          # `capture/anything-else` captures everything.
+          # A tag-triggered run carries no inputs, so the tag name is the
+          # request: `capture-git-refresh` captures that component, and any
+          # other `capture-*` tag captures everything.
           component="$IN_COMPONENT"
           if [ -z "$component" ] && [ "$GITHUB_EVENT_NAME" = "push" ]; then
-            case "${GITHUB_REF_NAME#capture/}" in
-              git-refresh|subagent|notify|statusline) component="${GITHUB_REF_NAME#capture/}" ;;
+            case "${GITHUB_REF_NAME#capture-}" in
+              git-refresh|subagent|notify|statusline) component="${GITHUB_REF_NAME#capture-}" ;;
               *) component="all" ;;
             esac
           fi
