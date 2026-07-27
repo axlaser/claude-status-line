@@ -285,6 +285,14 @@
       "why": "Every optional field absent — each row degrades on its own rather than blanking the line."
     },
     {
+      "case": "self-check",
+      "component": "statusline",
+      "observable": "stdout",
+      "payload": "payloads/minimal.json",
+      "git_state": null,
+      "why": "R11 and KTD15: the fixture the binary's `self-check` subcommand compiles in and renders after installation. It is the only case with no repository, which is what makes it hermetic -- every other case's output depends on a git state the installing machine has no reason to have, and a self-check that consulted the real working directory would render a git row on a developer's machine and none on a server. With no transcript path and no model in the payload, the rendered box is a pure function of the payload, so the binary can reproduce it with no filesystem access at all."
+    },
+    {
       "case": "payload-empty",
       "component": "statusline",
       "observable": "stdout",
