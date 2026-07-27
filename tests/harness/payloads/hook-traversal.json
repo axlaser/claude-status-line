@@ -1,0 +1,8 @@
+{
+  "_why": "The session id escapes the temp root if it reaches a path unsanitized. Both scripts strip [^a-zA-Z0-9_-], so the cache files land under {SESSION} = `fixtureescape` — dots and slashes removed, not replaced — and nothing outside the isolated root may be touched.",
+  "tool_name": "Edit",
+  "session_id": "../../fixture/escape",
+  "tool_input": {
+    "file_path": "{REPO}/README.md"
+  }
+}

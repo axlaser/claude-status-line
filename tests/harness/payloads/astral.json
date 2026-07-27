@@ -1,0 +1,27 @@
+{
+  "_why": "The astral-plane character below is the point of this payload. Under a UTF-8 locale gawk's old greedy token extraction silently zeroed the token counts of any transcript line carrying one, and CJK does not reproduce it — the character has to be outside the BMP.",
+  "session_id": "fixture-session-0001",
+  "cwd": "{REPO}",
+  "workspace": {
+    "current_dir": "{REPO}"
+  },
+  "model": {
+    "display_name": "Opus 5 🚀",
+    "id": "claude-opus-5"
+  },
+  "context_window": {
+    "context_window_size": 200000,
+    "used_percentage": 42.5,
+    "total_input_tokens": 85000
+  },
+  "effort": {
+    "level": "high"
+  },
+  "cost": {
+    "total_cost_usd": 1.2345
+  },
+  "transcript_path": "{HOME}/.claude/projects/fixtures/transcript-astral.jsonl",
+  "agent": {
+    "name": "𝕬gent 🧪"
+  }
+}

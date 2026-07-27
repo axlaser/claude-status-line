@@ -17,3 +17,27 @@
 *.json text
 
 *.png binary
+
+# --- Fixture harness (U3) -------------------------------------------------
+# U14 owns rewriting the encoding regime for the single-crate layout. These
+# rules are scoped to the paths the harness reads and writes, because getting
+# them wrong corrupts data rather than merely annoying an editor.
+#
+# Harness inputs are pinned to LF on every platform. R30 requires a case to pin
+# every input it supplies, and an input whose bytes depend on the checkout is
+# not pinned: a transcript arriving CRLF on Windows and LF on Linux feeds two
+# different token counts into what is supposed to be one fixture.
+tests/harness/cases.json     text eol=lf
+tests/harness/states.json    text eol=lf
+tests/harness/payloads/**    text eol=lf
+tests/harness/inputs/**      text eol=lf
+tests/harness/configs/**     text eol=lf
+
+# cmd.exe needs CRLF in a batch file.
+tests/harness/shims/record.cmd text eol=crlf
+
+# Golden captures are bytes, not text. Any normalisation here would rewrite the
+# very output the fixture exists to preserve, and the diff would look like the
+# scripts changed.
+tests/fixtures/**/expected/** -text
+tests/fixtures/**/case.json  text eol=lf

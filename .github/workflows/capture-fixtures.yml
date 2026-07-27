@@ -1,0 +1,111 @@
+name: capture-fixtures
+
+# U3. Runs the fixture-capture harness against the current scripts on macOS and
+# Linux and uploads the result for review (R33, KTD9).
+#
+# Windows capture is deliberately absent. KTD9 puts it on the maintainer's
+# machine: the Windows script tree is the one with no hosted equivalent of a
+# real developer environment, and a hosted image would capture fixtures nobody
+# runs against.
+#
+# Fixtures are uploaded, never committed by this workflow. Each component's
+# fixtures land in the same commit as its Rust replacement and its script
+# deletion (R37), which is a decision a person makes — not something a
+# scheduled job gets to do on their behalf.
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: "Commit to capture from (blank = the branch tip). Regenerates that commit's fixtures per R33."
+        required: false
+        type: string
+      component:
+        description: "Limit to one component"
+        required: false
+        type: choice
+        default: all
+        options: [all, git-refresh, subagent, notify, statusline]
+      verify:
+        description: "Capture twice and require byte-identical output instead of uploading"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  capture:
+    name: capture on ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux
+            runner: ubuntu-24.04
+          - platform: macos
+            runner: macos-15
+
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          # The harness resolves a historical commit through `git worktree add`,
+          # which needs the objects for it.
+          fetch-depth: 0
+
+      # KTD9. macOS ships bash 3.2 as /bin/bash and always will — it predates
+      # `mapfile` and the rest of the dialect the harness is written in. The
+      # driver re-execs into whichever of these it finds; this step guarantees
+      # one exists.
+      - name: Select a bash 4+
+        if: matrix.platform == 'macos'
+        run: |
+          brew list bash >/dev/null 2>&1 || brew install bash
+          "$(brew --prefix)/bin/bash" --version | head -1
+
+      - name: Check the harness dependencies
+        run: |
+          jq --version
+          git --version
+
+      - name: Capture
+        run: |
+          args=()
+          if [ -n "${{ inputs.commit }}" ]; then
+            args+=(--at "${{ inputs.commit }}")
+          fi
+          if [ "${{ inputs.component }}" != "all" ]; then
+            args+=(--component "${{ inputs.component }}")
+          fi
+          if [ "${{ inputs.verify }}" = "true" ]; then
+            args+=(--verify)
+          else
+            args+=(--out "$GITHUB_WORKSPACE/captured")
+          fi
+          bash tests/harness/capture.sh "${args[@]}"
+
+      # A capture that produced nothing is a green run that shipped no fixture,
+      # which is the same failure the harness's own guards exist to prevent.
+      - name: Confirm something was captured
+        if: inputs.verify != true
+        run: |
+          count=$(find captured -name case.json | wc -l)
+          echo "captured $count fixture(s)"
+          if [ "$count" -eq 0 ]; then
+            echo "::error::the harness reported success but wrote no fixtures"
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        if: inputs.verify != true
+        with:
+          name: fixtures-${{ matrix.platform }}
+          path: captured
+          if-no-files-found: error
+          retention-days: 14

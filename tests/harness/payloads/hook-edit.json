@@ -1,0 +1,7 @@
+{
+  "tool_name": "Edit",
+  "session_id": "fixture-session-0001",
+  "tool_input": {
+    "file_path": "{REPO}/README.md"
+  }
+}
