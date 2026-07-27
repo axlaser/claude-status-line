@@ -4879,6 +4879,62 @@ fn a_cwd_under_home_collapses_to_a_tilde_and_others_to_two_segments() {
     }
 }
 
+/// R20. The two `format_cwd` shapes where the port and `windows/statusline.ps1`
+/// disagree, both resolved to the port's behaviour and recorded in the plan's
+/// Scope Boundaries.
+///
+/// Neither is reachable from a pinned fixture — Claude Code supplies native
+/// backslash paths in canonical casing on Windows — so each is asserted against
+/// a literal here, which is what R20 asks for. `breaks` is carried in the table
+/// rather than in prose because a resolution that stops naming the behaviour it
+/// broke is a resolution nobody can re-evaluate later.
+#[test]
+fn resolved_cwd_divergences_keep_the_ports_behaviour() {
+    struct Divergence {
+        name: &'static str,
+        cwd: &'static str,
+        home: &'static str,
+        expected: &'static str,
+        /// What `windows/statusline.ps1:287` renders for the same input.
+        breaks: &'static str,
+    }
+
+    let cases = [
+        Divergence {
+            name: "forward-slash cwd under home",
+            cwd: "C:/Users/me/src/thing",
+            home: "C:\\Users\\me",
+            expected: "~/src/thing",
+            // The script normalises the cwd's separators but never
+            // $USERPROFILE's own, so neither StartsWith arm matches.
+            breaks: ".../src/thing",
+        },
+        Divergence {
+            name: "home prefix differing only in case",
+            cwd: "c:\\users\\me\\src\\thing",
+            home: "C:\\Users\\me",
+            expected: ".../src/thing",
+            // The script compares with OrdinalIgnoreCase.
+            breaks: "~/src/thing",
+        },
+    ];
+
+    let mut failures = Failures::default();
+    for case in cases {
+        let actual = render::format_cwd(case.cwd, Some(case.home));
+        failures.check(case.name, actual == case.expected, || {
+            format!("expected `{}`, got `{actual}`", case.expected)
+        });
+        // The other half of the claim: this is still a divergence. If the port
+        // starts agreeing with the script, the resolution is stale and the
+        // record above needs revisiting rather than silently passing.
+        failures.check(case.name, case.expected != case.breaks, || {
+            "the recorded resolution no longer differs from what it breaks".to_string()
+        });
+    }
+    failures.assert_empty("resolved cwd divergences");
+}
+
 #[test]
 fn a_subagent_row_scrubs_its_untrusted_fields_at_the_sink() {
     // AE13: the escape arrives through the row, which is what every source

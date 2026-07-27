@@ -449,10 +449,15 @@ pub fn format_bucket(
 
 /// `~/projects/thing`, or `.../parent/leaf` when it is not under home.
 ///
-/// Separators are normalised so one implementation covers both platforms
-/// (R25). The home comparison stays case-sensitive, which is what bash does;
-/// `windows/statusline.ps1` compares case-insensitively, and that divergence is
-/// U13's to record.
+/// Separators are normalised on **both** sides so one implementation covers
+/// both platforms (R25), and the home comparison stays case-sensitive, which is
+/// what bash does. Each of those diverges from `windows/statusline.ps1:287`,
+/// which normalised only the `cwd` and compared with `OrdinalIgnoreCase`; both
+/// are resolved to the behaviour here and recorded in the plan's Scope
+/// Boundaries and `docs/performance.md` §4, asserted by
+/// `resolved_cwd_divergences_keep_the_ports_behaviour`. Neither shape is
+/// reachable from a payload Claude Code produces, which is why no fixture
+/// covers them.
 pub fn format_cwd(cwd: &str, home: Option<&str>) -> String {
     let normalized = cwd.replace('\\', "/");
     if let Some(home) = home.filter(|h| !h.is_empty()) {

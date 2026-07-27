@@ -137,6 +137,16 @@ HEAD, omits `# branch.ab` when no upstream, omits `# stash` at zero.
   higher — and correct — compared to earlier releases. Verified on GNU gawk 5.0; BSD awk
   unverified either way (no native macOS test hardware). See
   `docs/solutions/logic-errors/gawk-utf8-locale-zeroes-astral-plane-extraction.md`.
+- *2026-07-27:* the path row's home-prefix match differs from `windows/statusline.ps1:287` on two
+  spellings of a path, both resolved to the Rust port's behaviour. A `cwd` written with forward
+  slashes under `$HOME` collapses to `~` (the script normalised the `cwd`'s separators but never
+  `$USERPROFILE`'s own, so it fell through to `.../parent/leaf`), and the comparison is
+  case-sensitive, so `c:\users\me\src` no longer collapses (the script used `OrdinalIgnoreCase`).
+  Keeping the second would require a platform-conditional comparison, which R25 does not allow for
+  path formatting. Neither shape is reachable in practice — Claude Code supplies native backslash
+  paths in canonical casing on Windows, confirmed against a live session — which is why four
+  rounds of fixture captures never produced either. Asserted as literals by
+  `resolved_cwd_divergences_keep_the_ports_behaviour`.
 
 ## 5. PR checklist for statusline hot-path changes
 
