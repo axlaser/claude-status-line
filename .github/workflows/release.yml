@@ -138,11 +138,28 @@ jobs:
         if: matrix.family == 'linux'
         run: |
           bin="target/${{ matrix.target }}/release/claude-statusline"
-          file "$bin"
-          if ! file "$bin" | grep -q "statically linked"; then
-            echo "::error::AE9: ${{ matrix.target }} is not statically linked."
-            exit 1
-          fi
+          desc=$(file "$bin")
+          echo "$desc"
+          # The two musl targets describe themselves differently and both are
+          # static: aarch64 links non-PIE and reads "statically linked", x86_64
+          # links a static PIE and reads "static-pie linked". Matching only the
+          # first spelling fails the x86_64 leg on a binary that is correct.
+          case "$desc" in
+            *"statically linked"*|*"static-pie linked"*) ;;
+            *)
+              echo "::error::AE9: ${{ matrix.target }} is not statically linked."
+              exit 1
+              ;;
+          esac
+          # Asserted separately rather than trusted as the complement of the
+          # above: only a dynamic binary carries an interpreter, and that is the
+          # thing that actually breaks on an older loader.
+          case "$desc" in
+            *"dynamically linked"*|*"interpreter"*)
+              echo "::error::AE9: ${{ matrix.target }} carries a dynamic loader dependency."
+              exit 1
+              ;;
+          esac
 
       - name: Run on Alpine
         if: matrix.family == 'linux'
