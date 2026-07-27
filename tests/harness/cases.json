@@ -133,6 +133,35 @@
       "why": "R31: the observable is the exact bytes written to the tasks feed, and the handler must print nothing so the default agent panel survives."
     },
     {
+      "case": "tees-every-field",
+      "component": "subagent",
+      "observable": "feed-bytes",
+      "payload": "payloads/tasks-feed-full.json",
+      "git_state": null,
+      "inputs": [],
+      "why": "Pins the projection: all ten reader fields in emission order, unlisted fields dropped, an explicit null dropped rather than emitted as \"\", and falsy values kept. Field order is part of the observable because the feed's bytes are an input to the statusline's output-cache key — a reordering would miss the cache every tick while rendering identically."
+    },
+    {
+      "case": "no-visible-tasks",
+      "component": "subagent",
+      "observable": "feed-bytes",
+      "payload": "payloads/tasks-feed-none.json",
+      "git_state": null,
+      "inputs": [],
+      "why": "A session with nothing running is a real state, not a degraded one: it writes an empty list rather than skipping the write and leaving stale rows on screen."
+    },
+    {
+      "case": "malformed-leaves-feed",
+      "component": "subagent",
+      "observable": "feed-bytes",
+      "payload": "payloads/malformed.json",
+      "git_state": null,
+      "inputs": [
+        { "target": "{TMP}/statusline-tasks-{SESSION}.json", "content": "inputs/tasks-feed.json", "mtime_offset": -2 }
+      ],
+      "why": "Malformed-tick isolation. A broken payload must leave the last good feed in place — the contract half that got the raw-tee prototype rejected in docs/performance.md §7, because a tee that overwrites on garbage silently drops the subagent rows until the next good tick."
+    },
+    {
       "case": "empty-stdin",
       "component": "subagent",
       "observable": "feed-bytes",

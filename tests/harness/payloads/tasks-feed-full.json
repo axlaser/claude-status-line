@@ -1,0 +1,28 @@
+{
+  "session_id": "fixture-session-0001",
+  "tasks": [
+    {
+      "id": "task-0001",
+      "name": "explore",
+      "type": "Explore",
+      "description": "Explore the crate layout",
+      "status": "in_progress",
+      "model": "claude-sonnet-5",
+      "effort": "high",
+      "contextWindowSize": 200000,
+      "tokenCount": 18000,
+      "startTime": 1767225570000,
+      "tokenSamples": [100, 200, 300],
+      "unusedField": "dropped by the projection"
+    },
+    {
+      "id": "task-0002",
+      "description": "Port git-refresh",
+      "status": "completed",
+      "model": "claude-opus-5",
+      "effort": null,
+      "contextWindowSize": 1000000,
+      "tokenCount": 0
+    }
+  ]
+}
