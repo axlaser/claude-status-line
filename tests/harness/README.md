@@ -91,6 +91,30 @@ Replaying in Rust pins the clock to `clock` and each state file's mtime to
 decisions deterministically. This is what KTD6's `Clock` trait — covering
 filesystem mtimes as well as wall-clock reads — exists to make possible.
 
+## The locale is a render input
+
+R30 requires every render input to be pinned. The locale is one, and pinning it
+to the wrong value is not safer than leaving it loose.
+
+bash indexes a string by **byte** unless `LC_CTYPE` names a UTF-8 locale. The
+status line's `get_vis` walks a row character by character to compute its
+visible width, so under `LC_ALL=C` a 3-byte `█` counts as three terminal
+columns, a 2-byte `·` as two, and every row is padded to a width that is wrong
+by exactly its non-ASCII byte surplus. Both drivers used to export `LC_ALL=C`
+around the component under capture for determinism; the macOS and Linux
+statusline fixtures it produced contained rows between 111 and 179 columns
+inside one frame — a box no user with a UTF-8 terminal has ever seen.
+
+Both drivers now probe for a working UTF-8 locale by behaviour rather than by
+name (`C.utf8` on Ubuntu, `UTF-8` on macOS) and fail loudly when none is found.
+Everything that genuinely wanted `C` still has it: the harness's own `sort`
+calls pin it per command, and the scripts pin it themselves where a decimal
+separator or a byte-wise scan depends on it.
+
+Windows is unaffected — .NET string length counts characters — which is why
+only two of the three platforms recorded the broken box, and why comparing the
+platforms is what surfaced it.
+
 ## A pinned input must carry the producer's bytes, not just its data
 
 `inputs/` files stand in for what another component wrote. Where the reader

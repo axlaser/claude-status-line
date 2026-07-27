@@ -73,6 +73,29 @@ note() { printf '  %s\n' "$*" >&2; }
 command -v jq  >/dev/null || fail "jq is required"
 command -v git >/dev/null || fail "git is required"
 
+# The locale the scripts run in is a render input (R30), not harness hygiene.
+#
+# bash indexes a string by BYTE under a non-UTF-8 locale, so `get_vis` charges
+# a 3-byte bar cell three terminal columns and every box row is padded to the
+# wrong width. Captured under the blanket `LC_ALL=C` this file used to export,
+# the macOS and Linux statusline fixtures recorded a box that no user with a
+# UTF-8 terminal has ever seen -- rows between 111 and 179 columns inside one
+# frame. The harness's own `sort` calls still pin `LC_ALL=C` individually, and
+# the scripts pin it themselves where they need it (`format_cost`, the awk
+# transcript pass), so nothing that wanted C loses it.
+#
+# Probed by behaviour rather than by name: the same locale is spelled `C.utf8`
+# on Ubuntu, `UTF-8` on macOS, and `C.UTF-8` in neither reliably.
+UTF8_LOCALE=""
+for _loc in C.UTF-8 C.utf8 en_US.UTF-8 en_US.utf8 UTF-8; do
+    if LC_ALL="$_loc" "${BASH:-bash}" -c '[[ ${#1} -eq 1 ]]' _ "█" 2>/dev/null; then
+        UTF8_LOCALE=$_loc
+        break
+    fi
+done
+[[ -n $UTF8_LOCALE ]] || fail "no UTF-8 locale found; statusline captures would record a mis-padded box"
+unset _loc
+
 # ---------------------------------------------------------------------------
 # Source of the scripts under capture (R33)
 # ---------------------------------------------------------------------------
@@ -370,7 +393,7 @@ capture_case() {
 
     export HOME="$HOME_DIR" TMPDIR="$TMP_DIR" STATUSLINE_CAPTURE_FILE="$capture_file"
     export PATH="$shim_dir:$PATH"
-    export TZ=UTC LC_ALL=C
+    export TZ=UTC LC_ALL="$UTF8_LOCALE"
 
     case "$component" in
         statusline)

@@ -57,6 +57,22 @@ esac
 
 fail() { echo "measure: $*" >&2; exit 1; }
 
+# The export above is for THIS script's arithmetic and must not reach the
+# variants. Under a non-UTF-8 locale bash indexes by byte, so `get_vis` walks
+# three elements per bar cell instead of one -- measuring work no user with a
+# UTF-8 terminal performs, on the one component whose render loop dominates its
+# tick. Both variants get the same locale, so the pair stays fair either way;
+# the point is that it is the locale users actually run under.
+UTF8_LOCALE=""
+for _loc in C.UTF-8 C.utf8 en_US.UTF-8 en_US.utf8 UTF-8; do
+    if LC_ALL="$_loc" "${BASH:-bash}" -c '[[ ${#1} -eq 1 ]]' _ "█" 2>/dev/null; then
+        UTF8_LOCALE=$_loc
+        break
+    fi
+done
+[[ -n $UTF8_LOCALE ]] || fail "no UTF-8 locale found; the timing would not describe a real tick"
+unset _loc
+
 COMPONENT=subagent
 RUNS=11
 PAYLOAD=""
@@ -105,8 +121,8 @@ export TMPDIR="$ROOT/tmp"
 # ambient shell would charge one side an extra file append per tick.
 unset STATUSLINE_DEBUG
 
-run_script() { "$SCRIPT" < "$PAYLOAD" >/dev/null 2>&1; }
-run_binary() { "$BINARY" "$SUBCOMMAND" < "$PAYLOAD" >/dev/null 2>&1; }
+run_script() { LC_ALL="$UTF8_LOCALE" "$SCRIPT" < "$PAYLOAD" >/dev/null 2>&1; }
+run_binary() { LC_ALL="$UTF8_LOCALE" "$BINARY" "$SUBCOMMAND" < "$PAYLOAD" >/dev/null 2>&1; }
 
 # Each variant is proven to do its work before anything is timed. A probe that
 # silently no-opped -- a missing dependency, a changed payload contract -- would
