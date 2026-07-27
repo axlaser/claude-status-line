@@ -2062,6 +2062,106 @@ fn verification_is_pinned_and_fails_closed() {
     failures.assert_empty("verification pinning");
 }
 
+/// R11, F2. Everything irreversible an installer does has to happen after the
+/// self-check. A binary can pass its checksum, launch, and still render
+/// wrongly, and the silent-degradation contract guarantees that failure reaches
+/// the user as an absent status line and nothing else — so deleting the scripts
+/// of a working installation before the replacement has proved itself is how an
+/// upgrade leaves someone with no status line and no way back.
+#[test]
+fn the_self_check_gates_every_destructive_step() {
+    struct Gate {
+        rel: &'static str,
+        /// The invocation, not the section comment: the ordering claim is
+        /// about where the check actually runs.
+        check: &'static str,
+        after: &'static [&'static str],
+    }
+
+    let gates = [
+        Gate {
+            rel: "install/install.sh",
+            check: "\"$BIN_PATH\" self-check",
+            after: &["rm -f \"$CLAUDE_DIR/$_script\"", "settings apply --binary"],
+        },
+        Gate {
+            rel: "install/install.ps1",
+            check: "& $binPath self-check",
+            after: &["Remove-Item $path -Force", "settings apply --binary"],
+        },
+    ];
+
+    let mut failures = Failures::default();
+    for gate in gates {
+        let body = read_repo_file(gate.rel);
+        let Some(at) = body.find(gate.check) else {
+            failures.check(gate.rel, false, || {
+                format!("never runs `{}` after placing the binary", gate.check)
+            });
+            continue;
+        };
+        for marker in gate.after {
+            match body.find(marker) {
+                Some(pos) => failures.check(gate.rel, pos > at, || {
+                    format!("`{marker}` runs before the self-check has passed")
+                }),
+                None => failures.check(gate.rel, false, || {
+                    format!("`{marker}` is missing, so the gate guards nothing")
+                }),
+            }
+        }
+    }
+    failures.assert_empty("self-check gating");
+}
+
+/// R16, AE7. An upgrade from a script installation has to leave nothing
+/// orphaned — but `notify-config.json` is the user's configuration, not ours:
+/// its schema is unchanged and the binary reads it as-is (R44), so removing it
+/// would silently reset everyone's notification preferences.
+#[test]
+fn a_script_installation_is_removed_but_its_config_is_kept() {
+    let cases: [(&str, [&str; 4]); 2] = [
+        (
+            "install/install.sh",
+            [
+                "statusline.sh",
+                "notify.sh",
+                "git-refresh.sh",
+                "subagent-statusline.sh",
+            ],
+        ),
+        (
+            "install/install.ps1",
+            [
+                "statusline.ps1",
+                "notify.ps1",
+                "git-refresh.ps1",
+                "subagent-statusline.ps1",
+            ],
+        ),
+    ];
+
+    let mut failures = Failures::default();
+    for (rel, scripts) in cases {
+        let body = read_repo_file(rel);
+        for script in scripts {
+            failures.check(rel, body.contains(script), || {
+                format!("never removes the superseded `{script}`")
+            });
+        }
+        for (n, line) in code_lines(&body, '#') {
+            if !line.contains("notify-config") {
+                continue;
+            }
+            let deletes = line.contains("rm -f") || line.contains("Remove-Item");
+            failures.check(&format!("{rel}:{n}"), !deletes, || {
+                format!("removes the user's notification config: {line}")
+            });
+        }
+    }
+    failures.assert_empty("script migration");
+}
+
 // ---------------------------------------------------------------------------
 // settings.json merge (R14, R15 / U4)
 // ---------------------------------------------------------------------------
@@ -2276,6 +2376,183 @@ fn a_foreign_statusline_is_distinguished_from_ours() {
         !settings::has_foreign(&ours, UNIX_BINARY, "statusline"),
         "our own entry was reported as foreign, which would prompt on every re-run"
     );
+}
+
+/// `settings.json` exactly as the script installers left it, including a hook
+/// of the user's own on an event the binary also writes to, and one under
+/// `~/.claude/hooks/` whose filename collides with a superseded script.
+fn script_install_settings() -> serde_json::Value {
+    serde_json::json!({
+        "theme": "dark",
+        "statusLine": {
+            "type": "command",
+            "command": "~/.claude/statusline.sh",
+            "refreshInterval": 1
+        },
+        "subagentStatusLine": {
+            "type": "command",
+            "command": "~/.claude/subagent-statusline.sh"
+        },
+        "hooks": {
+            "PostToolUse": [
+                { "matcher": "Edit|Write|MultiEdit|Bash|NotebookEdit",
+                  "hooks": [{ "type": "command", "command": "~/.claude/git-refresh.sh", "async": true }] },
+                { "matcher": "Bash",
+                  "hooks": [{ "type": "command", "command": "~/my-own-hook.sh" }] }
+            ],
+            "PermissionRequest": [
+                { "hooks": [{ "type": "command", "command": "~/.claude/notify.sh permission", "async": true }] }
+            ],
+            "Stop": [
+                { "hooks": [{ "type": "command", "command": "~/.claude/notify.sh stop", "async": true }] },
+                { "hooks": [{ "type": "command", "command": "~/.claude/hooks/notify.sh" }] }
+            ],
+            "PreCompact": [
+                { "matcher": "*",
+                  "hooks": [{ "type": "command", "command": "~/.claude/notify.sh compaction_start", "async": true }] }
+            ],
+            "PostCompact": [
+                { "matcher": "*",
+                  "hooks": [{ "type": "command", "command": "~/.claude/notify.sh compaction_done", "async": true }] }
+            ]
+        }
+    })
+}
+
+/// Every `command` string anywhere in the document.
+fn commands(value: &serde_json::Value, out: &mut Vec<String>) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, child) in map {
+                if key == "command" {
+                    if let Some(text) = child.as_str() {
+                        out.push(text.to_string());
+                    }
+                }
+                commands(child, out);
+            }
+        }
+        serde_json::Value::Array(list) => {
+            for child in list {
+                commands(child, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// R16, AE7. The upgrade's whole point: after it, no entry points at a file the
+/// same run deleted. Rewriting rather than appending is what distinguishes this
+/// from a fresh install over the top — the latter leaves both entries, and
+/// Claude Code then runs a script that is gone.
+#[test]
+fn a_script_installation_is_rewritten_not_left_beside_ours() {
+    let mut root = script_install_settings();
+    settings::apply(&mut root, UNIX_BINARY, &all());
+
+    let mut found = Vec::new();
+    commands(&root, &mut found);
+
+    let mut failures = Failures::default();
+    for command in &found {
+        failures.check(
+            "orphan",
+            !settings::references_legacy_script(command),
+            || format!("still points at a deleted script: {command}"),
+        );
+    }
+
+    for (key, expected) in [
+        ("statusLine", UNIX_BINARY.to_string()),
+        ("subagentStatusLine", format!("{UNIX_BINARY} subagent")),
+    ] {
+        let actual = root[key]["command"].as_str().unwrap_or_default();
+        failures.check(key, actual == expected, || {
+            format!("expected `{expected}`, got `{actual}`")
+        });
+    }
+
+    // One of ours per event, not one of ours beside one of theirs.
+    for (event, expected) in [
+        ("PostToolUse", 2),
+        ("PermissionRequest", 1),
+        ("Stop", 2),
+        ("PreCompact", 1),
+        ("PostCompact", 1),
+    ] {
+        let count = root["hooks"][event].as_array().map_or(0, Vec::len);
+        failures.check(event, count == expected, || {
+            format!(
+                "expected {expected} entries, got {count}: {:#?}",
+                root["hooks"][event]
+            )
+        });
+    }
+
+    failures.check(
+        "user-hook",
+        found.iter().any(|c| c == "~/my-own-hook.sh"),
+        || "the user's own PostToolUse hook was pruned as legacy".to_string(),
+    );
+    // The one that would be a real user's real loss: a hook they keep in
+    // `~/.claude/hooks/` that happens to share a name with a script we remove.
+    failures.check(
+        "namesake-hook",
+        found.iter().any(|c| c == "~/.claude/hooks/notify.sh"),
+        || "a user hook under ~/.claude/hooks/ was pruned by a basename match".to_string(),
+    );
+    failures.check("unrelated-key", root["theme"] == "dark", || {
+        "an unrelated key was lost".to_string()
+    });
+    failures.assert_empty("script-install migration");
+}
+
+/// R16. A script installation is this tool's own previous entry, not a
+/// stranger's. Prompting "existing config found, overwrite?" for it asks the
+/// user to approve replacing us with us — and a declined prompt leaves
+/// `settings.json` pointing at a script the same run is about to delete.
+#[test]
+fn a_script_entry_is_recognised_as_ours_not_as_foreign() {
+    let legacy = script_install_settings();
+    let mut failures = Failures::default();
+
+    for feature in ["statusline", "subagent"] {
+        failures.check(
+            feature,
+            !settings::has_foreign(&legacy, UNIX_BINARY, feature),
+            || "a script installation was treated as another tool's config".to_string(),
+        );
+    }
+    for feature in ["statusline", "subagent", "git-refresh", "notify"] {
+        failures.check(
+            feature,
+            settings::has_legacy(&legacy, Some(feature)),
+            || {
+                "a script installation went undetected, so its setting is lost on upgrade"
+                    .to_string()
+            },
+        );
+    }
+    failures.check("any", settings::has_legacy(&legacy, None), || {
+        "the unscoped query missed a script installation".to_string()
+    });
+
+    // A genuinely foreign entry still has to prompt, and a decoy that merely
+    // looks like ours must not be mistaken for it.
+    let stranger = serde_json::json!({
+        "statusLine": { "type": "command", "command": "~/.claude/my-statusline.sh" }
+    });
+    failures.check(
+        "decoy-foreign",
+        settings::has_foreign(&stranger, UNIX_BINARY, "statusline"),
+        || "another tool's status line stopped prompting".to_string(),
+    );
+    failures.check(
+        "decoy-legacy",
+        !settings::has_legacy(&stranger, None),
+        || "`my-statusline.sh` was matched as `statusline.sh`".to_string(),
+    );
+    failures.assert_empty("legacy detection");
 }
 
 /// A settings file that exists but does not parse must stop the install, never

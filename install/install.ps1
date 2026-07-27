@@ -361,11 +361,54 @@ try {
     return
 }
 Remove-Item $script:sumsPath, $script:bundlePath -Force -ErrorAction SilentlyContinue
-# Tolerated failure by design: the old binary may still be running.
-if (Test-Path $sidecarPath) { Remove-Item $sidecarPath -Force -ErrorAction SilentlyContinue }
 Ok $binPath
 Info (Format-Size (Get-Item $binPath).Length)
 Write-Host ""
+
+# --- Self-check (R11, AE8) ---
+# A binary can pass its checksum, launch, and still render wrongly -- a bad
+# build, a corrupt fixture, an architecture that runs but misbehaves. The
+# silent-degradation contract guarantees that failure would reach the user as an
+# absent status line and nothing else, so this is the only place it can be
+# caught. Everything destructive below is gated on it, and the sidecar stays
+# where it is until it passes.
+Step "Verifying the binary renders"
+& $binPath self-check 2>&1 | Out-Null
+if ($LASTEXITCODE -ne 0) {
+    Err "The installed binary failed its self-check"
+    Info "It downloaded and verified but does not render correctly, so it was"
+    Info "not activated. Your previous installation is untouched."
+    Remove-Item $binPath -Force -ErrorAction SilentlyContinue
+    if (Test-Path $sidecarPath) { Move-Item -Path $sidecarPath -Destination $binPath -Force -ErrorAction SilentlyContinue }
+    Remove-Stage
+    return
+}
+# Tolerated failure by design: the old binary may still be running, and the next
+# run sweeps whatever is left.
+if (Test-Path $sidecarPath) { Remove-Item $sidecarPath -Force -ErrorAction SilentlyContinue }
+Ok "Renders correctly"
+Write-Host ""
+
+# --- Migrate from a script installation (R16, F2) ---
+# Only now, with a binary that has proved it renders. notify-config.json is
+# deliberately not in this list: it is the user's configuration, its schema is
+# unchanged, and the binary reads it as-is (R44).
+$legacyScripts = @('statusline.ps1', 'notify.ps1', 'git-refresh.ps1', 'subagent-statusline.ps1')
+$legacyFound = @($legacyScripts | Where-Object { Test-Path (Join-Path $claudeDir $_) })
+if ($legacyFound.Count -gt 0) {
+    Step "Removing the superseded scripts"
+    foreach ($name in $legacyFound) {
+        $path = Join-Path $claudeDir $name
+        try {
+            Remove-Item $path -Force -ErrorAction Stop
+            Ok $name
+        } catch {
+            Warn "Could not remove $path"
+        }
+    }
+    Info "Your notification settings were kept."
+    Write-Host ""
+}
 
 # --- Configure settings.json (R14) ---
 # The bare path is passed deliberately. R14 requires the stored command to be
@@ -426,8 +469,17 @@ if (Test-Path $configPath) {
 Write-Host ""
 Step "Notifications"
 Info "Plays a sound and shows a popup when Claude needs attention."
+# The legacy check is what carries the choice across an upgrade (R16): someone
+# who enabled notifications under the scripts has hooks pointing at notify.ps1,
+# which `has` does not recognise, and re-prompting them would turn a silent
+# upgrade into a question they already answered.
 & $binPath settings has --binary $binPath notify | Out-Null
-if ($LASTEXITCODE -eq 0) {
+$notifyConfigured = ($LASTEXITCODE -eq 0)
+if (-not $notifyConfigured) {
+    & $binPath settings has-legacy --binary $binPath notify | Out-Null
+    $notifyConfigured = ($LASTEXITCODE -eq 0)
+}
+if ($notifyConfigured) {
     Ok "Already configured"
     $applyFlags += '--notify'
 } else {

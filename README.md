@@ -96,28 +96,50 @@ curl -fsSL https://raw.githubusercontent.com/axlaser/claude-statusline/master/ma
 <details>
 <summary><strong>Manual install</strong></summary>
 
-1. **Install jq** (if you don't have it):
-   ```bash
-   brew install jq
-   ```
+Nothing here pipes a download into a shell — every step is one you can inspect before running.
 
-2. **Download the scripts** to your Claude config directory:
+1. **Download the binary** for your architecture, plus its checksum file:
    ```bash
-   mkdir -p ~/.claude
-   curl -fsSL https://raw.githubusercontent.com/axlaser/claude-statusline/master/macos/statusline.sh -o ~/.claude/statusline.sh
-   curl -fsSL https://raw.githubusercontent.com/axlaser/claude-statusline/master/macos/notify.sh -o ~/.claude/notify.sh
-   curl -fsSL https://raw.githubusercontent.com/axlaser/claude-statusline/master/macos/git-refresh.sh -o ~/.claude/git-refresh.sh
-   curl -fsSL https://raw.githubusercontent.com/axlaser/claude-statusline/master/macos/subagent-statusline.sh -o ~/.claude/subagent-statusline.sh
+   mkdir -p ~/.claude/bin
+   # Apple Silicon
+   TARGET=aarch64-apple-darwin
+   # Intel: TARGET=x86_64-apple-darwin
+   BASE=https://github.com/axlaser/claude-statusline/releases/latest/download
+   curl -fsSL "$BASE/claude-statusline-$TARGET" -o ~/.claude/bin/claude-statusline
+   curl -fsSL "$BASE/checksums.txt" -o /tmp/claude-statusline-checksums.txt
    curl -fsSL https://raw.githubusercontent.com/axlaser/claude-statusline/master/assets/claude-icon.png -o ~/.claude/claude-icon.png
-   chmod +x ~/.claude/statusline.sh ~/.claude/notify.sh ~/.claude/git-refresh.sh ~/.claude/subagent-statusline.sh
    ```
 
-3. **Install terminal-notifier** (optional — for visual toast notifications):
+2. **Verify the checksum before you run it**, then make it executable:
+   ```bash
+   shasum -a 256 ~/.claude/bin/claude-statusline
+   grep "claude-statusline-$TARGET\$" /tmp/claude-statusline-checksums.txt
+   # the two hashes must match
+   chmod 700 ~/.claude/bin/claude-statusline
+   ```
+
+   Optionally verify the build provenance as well (needs the [GitHub CLI](https://cli.github.com)):
+   ```bash
+   curl -fsSL "$BASE/claude-statusline-$TARGET.sigstore.json" -o /tmp/claude-statusline.sigstore.json
+   gh attestation verify ~/.claude/bin/claude-statusline \
+     --bundle /tmp/claude-statusline.sigstore.json \
+     --repo axlaser/claude-statusline \
+     --signer-workflow axlaser/claude-statusline/.github/workflows/release.yml
+   ```
+
+3. **Confirm it renders**, which is the same check the installer runs:
+   ```bash
+   ~/.claude/bin/claude-statusline self-check && echo OK
+   ```
+
+   A non-zero exit means the binary launches but renders incorrectly — don't register it.
+
+4. **Install terminal-notifier** (optional — for visual toast notifications):
    ```bash
    brew install terminal-notifier
    ```
 
-4. **Create the notification config** — save as `~/.claude/notify-config.json`:
+5. **Create the notification config** — save as `~/.claude/notify-config.json`:
    ```json
    {
      "permission":        { "sound": true, "visual": true },
@@ -129,52 +151,65 @@ curl -fsSL https://raw.githubusercontent.com/axlaser/claude-statusline/master/ma
    }
    ```
 
-5. **Add to your Claude Code settings** — edit `~/.claude/settings.json`:
+6. **Register it in Claude Code.** The binary edits `~/.claude/settings.json` itself, preserving everything it did not write:
+   ```bash
+   ~/.claude/bin/claude-statusline settings apply \
+     --binary ~/.claude/bin/claude-statusline --all
+   ```
+
+   Or edit `~/.claude/settings.json` by hand — this is exactly what the command above writes:
    ```json
    {
      "statusLine": {
        "type": "command",
-       "command": "~/.claude/statusline.sh",
+       "command": "~/.claude/bin/claude-statusline",
        "refreshInterval": 2
      },
      "subagentStatusLine": {
        "type": "command",
-       "command": "~/.claude/subagent-statusline.sh"
+       "command": "~/.claude/bin/claude-statusline subagent"
      },
      "hooks": {
        "PostToolUse": [
          {
            "matcher": "Edit|Write|MultiEdit|Bash|NotebookEdit",
-           "hooks": [{ "type": "command", "command": "~/.claude/git-refresh.sh", "async": true }]
+           "hooks": [{ "type": "command", "command": "~/.claude/bin/claude-statusline git-refresh", "async": true }]
          }
        ],
        "PermissionRequest": [
          {
-           "hooks": [{ "type": "command", "command": "~/.claude/notify.sh permission", "async": true }]
+           "hooks": [{ "type": "command", "command": "~/.claude/bin/claude-statusline notify permission", "async": true }]
          }
        ],
        "Stop": [
          {
-           "hooks": [{ "type": "command", "command": "~/.claude/notify.sh stop", "async": true }]
+           "hooks": [{ "type": "command", "command": "~/.claude/bin/claude-statusline notify stop", "async": true }]
          }
        ],
        "PreCompact": [
          {
            "matcher": "*",
-           "hooks": [{ "type": "command", "command": "~/.claude/notify.sh compaction_start", "async": true }]
+           "hooks": [{ "type": "command", "command": "~/.claude/bin/claude-statusline notify compaction_start", "async": true }]
          }
        ],
        "PostCompact": [
          {
            "matcher": "*",
-           "hooks": [{ "type": "command", "command": "~/.claude/notify.sh compaction_done", "async": true }]
+           "hooks": [{ "type": "command", "command": "~/.claude/bin/claude-statusline notify compaction_done", "async": true }]
          }
        ]
      }
    }
    ```
 
-6. **Restart Claude Code** — the status line and notifications are now active.
+7. **Remove any previous script installation.** If you are coming from a version that installed shell scripts, delete them — nothing points at them any more:
+   ```bash
+   rm -f ~/.claude/statusline.sh ~/.claude/notify.sh ~/.claude/git-refresh.sh ~/.claude/subagent-statusline.sh
+   ```
+
+   Leave `~/.claude/notify-config.json` alone: its format is unchanged and the binary reads it as-is.
+
+8. **Restart Claude Code** — the status line and notifications are now active.
 
 </details>
 
@@ -203,32 +238,51 @@ curl -fsSL https://raw.githubusercontent.com/axlaser/claude-statusline/master/li
 <details>
 <summary><strong>Manual install</strong></summary>
 
-1. **Install jq** (if you don't have it):
-   ```bash
-   sudo apt install jq        # Debian/Ubuntu
-   sudo dnf install jq        # Fedora/RHEL
-   sudo pacman -S jq          # Arch
-   ```
+Nothing here pipes a download into a shell — every step is one you can inspect before running.
 
-2. **Download the scripts** to your Claude config directory:
+1. **Download the binary** for your architecture, plus its checksum file. The Linux builds are statically linked against musl, so one artifact runs on any distribution including Alpine:
    ```bash
-   mkdir -p ~/.claude
-   curl -fsSL https://raw.githubusercontent.com/axlaser/claude-statusline/master/linux/statusline.sh -o ~/.claude/statusline.sh
-   curl -fsSL https://raw.githubusercontent.com/axlaser/claude-statusline/master/linux/notify.sh -o ~/.claude/notify.sh
-   curl -fsSL https://raw.githubusercontent.com/axlaser/claude-statusline/master/linux/git-refresh.sh -o ~/.claude/git-refresh.sh
-   curl -fsSL https://raw.githubusercontent.com/axlaser/claude-statusline/master/linux/subagent-statusline.sh -o ~/.claude/subagent-statusline.sh
+   mkdir -p ~/.claude/bin
+   TARGET=x86_64-unknown-linux-musl
+   # ARM: TARGET=aarch64-unknown-linux-musl
+   BASE=https://github.com/axlaser/claude-statusline/releases/latest/download
+   curl -fsSL "$BASE/claude-statusline-$TARGET" -o ~/.claude/bin/claude-statusline
+   curl -fsSL "$BASE/checksums.txt" -o /tmp/claude-statusline-checksums.txt
    curl -fsSL https://raw.githubusercontent.com/axlaser/claude-statusline/master/assets/claude-icon.png -o ~/.claude/claude-icon.png
-   chmod +x ~/.claude/statusline.sh ~/.claude/notify.sh ~/.claude/git-refresh.sh ~/.claude/subagent-statusline.sh
    ```
 
-3. **Install libnotify** (optional — for visual toast notifications):
+2. **Verify the checksum before you run it**, then make it executable:
+   ```bash
+   sha256sum ~/.claude/bin/claude-statusline
+   grep "claude-statusline-$TARGET\$" /tmp/claude-statusline-checksums.txt
+   # the two hashes must match
+   chmod 700 ~/.claude/bin/claude-statusline
+   ```
+
+   Optionally verify the build provenance as well (needs the [GitHub CLI](https://cli.github.com)):
+   ```bash
+   curl -fsSL "$BASE/claude-statusline-$TARGET.sigstore.json" -o /tmp/claude-statusline.sigstore.json
+   gh attestation verify ~/.claude/bin/claude-statusline \
+     --bundle /tmp/claude-statusline.sigstore.json \
+     --repo axlaser/claude-statusline \
+     --signer-workflow axlaser/claude-statusline/.github/workflows/release.yml
+   ```
+
+3. **Confirm it renders**, which is the same check the installer runs:
+   ```bash
+   ~/.claude/bin/claude-statusline self-check && echo OK
+   ```
+
+   A non-zero exit means the binary launches but renders incorrectly — don't register it.
+
+4. **Install libnotify** (optional — for visual toast notifications):
    ```bash
    sudo apt install libnotify-bin    # Debian/Ubuntu
    sudo dnf install libnotify        # Fedora/RHEL
    sudo pacman -S libnotify          # Arch
    ```
 
-4. **Create the notification config** — save as `~/.claude/notify-config.json`:
+5. **Create the notification config** — save as `~/.claude/notify-config.json`:
    ```json
    {
      "permission":        { "sound": true, "visual": true },
@@ -240,52 +294,65 @@ curl -fsSL https://raw.githubusercontent.com/axlaser/claude-statusline/master/li
    }
    ```
 
-5. **Add to your Claude Code settings** — edit `~/.claude/settings.json`:
+6. **Register it in Claude Code.** The binary edits `~/.claude/settings.json` itself, preserving everything it did not write:
+   ```bash
+   ~/.claude/bin/claude-statusline settings apply \
+     --binary ~/.claude/bin/claude-statusline --all
+   ```
+
+   Or edit `~/.claude/settings.json` by hand — this is exactly what the command above writes:
    ```json
    {
      "statusLine": {
        "type": "command",
-       "command": "~/.claude/statusline.sh",
+       "command": "~/.claude/bin/claude-statusline",
        "refreshInterval": 2
      },
      "subagentStatusLine": {
        "type": "command",
-       "command": "~/.claude/subagent-statusline.sh"
+       "command": "~/.claude/bin/claude-statusline subagent"
      },
      "hooks": {
        "PostToolUse": [
          {
            "matcher": "Edit|Write|MultiEdit|Bash|NotebookEdit",
-           "hooks": [{ "type": "command", "command": "~/.claude/git-refresh.sh", "async": true }]
+           "hooks": [{ "type": "command", "command": "~/.claude/bin/claude-statusline git-refresh", "async": true }]
          }
        ],
        "PermissionRequest": [
          {
-           "hooks": [{ "type": "command", "command": "~/.claude/notify.sh permission", "async": true }]
+           "hooks": [{ "type": "command", "command": "~/.claude/bin/claude-statusline notify permission", "async": true }]
          }
        ],
        "Stop": [
          {
-           "hooks": [{ "type": "command", "command": "~/.claude/notify.sh stop", "async": true }]
+           "hooks": [{ "type": "command", "command": "~/.claude/bin/claude-statusline notify stop", "async": true }]
          }
        ],
        "PreCompact": [
          {
            "matcher": "*",
-           "hooks": [{ "type": "command", "command": "~/.claude/notify.sh compaction_start", "async": true }]
+           "hooks": [{ "type": "command", "command": "~/.claude/bin/claude-statusline notify compaction_start", "async": true }]
          }
        ],
        "PostCompact": [
          {
            "matcher": "*",
-           "hooks": [{ "type": "command", "command": "~/.claude/notify.sh compaction_done", "async": true }]
+           "hooks": [{ "type": "command", "command": "~/.claude/bin/claude-statusline notify compaction_done", "async": true }]
          }
        ]
      }
    }
    ```
 
-6. **Restart Claude Code** — the status line and notifications are now active.
+7. **Remove any previous script installation.** If you are coming from a version that installed shell scripts, delete them — nothing points at them any more:
+   ```bash
+   rm -f ~/.claude/statusline.sh ~/.claude/notify.sh ~/.claude/git-refresh.sh ~/.claude/subagent-statusline.sh
+   ```
+
+   Leave `~/.claude/notify-config.json` alone: its format is unchanged and the binary reads it as-is.
+
+8. **Restart Claude Code** — the status line and notifications are now active.
 
 </details>
 
@@ -314,21 +381,48 @@ irm https://raw.githubusercontent.com/axlaser/claude-statusline/master/windows/u
 <details>
 <summary><strong>Manual install</strong></summary>
 
-1. **Download the scripts** to your Claude config directory:
+Nothing here pipes a download into `iex` — every step is one you can inspect before running.
+
+1. **Download the binary** for your architecture, plus its checksum file:
    ```powershell
-   Invoke-WebRequest -Uri "https://raw.githubusercontent.com/axlaser/claude-statusline/master/windows/statusline.ps1" -OutFile "$env:USERPROFILE\.claude\statusline.ps1"
-   Invoke-WebRequest -Uri "https://raw.githubusercontent.com/axlaser/claude-statusline/master/windows/notify.ps1" -OutFile "$env:USERPROFILE\.claude\notify.ps1"
-   Invoke-WebRequest -Uri "https://raw.githubusercontent.com/axlaser/claude-statusline/master/windows/git-refresh.ps1" -OutFile "$env:USERPROFILE\.claude\git-refresh.ps1"
-   Invoke-WebRequest -Uri "https://raw.githubusercontent.com/axlaser/claude-statusline/master/windows/subagent-statusline.ps1" -OutFile "$env:USERPROFILE\.claude\subagent-statusline.ps1"
-   Invoke-WebRequest -Uri "https://raw.githubusercontent.com/axlaser/claude-statusline/master/assets/claude-icon.png" -OutFile "$env:USERPROFILE\.claude\claude-icon.png"
+   New-Item -ItemType Directory -Force "$env:USERPROFILE\.claude\bin" | Out-Null
+   $target = "x86_64-pc-windows-msvc"
+   # ARM: $target = "aarch64-pc-windows-msvc"
+   $base = "https://github.com/axlaser/claude-statusline/releases/latest/download"
+   $bin  = "$env:USERPROFILE\.claude\bin\claude-statusline.exe"
+   Invoke-WebRequest -Uri "$base/claude-statusline-$target.exe" -OutFile $bin -UseBasicParsing
+   Invoke-WebRequest -Uri "$base/checksums.txt" -OutFile "$env:TEMP\claude-statusline-checksums.txt" -UseBasicParsing
+   Invoke-WebRequest -Uri "https://raw.githubusercontent.com/axlaser/claude-statusline/master/assets/claude-icon.png" -OutFile "$env:USERPROFILE\.claude\claude-icon.png" -UseBasicParsing
    ```
 
-2. **Install BurntToast** (optional — for visual toast notifications):
+2. **Verify the checksum before you run it:**
+   ```powershell
+   (Get-FileHash -Algorithm SHA256 $bin).Hash
+   Select-String -Path "$env:TEMP\claude-statusline-checksums.txt" -Pattern "claude-statusline-$target.exe"
+   # the two hashes must match (case aside)
+   ```
+
+   Optionally verify the build provenance as well (needs the [GitHub CLI](https://cli.github.com)):
+   ```powershell
+   Invoke-WebRequest -Uri "$base/claude-statusline-$target.exe.sigstore.json" -OutFile "$env:TEMP\claude-statusline.sigstore.json" -UseBasicParsing
+   gh attestation verify $bin --bundle "$env:TEMP\claude-statusline.sigstore.json" `
+     --repo axlaser/claude-statusline `
+     --signer-workflow axlaser/claude-statusline/.github/workflows/release.yml
+   ```
+
+3. **Confirm it renders**, which is the same check the installer runs:
+   ```powershell
+   & $bin self-check | Out-Null; if ($LASTEXITCODE -eq 0) { "OK" }
+   ```
+
+   A non-zero exit means the binary launches but renders incorrectly — don't register it.
+
+4. **Install BurntToast** (optional — for visual toast notifications):
    ```powershell
    Install-Module -Name BurntToast -Scope CurrentUser
    ```
 
-3. **Create the notification config** — save as `%USERPROFILE%\.claude\notify-config.json`:
+5. **Create the notification config** — save as `%USERPROFILE%\.claude\notify-config.json`:
    ```json
    {
      "permission":        { "sound": true, "visual": true },
@@ -340,55 +434,67 @@ irm https://raw.githubusercontent.com/axlaser/claude-statusline/master/windows/u
    }
    ```
 
-4. **Add to your Claude Code settings** — edit `%USERPROFILE%\.claude\settings.json`:
+6. **Register it in Claude Code.** The binary edits `settings.json` itself, preserving everything it did not write — and it quotes its own path, which is what keeps a profile directory containing a space from breaking the command:
+   ```powershell
+   & $bin settings apply --binary $bin --all
+   ```
 
-   Replace `YOUR_USERNAME` with your Windows username in all paths below.
+   Or edit `%USERPROFILE%\.claude\settings.json` by hand. Replace `YOUR_USERNAME` with your Windows username, and keep the inner quotes — this is exactly what the command above writes:
 
    ```json
    {
      "statusLine": {
        "type": "command",
-       "command": "powershell -NoProfile -File C:/Users/YOUR_USERNAME/.claude/statusline.ps1",
+       "command": "\"C:/Users/YOUR_USERNAME/.claude/bin/claude-statusline.exe\"",
        "refreshInterval": 2
      },
      "subagentStatusLine": {
        "type": "command",
-       "command": "powershell -NoProfile -File C:/Users/YOUR_USERNAME/.claude/subagent-statusline.ps1"
+       "command": "\"C:/Users/YOUR_USERNAME/.claude/bin/claude-statusline.exe\" subagent"
      },
      "hooks": {
        "PostToolUse": [
          {
            "matcher": "Edit|Write|MultiEdit|Bash|NotebookEdit",
-           "hooks": [{ "type": "command", "command": "powershell -NoProfile -File C:/Users/YOUR_USERNAME/.claude/git-refresh.ps1", "async": true }]
+           "hooks": [{ "type": "command", "command": "\"C:/Users/YOUR_USERNAME/.claude/bin/claude-statusline.exe\" git-refresh", "async": true }]
          }
        ],
        "PermissionRequest": [
          {
-           "hooks": [{ "type": "command", "command": "powershell -NoProfile -File C:/Users/YOUR_USERNAME/.claude/notify.ps1 permission", "async": true }]
+           "hooks": [{ "type": "command", "command": "\"C:/Users/YOUR_USERNAME/.claude/bin/claude-statusline.exe\" notify permission", "async": true }]
          }
        ],
        "Stop": [
          {
-           "hooks": [{ "type": "command", "command": "powershell -NoProfile -File C:/Users/YOUR_USERNAME/.claude/notify.ps1 stop", "async": true }]
+           "hooks": [{ "type": "command", "command": "\"C:/Users/YOUR_USERNAME/.claude/bin/claude-statusline.exe\" notify stop", "async": true }]
          }
        ],
        "PreCompact": [
          {
            "matcher": "*",
-           "hooks": [{ "type": "command", "command": "powershell -NoProfile -File C:/Users/YOUR_USERNAME/.claude/notify.ps1 compaction_start", "async": true }]
+           "hooks": [{ "type": "command", "command": "\"C:/Users/YOUR_USERNAME/.claude/bin/claude-statusline.exe\" notify compaction_start", "async": true }]
          }
        ],
        "PostCompact": [
          {
            "matcher": "*",
-           "hooks": [{ "type": "command", "command": "powershell -NoProfile -File C:/Users/YOUR_USERNAME/.claude/notify.ps1 compaction_done", "async": true }]
+           "hooks": [{ "type": "command", "command": "\"C:/Users/YOUR_USERNAME/.claude/bin/claude-statusline.exe\" notify compaction_done", "async": true }]
          }
        ]
      }
    }
    ```
 
-5. **Restart Claude Code** — the status line and notifications are now active.
+7. **Remove any previous script installation.** If you are coming from a version that installed PowerShell scripts, delete them — nothing points at them any more:
+   ```powershell
+   Remove-Item "$env:USERPROFILE\.claude\statusline.ps1", "$env:USERPROFILE\.claude\notify.ps1", `
+     "$env:USERPROFILE\.claude\git-refresh.ps1", "$env:USERPROFILE\.claude\subagent-statusline.ps1" `
+     -Force -ErrorAction SilentlyContinue
+   ```
+
+   Leave `notify-config.json` alone: its format is unchanged and the binary reads it as-is.
+
+8. **Restart Claude Code** — the status line and notifications are now active.
 
 </details>
 

@@ -66,6 +66,57 @@ pub const POST_TOOL_MATCHER: &str = "Edit|Write|MultiEdit|Bash|NotebookEdit";
 /// Claude Code's refresh cadence for the status line, in seconds.
 pub const REFRESH_INTERVAL: u64 = 2;
 
+/// The four scripts a pre-binary installation left in `~/.claude` (R16).
+///
+/// Held as basenames because that is what the script installers themselves
+/// matched on when they de-duplicated their own entries, so an entry any
+/// released installer ever wrote is recognised here.
+const LEGACY_SCRIPTS: [&str; 4] = ["statusline", "notify", "git-refresh", "subagent-statusline"];
+
+/// Both dialects, on both platforms. A macOS machine never held a `.ps1`, but
+/// recognising it costs nothing and keeps one list rather than a
+/// platform-conditional pair — which R25 would have to account for.
+const LEGACY_EXTENSIONS: [&str; 2] = [".sh", ".ps1"];
+
+/// Whether `command` invokes one of the scripts this binary supersedes.
+///
+/// The match is on `.claude/<name>` — the directory as well as the file, and
+/// the file as a whole segment. Both halves of that are load-bearing. Matching
+/// the basename alone would prune a user's own `~/.claude/hooks/notify.sh`,
+/// which is a perfectly ordinary place for someone to keep a hook, and matching
+/// it as a substring would let `my-statusline.sh` count as `statusline.sh`.
+/// Deleting a hook someone wrote is a far worse failure than leaving a stale
+/// entry behind, so this errs toward matching too little.
+pub fn references_legacy_script(command: &str) -> bool {
+    let command = command.trim_matches('"');
+    LEGACY_SCRIPTS.iter().any(|name| {
+        LEGACY_EXTENSIONS.iter().any(|ext| {
+            mentions_path(command, &format!(".claude/{name}{ext}"))
+                || mentions_path(command, &format!(".claude\\{name}{ext}"))
+        })
+    })
+}
+
+/// Whether `command` contains `path` as whole segments: preceded by a
+/// separator or the start of the command, and followed by an argument
+/// separator or the end of it.
+fn mentions_path(command: &str, path: &str) -> bool {
+    let bytes = command.as_bytes();
+    let mut from = 0;
+    while let Some(offset) = command[from..].find(path) {
+        let start = from + offset;
+        let end = start + path.len();
+        let after_separator = start == 0 || matches!(bytes[start - 1], b'/' | b'\\');
+        let ends_the_token =
+            end == bytes.len() || matches!(bytes[end], b' ' | b'\t' | b'"' | b'\'');
+        if after_separator && ends_the_token {
+            return true;
+        }
+        from = start + 1;
+    }
+    false
+}
+
 /// Which parts of the integration to write.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ApplySpec {
@@ -119,6 +170,21 @@ const NOTIFY_HOOKS: [(&str, Option<&str>, &str); 4] = [
 pub fn apply(root: &mut Value, binary: &str, spec: &ApplySpec) {
     ensure_object(root);
 
+    // R16. Whatever this writes supersedes a script installation's entries, and
+    // by the time the installer reaches here the scripts themselves are already
+    // gone. Pruning unconditionally rather than behind a caller flag is
+    // deliberate: a platform whose installer forgot to pass the flag would
+    // leave `settings.json` pointing at a file the same run deleted, and that
+    // asymmetry is exactly the class of bug the parity rule existed to catch.
+    //
+    // One cosmetic consequence: a `statusLine` that was a script's moves to the
+    // end of the file, because the key is removed here and re-added below
+    // rather than overwritten in place. It happens on the migrating run only,
+    // to entries whose contents change on that run anyway. The user's own keys
+    // keep their positions, which is what `existing_key_order_is_preserved`
+    // guards.
+    remove_legacy(root);
+
     let binary: &str = &if spec.quote && !binary.starts_with('"') {
         format!("\"{binary}\"")
     } else {
@@ -166,6 +232,19 @@ pub fn apply(root: &mut Value, binary: &str, spec: &ApplySpec) {
 /// stripped, so a Windows entry written as `"C:\...\claude-statusline.exe"
 /// notify stop` is still recognised when the uninstaller passes the bare path.
 pub fn remove(root: &mut Value, binary: &str) {
+    remove_matching(root, &|command| references(command, binary));
+}
+
+/// Removes every entry left by a script installation (R16).
+///
+/// The same traversal as `remove` under a different predicate. Sharing it is
+/// the point: two hand-written walks over the user's settings would eventually
+/// prune different things, and only one of them would have a test.
+pub fn remove_legacy(root: &mut Value) {
+    remove_matching(root, &references_legacy_script);
+}
+
+fn remove_matching(root: &mut Value, matches: &dyn Fn(&str) -> bool) {
     let Some(map) = root.as_object_mut() else {
         return;
     };
@@ -175,7 +254,7 @@ pub fn remove(root: &mut Value, binary: &str) {
             .get(key)
             .and_then(|v| v.get("command"))
             .and_then(Value::as_str)
-            .is_some_and(|c| references(c, binary))
+            .is_some_and(matches)
         {
             map.remove(key);
         }
@@ -190,7 +269,7 @@ pub fn remove(root: &mut Value, binary: &str) {
         let Some(entries) = hooks.get_mut(&event).and_then(Value::as_array_mut) else {
             continue;
         };
-        entries.retain(|entry| !entry_references(entry, binary));
+        entries.retain(|entry| !entry_matches(entry, matches));
         if entries.is_empty() {
             hooks.remove(&event);
         }
@@ -233,17 +312,63 @@ pub fn has(root: &Value, binary: &str, feature: &str) -> bool {
 pub fn has_foreign(root: &Value, binary: &str, feature: &str) -> bool {
     let occupied = |key: &str| {
         root.get(key).is_some_and(|v| {
+            let command = v.get("command").and_then(Value::as_str);
+            // A script installation's entry is this tool's own previous entry,
+            // not a stranger's. Prompting "existing config found, overwrite?"
+            // for it would ask the user to approve replacing us with us, and a
+            // declined prompt would leave `settings.json` pointing at a script
+            // the same run is about to delete (R16).
             !v.is_null()
-                && !v
-                    .get("command")
-                    .and_then(Value::as_str)
-                    .is_some_and(|c| references(c, binary))
+                && !command.is_some_and(|c| references(c, binary))
+                && !command.is_some_and(references_legacy_script)
         })
     };
     match feature {
         "statusline" => occupied(STATUS_LINE),
         "subagent" => occupied(SUBAGENT_STATUS_LINE),
         _ => false,
+    }
+}
+
+/// Whether a script installation's entry is present, for `feature` or anywhere.
+///
+/// The installer asks this to carry a user's existing choices across the
+/// upgrade: someone who enabled notifications under the scripts should not be
+/// re-prompted for them, and should not silently lose them either.
+pub fn has_legacy(root: &Value, feature: Option<&str>) -> bool {
+    let key_is_legacy = |key: &str| {
+        root.get(key)
+            .and_then(|v| v.get("command"))
+            .and_then(Value::as_str)
+            .is_some_and(references_legacy_script)
+    };
+
+    match feature {
+        Some("statusline") => key_is_legacy(STATUS_LINE),
+        Some("subagent") => key_is_legacy(SUBAGENT_STATUS_LINE),
+        Some("git-refresh") => hook_matches(root, "PostToolUse", &references_legacy_script),
+        Some("notify") => NOTIFY_HOOKS
+            .iter()
+            .any(|(event, _, _)| hook_matches(root, event, &references_legacy_script)),
+        Some(_) => false,
+        // The unscoped form scans every event rather than the ones we write,
+        // so an entry from an installer version this one does not know about
+        // still reports as a script installation.
+        None => {
+            key_is_legacy(STATUS_LINE)
+                || key_is_legacy(SUBAGENT_STATUS_LINE)
+                || root
+                    .get("hooks")
+                    .and_then(Value::as_object)
+                    .is_some_and(|hooks| {
+                        hooks.values().any(|entries| {
+                            entries.as_array().is_some_and(|list| {
+                                list.iter()
+                                    .any(|e| entry_matches(e, &references_legacy_script))
+                            })
+                        })
+                    })
+        }
     }
 }
 
@@ -265,7 +390,7 @@ fn references(command: &str, binary: &str) -> bool {
     !needle.is_empty() && command.trim_matches('"').contains(needle)
 }
 
-fn entry_references(entry: &Value, binary: &str) -> bool {
+fn entry_matches(entry: &Value, matches: &dyn Fn(&str) -> bool) -> bool {
     entry
         .get("hooks")
         .and_then(Value::as_array)
@@ -273,16 +398,24 @@ fn entry_references(entry: &Value, binary: &str) -> bool {
             hooks.iter().any(|h| {
                 h.get("command")
                     .and_then(Value::as_str)
-                    .is_some_and(|c| references(c, binary))
+                    .is_some_and(matches)
             })
         })
 }
 
-fn hook_present(root: &Value, event: &str, binary: &str) -> bool {
+fn entry_references(entry: &Value, binary: &str) -> bool {
+    entry_matches(entry, &|command| references(command, binary))
+}
+
+fn hook_matches(root: &Value, event: &str, matches: &dyn Fn(&str) -> bool) -> bool {
     root.get("hooks")
         .and_then(|h| h.get(event))
         .and_then(Value::as_array)
-        .is_some_and(|entries| entries.iter().any(|e| entry_references(e, binary)))
+        .is_some_and(|entries| entries.iter().any(|e| entry_matches(e, matches)))
+}
+
+fn hook_present(root: &Value, event: &str, binary: &str) -> bool {
+    hook_matches(root, event, &|command| references(command, binary))
 }
 
 /// Replaces our entry for `event` while preserving every entry that is not

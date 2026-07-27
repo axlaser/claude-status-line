@@ -57,6 +57,23 @@ discard_stage() {
     return 0
 }
 
+# Puts the previous binary back after a failure that has already moved it
+# aside. R11 requires a binary that fails its self-check to leave the prior
+# installation untouched, and by then the new one is already in place -- so
+# "untouched" has to be restored rather than merely not disturbed.
+restore_previous() {
+    if [[ -n ${BACKUP:-} && -e $BACKUP ]]; then
+        mv -f "$BACKUP" "$BIN_PATH" 2>/dev/null
+    fi
+    BACKUP=""
+    return 0
+}
+
+# The scripts a pre-binary installation left in ~/.claude (R16). Removed only
+# after the self-check passes: until then they are still the working
+# installation.
+LEGACY_SCRIPTS=(statusline.sh notify.sh git-refresh.sh subagent-statusline.sh)
+
 # --- Options ---
 REQUIRE_ATTESTATION=false
 PINNED_VERSION="${CLAUDE_STATUSLINE_VERSION:-}"
@@ -286,9 +303,24 @@ echo ""
 
 # --- Place the binary (R9, R10) ---
 step "Installing"
+# Move any existing binary aside rather than overwriting it, so the self-check
+# below has something to roll back to (AE8). The stage prefix is deliberate:
+# a run interrupted between here and the self-check leaves the backup where
+# the next run's sweep will find it.
+BACKUP=""
+if [[ -e $BIN_PATH ]]; then
+    BACKUP="$BIN_DIR/${STAGE_PREFIX}$$.previous"
+    if ! mv -f "$BIN_PATH" "$BACKUP"; then
+        err "Could not move the existing binary aside"
+        BACKUP=""
+        discard_stage
+        return 1 2>/dev/null || exit 1
+    fi
+fi
 if ! mv -f "$STAGE" "$BIN_PATH"; then
     err "Could not place the binary at $BIN_PATH"
     discard_stage
+    restore_previous
     return 1 2>/dev/null || exit 1
 fi
 STAGE=""
@@ -299,6 +331,47 @@ rm -f "$SUMS" "$BUNDLE" 2>/dev/null
 ok "$BIN_PATH"
 info "$(human_size "$(file_bytes "$BIN_PATH")")"
 echo ""
+
+# --- Self-check (R11, AE8) ---
+# A binary can pass its checksum, launch, and still render wrongly -- a bad
+# build, a corrupt fixture, an architecture that runs but misbehaves. The
+# silent-degradation contract guarantees that failure would reach the user as
+# an absent status line and nothing else, so this is the only place it can be
+# caught. Everything destructive below is gated on it.
+step "Verifying the binary renders"
+if ! "$BIN_PATH" self-check >/dev/null 2>&1; then
+    err "The installed binary failed its self-check"
+    info "It downloaded and verified but does not render correctly, so it was"
+    info "not activated. Your previous installation is untouched."
+    rm -f "$BIN_PATH"
+    restore_previous
+    return 1 2>/dev/null || exit 1
+fi
+[[ -n $BACKUP ]] && rm -f "$BACKUP"
+BACKUP=""
+ok "Renders correctly"
+echo ""
+
+# --- Migrate from a script installation (R16, F2) ---
+# Only now, with a binary that has proved it renders. notify-config.json is
+# deliberately not in this list: it is the user's configuration, its schema is
+# unchanged, and the binary reads it as-is (R44).
+_legacy_found=()
+for _script in "${LEGACY_SCRIPTS[@]}"; do
+    [[ -e "$CLAUDE_DIR/$_script" ]] && _legacy_found+=("$_script")
+done
+if (( ${#_legacy_found[@]} > 0 )); then
+    step "Removing the superseded scripts"
+    for _script in "${_legacy_found[@]}"; do
+        if rm -f "$CLAUDE_DIR/$_script"; then
+            ok "$_script"
+        else
+            warn "Could not remove $CLAUDE_DIR/$_script"
+        fi
+    done
+    info "Your notification settings were kept."
+    echo ""
+fi
 
 # --- Configure settings.json (R14) ---
 # The merge runs through the binary just placed. It is the only JSON
@@ -361,7 +434,12 @@ fi
 echo ""
 step "Notifications"
 info "Plays a sound and shows a popup when Claude needs attention."
-if "$BIN_PATH" settings has --binary "$BIN_PATH" notify &>/dev/null; then
+# The legacy check is what carries the choice across an upgrade (R16): someone
+# who enabled notifications under the scripts has hooks pointing at notify.sh,
+# which `has` does not recognise, and re-prompting them would turn a silent
+# upgrade into a question they already answered.
+if "$BIN_PATH" settings has --binary "$BIN_PATH" notify &>/dev/null \
+    || "$BIN_PATH" settings has-legacy --binary "$BIN_PATH" notify &>/dev/null; then
     ok "Already configured"
     _apply_flags+=(--notify)
 else

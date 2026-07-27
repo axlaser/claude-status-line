@@ -68,7 +68,8 @@ fn main() {
     std::process::exit(0);
 }
 
-/// `settings apply|remove|has|has-foreign`, the installers' JSON editor.
+/// `settings apply|remove|has|has-foreign|has-legacy`, the installers' JSON
+/// editor.
 ///
 /// Returns the process exit code: 0 for success or a true query, 1 otherwise.
 /// Errors go to stdout, not stderr — fd 2 is already redirected to the null
@@ -113,7 +114,11 @@ fn settings_cli(rest: &[&str]) -> i32 {
 
     let action = match positional.first() {
         Some(a) => *a,
-        None => return fail("usage: settings <apply|remove|has|has-foreign> --binary <path>"),
+        None => {
+            return fail(
+                "usage: settings <apply|remove|has|has-foreign|has-legacy> --binary <path>",
+            )
+        }
     };
     if binary.is_empty() {
         return fail("--binary is required");
@@ -156,6 +161,16 @@ fn settings_cli(rest: &[&str]) -> i32 {
             Some(_) => 1,
             None => fail("has-foreign needs a feature name"),
         },
+        // R16. Unlike its siblings the feature name is optional: the installer
+        // asks the unscoped form to decide whether it is migrating at all, and
+        // the scoped form to carry one setting across.
+        "has-legacy" => {
+            if settings::has_legacy(&root, positional.get(1).copied()) {
+                0
+            } else {
+                1
+            }
+        }
         other => fail(&format!("unknown settings action: {other}")),
     }
 }
