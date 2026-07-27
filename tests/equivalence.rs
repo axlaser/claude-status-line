@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use claude_statusline::clock::{Clock, TestClock};
+use claude_statusline::cmd::statusline as cmd_statusline;
 use claude_statusline::debug;
 use claude_statusline::git::{self, GitStatus, Porcelain};
 use claude_statusline::notify_state::{self, decide, Latch, LatchState};
@@ -4799,4 +4800,350 @@ fn the_box_pads_every_row_to_one_width() {
     assert!(plain.contains(".../repo/work"), "{plain}");
     assert!(plain.contains("Opus 5 · high effort"), "{plain}");
     assert!(plain.contains("42%"), "42.4 rounds to 42: {plain}");
+}
+
+// ---------------------------------------------------------------------------
+// U13 -- statusline fixture replay (R19, R20, R32)
+// ---------------------------------------------------------------------------
+
+/// The cases whose three captures do not agree, and the platform whose
+/// behaviour the port keeps.
+///
+/// Each is a divergence resolved and written down in the plan's Scope
+/// Boundaries. Listing the *winner* rather than skipping the case keeps the
+/// fixture doing work: the replay asserts the port matches the chosen platform
+/// and, just as importantly, that it still differs from the one it breaks. A
+/// skip would let a resolution silently stop being true.
+const STATUSLINE_DIVERGENCES: [(&str, &str, &str); 3] = [
+    (
+        "git-unborn-head-staged",
+        "linux",
+        "unborn HEAD renders no git segment; Windows substitutes the literal HEAD",
+    ),
+    (
+        "payload-empty",
+        "linux",
+        "empty stdin renders the bad-JSON notice; Windows renders a defaults-only box",
+    ),
+    (
+        "feed-fresh",
+        "windows",
+        "one row per running task; bash's greedy id strip renders a phantom done row",
+    ),
+];
+
+fn harness_git_env(states: &serde_json::Value) -> Vec<(String, String)> {
+    states["git_env"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .map(|(k, v)| (k.clone(), v.as_str().unwrap_or_default().to_string()))
+        .collect()
+}
+
+fn harness_git_config(states: &serde_json::Value) -> Vec<String> {
+    states["git_config"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|c| c.as_str().map(str::to_string))
+        .collect()
+}
+
+/// Runs one pinned git command. Every invocation carries the identity, the
+/// dates and the config, because a single one that does not makes the commit
+/// hashes drift and the detached-HEAD fixture stops reproducing.
+fn harness_git(states: &serde_json::Value, cwd: Option<&Path>, args: &[&str]) -> bool {
+    let mut cmd = Command::new("git");
+    if let Some(cwd) = cwd {
+        cmd.arg("-C").arg(cwd);
+    }
+    for c in harness_git_config(states) {
+        cmd.arg("-c").arg(c);
+    }
+    cmd.args(args)
+        .envs(harness_git_env(states))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    cmd.status().map(|s| s.success()).unwrap_or(false)
+}
+
+/// Builds one `states.json` git state, the same steps the capture drivers run.
+///
+/// Ported rather than shelled out to: the replay has to construct the identical
+/// repository on every published target, and `states.json` is the single
+/// description both drivers already read.
+fn build_git_state(states: &serde_json::Value, name: &str, work: &Path, remote: &Path) {
+    let state = states["git_states"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|s| s["name"].as_str() == Some(name))
+        .unwrap_or_else(|| panic!("unknown git state `{name}`"));
+
+    for step in state["steps"].as_array().into_iter().flatten() {
+        let parts: Vec<&str> = step
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|v| v.as_str().unwrap_or_default())
+            .collect();
+        let Some((verb, rest)) = parts.split_first() else {
+            continue;
+        };
+        match *verb {
+            "git" => {
+                assert!(
+                    harness_git(states, Some(work), rest),
+                    "git step failed in state `{name}`: {rest:?}"
+                );
+            }
+            "write" => {
+                let target = work.join(rest[0]);
+                if let Some(parent) = target.parent() {
+                    std::fs::create_dir_all(parent).expect("failed to create the parent directory");
+                }
+                // Exact bytes, LF preserved: this content reaches a blob hash,
+                // and through it the commit hash the detached-HEAD state
+                // renders. Both drivers have got this wrong once already.
+                std::fs::write(&target, rest[1].as_bytes()).expect("failed to write the file");
+            }
+            "mkdir" => {
+                std::fs::create_dir_all(work.join(rest[0]))
+                    .expect("failed to create the directory");
+            }
+            "remote-track" | "remote-only" => {
+                assert!(
+                    harness_git(
+                        states,
+                        None,
+                        &["init", "--bare", "-b", "main", &remote.to_string_lossy()]
+                    ),
+                    "bare remote init failed in state `{name}`"
+                );
+                assert!(
+                    harness_git(
+                        states,
+                        Some(work),
+                        &["remote", "add", "origin", &remote.to_string_lossy()]
+                    ),
+                    "remote add failed in state `{name}`"
+                );
+                if *verb == "remote-track" {
+                    assert!(
+                        harness_git(states, Some(work), &["push", "-u", "origin", "HEAD"]),
+                        "push failed in state `{name}`"
+                    );
+                }
+            }
+            other => panic!("unknown step verb `{other}` in state `{name}`"),
+        }
+    }
+}
+
+/// Placeholders carry forward slashes on every platform, which is why the
+/// capture drivers never had to escape a Windows backslash into JSON.
+fn slashed(p: &Path) -> String {
+    p.to_string_lossy().replace('\\', "/")
+}
+
+fn substitute(text: &str, home: &Path, tmp: &Path, work: &Path, session: &str) -> String {
+    text.replace("{HOME}", &slashed(home))
+        .replace("{TMP}", &slashed(tmp))
+        .replace("{REPO}", &slashed(work))
+        .replace("{SESSION}", session)
+}
+
+/// R19 and R32: every captured statusline case, replayed against the port.
+///
+/// This is the parity gate. The unit tests above check the renderer's pieces;
+/// only this compares whole rendered bytes against what the scripts actually
+/// produced, for the whole `docs/performance.md` §4 state matrix.
+#[test]
+fn rendered_output_matches_the_captured_fixtures() {
+    let root = repo_file("tests/fixtures/statusline");
+    let Ok(entries) = std::fs::read_dir(&root) else {
+        println!("no statusline fixtures captured yet");
+        return;
+    };
+    let states: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(repo_file("tests/harness/states.json"))
+            .expect("states.json is readable"),
+    )
+    .expect("states.json parses");
+    let cases_table: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(repo_file("tests/harness/cases.json"))
+            .expect("cases.json is readable"),
+    )
+    .expect("cases.json parses");
+
+    let mut failures = Failures::default();
+    let mut checked = 0usize;
+
+    let mut dirs: Vec<PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .collect();
+    dirs.sort();
+
+    for dir in dirs {
+        let case = dir
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
+        let meta: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.join("case.json")).unwrap_or_default(),
+        )
+        .unwrap_or(serde_json::Value::Null);
+
+        let session = meta["session_id"].as_str().unwrap_or("");
+        let pinned_now = meta["clock"].as_i64().unwrap_or(0);
+
+        // --- isolated roots, laid out exactly as the drivers lay them out ---
+        let case_root = scratch_dir(&format!("statusline-fixture-{case}"));
+        let home = case_root.join("home");
+        let tmp = case_root.join("tmp");
+        let work = case_root.join("repo").join("work");
+        let remote = case_root.join("repo").join("remote.git");
+        for d in [&home.join(".claude"), &tmp, &work] {
+            std::fs::create_dir_all(d).expect("failed to create an isolated root");
+        }
+
+        let notify_config = meta["notify_config"]
+            .as_str()
+            .unwrap_or("configs/default.json");
+        std::fs::copy(
+            repo_file(&format!("tests/harness/{notify_config}")),
+            home.join(".claude").join("notify-config.json"),
+        )
+        .expect("failed to stage notify-config.json");
+
+        if let Some(state) = meta["git_state"].as_str() {
+            build_git_state(&states, state, &work, &remote);
+        }
+
+        // --- staged state files, with their intended modification times -----
+        // The scripts read the real wall clock, so the harness materialised an
+        // mtime and recorded it as an offset from the pinned clock. Here the
+        // offset is applied to the clock instead, which is the whole reason
+        // KTD6's Clock covers filesystem timestamps as well as `now`.
+        let mut clock = TestClock::at(pinned_now);
+        let defaults = &cases_table["defaults"]["inputs_by_component"]["statusline"];
+        let staged = defaults
+            .as_array()
+            .into_iter()
+            .flatten()
+            .chain(meta["inputs"].as_array().into_iter().flatten());
+
+        for input in staged {
+            let target = input["target"].as_str().unwrap_or_default();
+            let content = input["content"].as_str().unwrap_or_default();
+            let offset = input["mtime_offset"].as_i64().unwrap_or(0);
+            let abs = PathBuf::from(substitute(target, &home, &tmp, &work, session));
+            if let Some(parent) = abs.parent() {
+                std::fs::create_dir_all(parent).expect("failed to create an input's directory");
+            }
+            std::fs::copy(repo_file(&format!("tests/harness/{content}")), &abs)
+                .unwrap_or_else(|e| panic!("failed to stage {target}: {e}"));
+            clock = clock.with_mtime(&abs, pinned_now + offset);
+        }
+
+        let payload_rel = meta["payload"].as_str().unwrap_or_default();
+        let payload_raw =
+            std::fs::read_to_string(repo_file(&format!("tests/harness/{payload_rel}")))
+                .unwrap_or_default();
+        let payload = substitute(&payload_raw, &home, &tmp, &work, session);
+
+        let roots = cmd_statusline::Roots {
+            home: Some(home.clone()),
+            temp: tmp.clone(),
+        };
+        let rendered = cmd_statusline::run(&clock, &roots, &payload);
+
+        // The drivers refuse to write a fixture still containing a real path;
+        // the replay refuses to compare one. A leak here would mean the render
+        // is carrying machine-local state into what is supposed to be a
+        // portable golden file.
+        for (needle, label) in [
+            (slashed(&work), "{REPO}"),
+            (slashed(&tmp), "{TMP}"),
+            (slashed(&home), "{HOME}"),
+        ] {
+            failures.check(&case, !rendered.contains(&needle), || {
+                format!("rendered output leaked a machine-local path where {label} belongs")
+            });
+        }
+
+        let resolution = STATUSLINE_DIVERGENCES.iter().find(|(c, _, _)| *c == case);
+        // The winner's *bytes*, not its name. A divergence is between
+        // behaviours, and two platforms can share one — resolving to `linux`
+        // resolves to macOS too, because their captures are identical. Deriving
+        // the losing set from the fixtures rather than naming it keeps that
+        // from having to be restated (and mis-stated) per case.
+        let winning_bytes = resolution.and_then(|(_, winner, _)| {
+            std::fs::read_to_string(dir.join("expected").join(format!("{winner}.txt"))).ok()
+        });
+
+        for platform in ["linux", "macos", "windows"] {
+            let Ok(expected) =
+                std::fs::read_to_string(dir.join("expected").join(format!("{platform}.txt")))
+            else {
+                continue;
+            };
+            let label = format!("{case}/{platform}");
+
+            match resolution {
+                // An agreeing case: the port must equal every platform.
+                None => {
+                    checked += 1;
+                    failures.check(&label, rendered == expected, || {
+                        first_difference(&expected, &rendered)
+                    });
+                }
+                // A resolved divergence: equal to every platform that shares
+                // the winning behaviour, and still different from every one
+                // that does not. The second half is what stops a resolution
+                // from quietly becoming a no-op.
+                Some((_, _, why)) => {
+                    checked += 1;
+                    if winning_bytes.as_deref() == Some(expected.as_str()) {
+                        failures.check(&label, rendered == expected, || {
+                            format!("{why}\n{}", first_difference(&expected, &rendered))
+                        });
+                    } else {
+                        failures.check(&label, rendered != expected, || {
+                            format!("{why} -- but the port matched {platform}, so the divergence is gone and the resolution is stale")
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    println!("replayed {checked} captured platform fixture(s)");
+    failures.assert_empty("statusline fixture equivalence");
+}
+
+/// Points at the first line that differs, with both sides escaped, rather than
+/// dumping two boxes of escape codes and leaving the reader to diff them.
+fn first_difference(expected: &str, got: &str) -> String {
+    let e: Vec<&str> = expected.lines().collect();
+    let g: Vec<&str> = got.lines().collect();
+    for i in 0..e.len().max(g.len()) {
+        let (le, lg) = (e.get(i), g.get(i));
+        if le != lg {
+            return format!(
+                "line {} differs\n    script: {:?}\n    port:   {:?}\n  (script has {} line(s), port has {})",
+                i + 1,
+                le.unwrap_or(&"<missing>"),
+                lg.unwrap_or(&"<missing>"),
+                e.len(),
+                g.len()
+            );
+        }
+    }
+    "line contents agree; the difference is the trailing newline".to_string()
 }
