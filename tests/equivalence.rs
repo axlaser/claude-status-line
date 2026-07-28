@@ -2268,13 +2268,23 @@ fn release_resolution_defaults_to_stable_and_opts_in_to_prereleases() {
     failures.assert_empty("release resolution");
 }
 
-/// Every `raw.githubusercontent.com/.../master/<path>` URL in `body`.
+/// Every `raw.githubusercontent.com/.../<branch>/<path>` URL in `body`.
+///
+/// Both branches are published: stable installs come from `master`, and the
+/// prerelease commands come from `dev`, which is where the installer matching a
+/// prerelease lives. A path is a path either way — if it is not in the tree, the
+/// URL 404s whichever branch serves it.
 fn published_raw_paths(body: &str) -> Vec<String> {
-    const PREFIX: &str = "raw.githubusercontent.com/axlaser/claude-statusline/master/";
+    const ROOT: &str = "raw.githubusercontent.com/axlaser/claude-statusline/";
     let mut out = Vec::new();
     let mut from = 0;
-    while let Some(offset) = body[from..].find(PREFIX) {
-        let start = from + offset + PREFIX.len();
+    while let Some(offset) = body[from..].find(ROOT) {
+        let after_root = from + offset + ROOT.len();
+        // Skip the branch segment; what follows is the repo-relative path.
+        let Some(slash) = body[after_root..].find('/') else {
+            break;
+        };
+        let start = after_root + slash + 1;
         let end = body[start..]
             .find(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | ')' | '`' | '>'))
             .map_or(body.len(), |n| start + n);

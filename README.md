@@ -506,11 +506,15 @@ The install commands above always resolve the latest **stable** release, so a
 prerelease is never installed by accident. To opt in, add `--pre`:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/axlaser/claude-statusline/master/install/install.sh | bash -s -- --pre
+curl -fsSL https://raw.githubusercontent.com/axlaser/claude-statusline/dev/install/install.sh | bash -s -- --pre
 ```
 ```powershell
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/axlaser/claude-statusline/master/install/install.ps1))) --pre
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/axlaser/claude-statusline/dev/install/install.ps1))) --pre
 ```
+
+These fetch the installer from `dev` rather than `master`: prereleases are cut
+from the integration branch, so that is where the installer matching them lives.
+The stable commands above stay on `master`.
 
 > The PowerShell form is longer than the plain one-liner because `irm | iex` has
 > no way to pass arguments. If you would rather not read that, download the
