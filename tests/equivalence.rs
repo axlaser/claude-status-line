@@ -2062,6 +2062,82 @@ fn verification_is_pinned_and_fails_closed() {
     failures.assert_empty("verification pinning");
 }
 
+/// Every `raw.githubusercontent.com/.../master/<path>` URL in `body`.
+fn published_raw_paths(body: &str) -> Vec<String> {
+    const PREFIX: &str = "raw.githubusercontent.com/axlaser/claude-statusline/master/";
+    let mut out = Vec::new();
+    let mut from = 0;
+    while let Some(offset) = body[from..].find(PREFIX) {
+        let start = from + offset + PREFIX.len();
+        let end = body[start..]
+            .find(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | ')' | '`' | '>'))
+            .map_or(body.len(), |n| start + n);
+        out.push(body[start..end].to_string());
+        from = end.max(start + 1);
+    }
+    out
+}
+
+/// R6. `macos/`, `linux/` and `windows/` exist for exactly one reason: they are
+/// the paths the published one-liners use, and those URLs live in other
+/// people's bookmarks, dotfiles and blog posts where we cannot update them.
+///
+/// Each entry point hardcodes its target twice — once as a repo-relative source
+/// for the cloned case, once as a raw URL for the piped case — and until now
+/// nothing checked either. The failure that would produce is silent, which is
+/// what makes it worth a test: `curl -fsSL <404> | bash` prints nothing (`-s`),
+/// hands bash an empty stdin, and exits 0. The user sees no error and no
+/// install. Renaming a file under `install/` is all it takes.
+#[test]
+fn every_published_entry_point_delegates_to_a_file_that_exists() {
+    const ENTRY_POINTS: [(&str, &str); 6] = [
+        ("macos/install.sh", "install/install.sh"),
+        ("macos/uninstall.sh", "install/uninstall.sh"),
+        ("linux/install.sh", "install/install.sh"),
+        ("linux/uninstall.sh", "install/uninstall.sh"),
+        ("windows/install.ps1", "install/install.ps1"),
+        ("windows/uninstall.ps1", "install/uninstall.ps1"),
+    ];
+
+    let mut failures = Failures::default();
+    for (shim, target) in ENTRY_POINTS {
+        let body = read_repo_file(shim);
+        failures.check(shim, repo_file(target).is_file(), || {
+            format!("delegates to `{target}`, which does not exist")
+        });
+        failures.check(shim, body.contains(target), || {
+            format!("does not name `{target}`, so it delegates somewhere unverified")
+        });
+        for path in published_raw_paths(&body) {
+            failures.check(shim, repo_file(&path).is_file(), || {
+                format!("fetches `{path}`, which is not in the repository")
+            });
+        }
+    }
+    failures.assert_empty("published entry points");
+}
+
+/// The same claim from the other end: every raw URL README hands a user has to
+/// resolve. This is what catches a rename of `macos/` or `assets/` — the
+/// documentation is the only place those paths are asserted at all.
+#[test]
+fn every_url_the_readme_publishes_resolves_to_a_file() {
+    let body = read_repo_file("README.md");
+    let paths = published_raw_paths(&body);
+    assert!(
+        !paths.is_empty(),
+        "README publishes no raw URLs, so this test is asserting nothing"
+    );
+
+    let mut failures = Failures::default();
+    for path in paths {
+        failures.check(&path, repo_file(&path).is_file(), || {
+            "README publishes this URL but the file is not in the repository".to_string()
+        });
+    }
+    failures.assert_empty("published README URLs");
+}
+
 /// R11, F2. Everything irreversible an installer does has to happen after the
 /// self-check. A binary can pass its checksum, launch, and still render
 /// wrongly, and the silent-degradation contract guarantees that failure reaches
