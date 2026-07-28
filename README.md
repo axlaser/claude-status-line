@@ -566,6 +566,23 @@ gh attestation verify ~/.claude/bin/claude-statusline \
 To install a specific release rather than the latest, set
 `CLAUDE_STATUSLINE_VERSION` to its tag.
 
+### Prerelease channel
+
+The default resolves the latest **stable** release, so a prerelease is never
+installed by accident. To opt in:
+
+```bash
+bash install.sh --pre
+```
+```powershell
+.\install.ps1 --pre
+```
+
+`--pre` installs whatever is furthest ahead, prereleases included — so once a
+stable release overtakes them, `--pre` gives you that stable release rather
+than an older preview. Everything else is unchanged: the checksum is still
+verified, and provenance is still checked when `gh` is available.
+
 ---
 
 ## Customization

@@ -60,9 +60,11 @@ function Remove-Stage {
 
 # --- Options ---
 $requireAttestation = $false
+$allowPrerelease = $false
 $pinnedVersion = $env:CLAUDE_STATUSLINE_VERSION
 foreach ($a in $args) {
     if ($a -eq '--require-attestation') { $requireAttestation = $true }
+    elseif ($a -eq '--pre')             { $allowPrerelease = $true }
     elseif ($a -like '--version=*')     { $pinnedVersion = $a.Substring(10) }
 }
 
@@ -108,6 +110,29 @@ Step "Resolving release"
 if ($pinnedVersion) {
     $tag = $pinnedVersion
     Ok "Pinned to $tag"
+} elseif ($allowPrerelease) {
+    # The releases atom feed lists every release newest-first, prereleases
+    # included, over plain unauthenticated HTTPS. That is the whole reason to
+    # use it rather than the API: no token, no rate limit that a shared IP can
+    # exhaust for everyone behind it.
+    #
+    # "Newest overall" is the deliberate semantic, not "newest prerelease". A
+    # user who asks for --pre wants whatever is furthest ahead; once a stable
+    # release overtakes the prereleases, that is the stable one, and silently
+    # installing an older prerelease instead would be the surprising answer.
+    $tag = $null
+    try {
+        $atom = (Invoke-WebRequest -Uri "https://github.com/$repoSlug/releases.atom" `
+            -UseBasicParsing -ErrorAction Stop).Content
+        if ($atom -match 'releases/tag/([^"<]+)') { $tag = $Matches[1] }
+    } catch {}
+    if (-not $tag) {
+        Err "Could not resolve a prerelease"
+        Info "Set CLAUDE_STATUSLINE_VERSION=<tag> to pin a version, or check your connection."
+        Info "Your existing installation was left untouched."
+        return
+    }
+    Warn "Installing $tag (prerelease channel)"
 } else {
     # The /releases/latest redirect resolves the current stable tag without an
     # authenticated API call, and excludes prereleases -- which is what keeps
@@ -122,7 +147,8 @@ if ($pinnedVersion) {
     }
     if (-not $tag -or $tag -eq 'latest') {
         Err "Could not resolve the latest release"
-        Info "Set CLAUDE_STATUSLINE_VERSION=<tag> to pin a version, or check your connection."
+        Info "Set CLAUDE_STATUSLINE_VERSION=<tag> to pin a version, or --pre for the"
+        Info "prerelease channel, or check your connection."
         Info "Your existing installation was left untouched."
         return
     }

@@ -77,10 +77,12 @@ LEGACY_SCRIPTS=(statusline.sh notify.sh git-refresh.sh subagent-statusline.sh)
 # --- Options ---
 REQUIRE_ATTESTATION=false
 PINNED_VERSION="${CLAUDE_STATUSLINE_VERSION:-}"
+ALLOW_PRERELEASE=false
 for _arg in "$@"; do
     case "$_arg" in
         --require-attestation) REQUIRE_ATTESTATION=true ;;
         --version=*)           PINNED_VERSION="${_arg#--version=}" ;;
+        --pre)                 ALLOW_PRERELEASE=true ;;
     esac
 done
 
@@ -127,6 +129,26 @@ step "Resolving release"
 if [[ -n $PINNED_VERSION ]]; then
     TAG="$PINNED_VERSION"
     ok "Pinned to $TAG"
+elif [[ $ALLOW_PRERELEASE == true ]]; then
+    # The releases atom feed lists every release newest-first, prereleases
+    # included, over plain unauthenticated HTTPS. That is the whole reason to
+    # use it rather than the API: no token, no rate limit that a shared IP can
+    # exhaust for everyone behind it.
+    #
+    # "Newest overall" is the deliberate semantic, not "newest prerelease". A
+    # user who asks for --pre wants whatever is furthest ahead; once a stable
+    # release overtakes the prereleases, that is the stable one, and silently
+    # installing an older prerelease instead would be the surprising answer.
+    _atom=$(curl -fsSL "https://github.com/$REPO_SLUG/releases.atom" 2>/dev/null)
+    _first=$(printf '%s' "$_atom" | grep -o 'releases/tag/[^"]*' | head -n 1)
+    TAG="${_first#releases/tag/}"
+    if [[ -z $TAG ]]; then
+        err "Could not resolve a prerelease"
+        info "Set CLAUDE_STATUSLINE_VERSION=<tag> to pin a version, or check your connection."
+        info "Your existing installation was left untouched."
+        return 1 2>/dev/null || exit 1
+    fi
+    warn "Installing $TAG (prerelease channel)"
 else
     # The /releases/latest redirect resolves the current stable tag without an
     # authenticated API call, and excludes prereleases -- which is what keeps
@@ -136,7 +158,8 @@ else
     TAG="${_effective##*/}"
     if [[ -z $TAG || $TAG == "latest" ]]; then
         err "Could not resolve the latest release"
-        info "Set CLAUDE_STATUSLINE_VERSION=<tag> to pin a version, or check your connection."
+        info "Set CLAUDE_STATUSLINE_VERSION=<tag> to pin a version, or --pre for the"
+        info "prerelease channel, or check your connection."
         info "Your existing installation was left untouched."
         return 1 2>/dev/null || exit 1
     fi

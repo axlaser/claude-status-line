@@ -2050,6 +2050,43 @@ fn verification_is_pinned_and_fails_closed() {
     failures.assert_empty("verification pinning");
 }
 
+/// R5, R36, U17. Three ways to choose a release, and the default has to stay
+/// the conservative one.
+///
+/// `/releases/latest` excludes prereleases, which is what keeps a
+/// pipeline-verification tag from ever reaching a user who just ran the
+/// one-liner. `--pre` opts into the prerelease channel through the atom feed —
+/// plain unauthenticated HTTPS, so no token and no shared-IP rate limit — and
+/// a pinned version overrides both.
+#[test]
+fn release_resolution_defaults_to_stable_and_opts_in_to_prereleases() {
+    let mut failures = Failures::default();
+    for rel in ["install/install.sh", "install/install.ps1"] {
+        let body = read_repo_file(rel);
+
+        failures.check(rel, body.contains("releases/latest"), || {
+            "does not resolve through /releases/latest, which is what excludes prereleases"
+                .to_string()
+        });
+        failures.check(rel, body.contains("--pre"), || {
+            "offers no way to opt into the prerelease channel (U17)".to_string()
+        });
+        failures.check(rel, body.contains("releases.atom"), || {
+            "resolves prereleases some way other than the atom feed".to_string()
+        });
+        failures.check(rel, body.contains("CLAUDE_STATUSLINE_VERSION"), || {
+            "offers no pinned-version override (R5)".to_string()
+        });
+
+        // The API would need a token for anything useful and burns a rate limit
+        // shared by everyone behind one IP. Both are why the atom feed is used.
+        failures.check(rel, !body.contains("api.github.com"), || {
+            "resolves through the GitHub API, which R5 rules out".to_string()
+        });
+    }
+    failures.assert_empty("release resolution");
+}
+
 /// Every `raw.githubusercontent.com/.../master/<path>` URL in `body`.
 fn published_raw_paths(body: &str) -> Vec<String> {
     const PREFIX: &str = "raw.githubusercontent.com/axlaser/claude-statusline/master/";
