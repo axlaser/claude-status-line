@@ -37,9 +37,9 @@ pub enum WriteOutcome {
 /// `None` means "I could not ask the question", which is not the same as "the
 /// answer is no" — collapsing the two is precisely the defect this project
 /// already paid for.
-pub fn owner_check_passes(owner: Option<u64>, me: u64) -> bool {
+pub fn owner_check_passes(owner: Option<u64>, trusted: &[u64]) -> bool {
     match owner {
-        Some(o) => o == me,
+        Some(o) => trusted.contains(&o),
         None => true,
     }
 }
@@ -53,11 +53,12 @@ fn is_hostile(path: &Path) -> bool {
     if md.file_type().is_symlink() {
         return true;
     }
-    match platform::current_owner() {
-        Some(me) => !owner_check_passes(platform::file_owner(path), me),
-        // Our own identity is unknown: degrade to the symlink guard above.
-        None => false,
+    let trusted = platform::trusted_owners();
+    // Our own identity is unknown: degrade to the symlink guard above.
+    if trusted.is_empty() {
+        return false;
     }
+    !owner_check_passes(platform::file_owner(path), &trusted)
 }
 
 /// Reads `path` only when it passes the guard. `None` covers absent,

@@ -270,6 +270,10 @@ fn owner_check_fail_direction_matches_the_shipped_fix() {
     }
 
     let me = 4242u64;
+    // On Windows the set also carries the Administrators group, because an
+    // elevated process creates files owned by it rather than by the user.
+    let admins = 777u64;
+    let trusted = [me, admins];
     let cases = [
         Case {
             name: "owned-by-me",
@@ -289,11 +293,18 @@ fn owner_check_fail_direction_matches_the_shipped_fix() {
             expected: true,
             why: "an undeterminable owner must degrade to the symlink guard, not fail closed",
         },
+        Case {
+            name: "owned-by-administrators",
+            owner: Some(admins),
+            expected: true,
+            why: "an elevated process creates files owned by Administrators; rejecting them \
+                  leaves every state read failing, silently and all at once",
+        },
     ];
 
     let mut failures = Failures::default();
     for c in cases {
-        let got = state::owner_check_passes(c.owner, me);
+        let got = state::owner_check_passes(c.owner, &trusted);
         failures.check(c.name, got == c.expected, || {
             format!("expected {}, got {} — {}", c.expected, got, c.why)
         });
@@ -400,7 +411,9 @@ fn our_own_state_file_round_trips_through_the_guard() {
     assert!(
         back.is_some(),
         "a file we just wrote read back as untrusted — this is the shape of the \
-         nine-day cache-death incident"
+         nine-day cache-death incident. trusted owners: {:?}, file owner: {:?}",
+        platform::trusted_owners(),
+        platform::file_owner(&target),
     );
     assert!(
         state::latch_reads_as_notified(&target),

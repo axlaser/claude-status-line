@@ -1,9 +1,9 @@
-//! The only `#[cfg]`-gated surface in the crate: notification delivery,
-//! file-ownership checks, and process-entry stream handling.
+//! Two of the areas platform-conditional code is confined to: file-ownership
+//! checks and process-entry stream handling. Notification delivery is the third
+//! and lives in the `notify` submodule.
 //!
-//! Success Criteria requires enumerating every platform-conditional branch at
-//! parity and confirming each falls in one of those three areas — keep new
-//! `#[cfg]` code here rather than scattering it.
+//! Keep new `#[cfg]` code here rather than scattering it —
+//! `platform_conditional_code_stays_in_its_areas` asserts the file list.
 
 use std::path::Path;
 
@@ -37,6 +37,10 @@ mod imp {
 
     /// Uses `symlink_metadata` so a symlink reports its own ownership rather
     /// than its target's.
+    pub fn trusted_owners() -> Vec<u64> {
+        current_owner().into_iter().collect()
+    }
+
     pub fn file_owner(path: &Path) -> Option<u64> {
         std::fs::symlink_metadata(path).ok().map(|m| m.uid() as u64)
     }
@@ -50,8 +54,9 @@ mod imp {
     use windows_sys::Win32::Foundation::{CloseHandle, LocalFree, ERROR_SUCCESS, HANDLE};
     use windows_sys::Win32::Security::Authorization::{GetNamedSecurityInfoW, SE_FILE_OBJECT};
     use windows_sys::Win32::Security::{
-        GetLengthSid, GetTokenInformation, TokenUser, OWNER_SECURITY_INFORMATION,
-        PSECURITY_DESCRIPTOR, PSID, TOKEN_QUERY, TOKEN_USER,
+        CreateWellKnownSid, GetLengthSid, GetTokenInformation, TokenUser,
+        WinBuiltinAdministratorsSid, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID,
+        TOKEN_QUERY, TOKEN_USER,
     };
     use windows_sys::Win32::Storage::FileSystem::{
         CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_GENERIC_WRITE, FILE_SHARE_READ, FILE_SHARE_WRITE,
@@ -136,6 +141,48 @@ mod imp {
         }
     }
 
+    /// The Administrators group, which owns everything an elevated process
+    /// creates.
+    ///
+    /// A standard user cannot produce a file owned by this group, so accepting
+    /// it does not widen the set of principals the guard defends against — an
+    /// administrator already owns the binary, `settings.json`, and the ability
+    /// to take ownership of anything else. `install.ps1` has accepted admin
+    /// ownership of the install directory since it was written; this is the
+    /// runtime catching up to it.
+    fn administrators() -> Option<u64> {
+        unsafe {
+            let mut size: u32 = 0;
+            CreateWellKnownSid(
+                WinBuiltinAdministratorsSid,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &mut size,
+            );
+            if size == 0 {
+                return None;
+            }
+            let mut buf = vec![0u8; size as usize];
+            if CreateWellKnownSid(
+                WinBuiltinAdministratorsSid,
+                std::ptr::null_mut(),
+                buf.as_mut_ptr() as PSID,
+                &mut size,
+            ) == 0
+            {
+                return None;
+            }
+            sid_id(buf.as_ptr() as PSID)
+        }
+    }
+
+    pub fn trusted_owners() -> Vec<u64> {
+        let mut out = Vec::with_capacity(2);
+        out.extend(current_owner());
+        out.extend(administrators());
+        out
+    }
+
     /// Returns `None` when the owner cannot be determined. That is not a
     /// failure signal — see `state::owner_check_passes` for why it must
     /// degrade to the symlink guard rather than failing closed.
@@ -174,6 +221,12 @@ pub fn current_owner() -> Option<u64> {
 }
 
 /// The owner id of `path` itself (not its symlink target), or `None` when it
+/// Every owner id a state file may legitimately carry: this process's user,
+/// plus the Administrators group on Windows.
+pub fn trusted_owners() -> Vec<u64> {
+    imp::trusted_owners()
+}
+
 /// cannot be determined.
 pub fn file_owner(path: &Path) -> Option<u64> {
     imp::file_owner(path)
