@@ -19,7 +19,9 @@ use crate::payload::{sanitize_display, Payload};
 use crate::subagent::{normalize_model_id, Row};
 use crate::transcript::{Scan, TokenRecord};
 
-// @parity:colors-begin
+// Copied from the scripts verbatim. Every one of these is load-bearing for the
+// captured fixtures: change a code here and the case table fails on all three
+// platforms at once, which is the intended alarm rather than a nuisance.
 pub const RESET: &str = "\x1b[0m";
 pub const DIM: &str = "\x1b[2m";
 pub const BOLD: &str = "\x1b[1m";
@@ -32,21 +34,20 @@ pub const BLUE: &str = "\x1b[34m";
 pub const WHITE: &str = "\x1b[37m";
 pub const GRAY: &str = "\x1b[90m";
 pub const BAR_EMPTY: &str = "\x1b[38;5;242m";
-// @parity:colors-end
 
 /// Shown instead of the box when stdin is empty or not a JSON object (AE3).
 pub const BAD_JSON: &str = "\x1b[31m[statusline: bad JSON]\x1b[0m";
 
-// @parity:constant LABEL_W=7
 const LABEL_W: usize = 7;
 /// The context and subagent bars are both this wide.
 const BAR_WIDTH: usize = 30;
 /// The box never renders narrower than this, however short its rows are.
 const MIN_INNER: usize = 30;
 
-// @parity:threshold CONTEXT_CRIT=85
+// User-visible thresholds, taken from the scripts. Changing either moves the
+// colour of a bar every user sees, so treat them as product decisions
+// rather than constants to tune.
 const CONTEXT_CRIT: i64 = 85;
-// @parity:threshold CONTEXT_WARN=60
 const CONTEXT_WARN: i64 = 60;
 
 /// Separator between segments within a row.
@@ -171,7 +172,6 @@ pub fn pct_color(pct: i64) -> &'static str {
     }
 }
 
-// @parity:effort-ladder-begin
 /// Shared by the model row and every subagent row so the two cannot drift.
 /// Unknown values — including the integer form agent frontmatter allows — fall
 /// through to `WHITE` rather than being rejected.
@@ -185,7 +185,6 @@ pub fn effort_color(level: &str) -> &'static str {
         _ => WHITE,
     }
 }
-// @parity:effort-ladder-end
 
 /// Filled/empty bar over [`BAR_WIDTH`] cells. `pct` is clamped, and the fill
 /// count rounds to nearest.
@@ -232,7 +231,6 @@ pub fn prettify_model_id(id: &str) -> String {
 }
 
 /// `$X.YYYY` plus whether the value exceeds the cost-warning threshold.
-// @parity:threshold COST_WARN=0.50
 pub fn format_cost(raw: &str) -> (String, bool) {
     let numeric = numeric_prefix(raw);
     let value: f64 = numeric.parse().unwrap_or(0.0);

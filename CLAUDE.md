@@ -29,6 +29,8 @@ One binary, `claude-statusline`, dispatching on an argv token rather than `argv[
 
 The crate is lib+bin so the single test file can reach internal behaviour a binary-only crate cannot expose.
 
+**"The scripts", in code comments, means the three per-platform trees this binary replaced.** Roughly 150 comments explain a choice by reference to them — a threshold copied verbatim, a guard reproduced deliberately, a bug not reproduced on purpose — and every one of those is still the reason the code looks the way it does. They were deleted at `1f5acf2`; `eb56345` is their final state if you need to read one. Do not delete these comments as stale: the fixtures were captured from exactly that code, so the reasoning is what makes a fixture failure interpretable.
+
 **Two subcommands are deliberately exempt from the exit-0 contract**: `self-check` must be able to fail, or the installer cannot tell a bad build from a good one, and `settings` must be able to fail, or an installer reports success having written nothing. Everything else exits 0 always (see Silent Degradation).
 
 There is no output cache. The display recomputes per tick -- the caches in the scripts existed to dodge an interpreter startup cost the migration removed. Five files survive as **data stores, not performance caches**: the learned model-to-window map, the per-task subagent done-linger stamp, the per-session notification latch, the per-session subagent tasks feed, and the per-session transcript token record. The git status cache keeps its 5s TTL, because `git` is still a subprocess and the TTL doubles as the staleness bound for an invalidation key known to be incomplete.

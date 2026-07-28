@@ -10,12 +10,14 @@
 //! to a generic value, then read each documented field through a helper that
 //! answers "absent" for anything it cannot use.
 //!
-//! The field list is the `# @parity:json-extract-begin` / `-end` block in
-//! `macos/statusline.sh`, and the accessors below are named after the `J_*`
-//! variables it assigns so the two can be read side by side.
+//! The field list came from the JSON-extraction block in `macos/statusline.sh`,
+//! and the accessors below are named after the `J_*` variables it assigned so
+//! the two can be read side by side — see `eb56345` for the script's final
+//! state. The accessors here are the contract now; `CLAUDE.md` documents the
+//! fields.
 //!
 //! Nothing here scrubs (R24). [`sanitize_display`] lives in this module because
-//! it is the counterpart of the same parity-marked block, but it is applied at
+//! it is the counterpart of that same block, but it is applied at
 //! the render sink, not at ingest: scrubbing on the way in would silently
 //! corrupt values that never reach the screen, notably `transcript_path`, which
 //! has to survive byte-intact to open a file.
@@ -252,7 +254,7 @@ impl Payload {
 
 /// The render sink's scrub for untrusted display fields (R24, AE13).
 ///
-/// Ports `sa_sanitize_title` from the `# @parity:sanitize-title` block: control
+/// Ports the scripts' `sa_sanitize_title`: control
 /// bytes and DEL become spaces, `|` becomes a space so a value cannot forge a
 /// column separator, and the result is trimmed of spaces so a field that was
 /// nothing but control bytes reads as empty rather than as whitespace.
