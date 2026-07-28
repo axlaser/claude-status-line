@@ -191,16 +191,40 @@ fi
 
 # BSD stat takes -f, GNU stat takes -c. Probe rather than branch on uname: both
 # platforms ship a `stat` and which dialect is not always what the OS suggests.
+#
+# The probe has to be a positive test on a known-good target, never the exit
+# code of a malformed invocation. GNU reads `-f` as `--file-system`, so
+# `stat -f %u DIR` treats `%u` as a missing file operand, prints DIR's
+# filesystem report to stdout, and still exits non-zero -- a bare
+# `stat -f ... || stat -c ...` therefore runs both halves on GNU and returns the
+# report concatenated with the uid. GNU is probed first because it is the
+# dialect whose wrong branch produces output rather than nothing.
+if stat -c %u . >/dev/null 2>&1; then
+    _STAT_DIALECT=gnu
+elif stat -f %u . >/dev/null 2>&1; then
+    _STAT_DIALECT=bsd
+else
+    _STAT_DIALECT=none
+fi
 _stat_owner() {
-    stat -f %u "$1" 2>/dev/null || stat -c %u "$1" 2>/dev/null
+    case $_STAT_DIALECT in
+        gnu) stat -c %u "$1" 2>/dev/null ;;
+        bsd) stat -f %u "$1" 2>/dev/null ;;
+    esac
 }
 _stat_mode() {
-    stat -f %Lp "$1" 2>/dev/null || stat -c %a "$1" 2>/dev/null
+    case $_STAT_DIALECT in
+        gnu) stat -c %a "$1" 2>/dev/null ;;
+        bsd) stat -f %Lp "$1" 2>/dev/null ;;
+    esac
 }
 _dir_owner=$(_stat_owner "$BIN_DIR")
 _dir_mode=$(_stat_mode "$BIN_DIR")
 _me=$(id -u 2>/dev/null)
-if [[ -z $_dir_owner || -z $_dir_mode || -z $_me ]]; then
+# Digits-only, not merely non-empty. A dialect that answers with prose rather
+# than a number must land here, where the message names the problem, instead of
+# reaching the comparison below and failing as "owned by someone else".
+if [[ ! $_dir_owner =~ ^[0-9]+$ || ! $_dir_mode =~ ^[0-7]+$ || ! $_me =~ ^[0-9]+$ ]]; then
     err "Cannot determine ownership or permissions of $BIN_DIR"
     info "Refusing to install where the directory cannot be vouched for."
     return 1 2>/dev/null || exit 1

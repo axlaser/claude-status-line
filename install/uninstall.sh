@@ -94,9 +94,11 @@ fi
 # Per-session state lives in the temp directory and is keyed by session id.
 _tmpdir="${TMPDIR:-/tmp}"
 _tmpdir="${_tmpdir%/}"
+# statusline-oc-* is kept in the list even though the binary never writes one:
+# it cleans up after a script-era install that did.
 rm -f "$_tmpdir"/statusline-oc-*.txt "$_tmpdir"/statusline-git-*.txt \
       "$_tmpdir"/statusline-tasks-*.json "$_tmpdir"/statusline-notify-*.json \
-      "$_tmpdir"/statusline-sa-*.txt 2>/dev/null
+      "$_tmpdir"/statusline-sa-*.txt "$_tmpdir"/statusline-tokens-*.txt 2>/dev/null
 ok "Cleared temporary session state"
 echo ""
 

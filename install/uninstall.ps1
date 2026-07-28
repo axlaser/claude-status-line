@@ -117,8 +117,11 @@ if (Test-Path $modelWindows) {
 } else {
     Info "No learned model-window map to remove"
 }
+# statusline-oc-* is kept in the list even though the binary never writes one:
+# it cleans up after a script-era install that did.
 foreach ($pattern in @('statusline-oc-*.txt', 'statusline-git-*.txt', 'statusline-tasks-*.json',
-                       'statusline-notify-*.json', 'statusline-sa-*.txt')) {
+                       'statusline-notify-*.json', 'statusline-sa-*.txt',
+                       'statusline-tokens-*.txt')) {
     Get-ChildItem -Path $env:TEMP -Filter $pattern -Force -ErrorAction SilentlyContinue |
         Remove-Item -Force -ErrorAction SilentlyContinue
 }

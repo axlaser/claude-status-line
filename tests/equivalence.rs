@@ -1011,6 +1011,9 @@ fn deleted_paths_match_the_captured_fixtures() {
     }
 
     println!("compared {checked} captured platform fixture(s)");
+    // Asserted, not merely printed. Discovery that silently matches nothing
+    // leaves `failures` empty too, and the pass then reads as coverage.
+    assert!(checked > 0, "no git-refresh fixtures were compared");
     failures.assert_empty("git-refresh fixture equivalence");
 }
 
@@ -1340,6 +1343,7 @@ fn feed_bytes_match_the_captured_fixtures() {
     }
 
     println!("compared {checked} captured platform fixture(s)");
+    assert!(checked > 0, "no subagent fixtures were compared");
     failures.assert_empty("subagent fixture equivalence");
 }
 
@@ -1996,6 +2000,7 @@ fn notify_invocations_match_the_captured_fixtures() {
     }
 
     println!("compared {checked} captured platform fixture(s)");
+    assert!(checked > 0, "no notify fixtures were compared");
     failures.assert_empty("notify fixture equivalence");
 }
 
@@ -2960,10 +2965,11 @@ fn every_fixture_records_what_it_takes_to_regenerate_it() {
         }
     }
 
-    // Fixtures land with their component's port, so this is empty until
-    // Reporting the count keeps that visible rather than letting a vacuous
-    // pass read as coverage.
+    // Every component's fixtures have landed, so an empty set here no longer
+    // means "not ported yet" -- it means discovery broke. Assert the count
+    // rather than only reporting it, or a vacuous pass reads as coverage.
     println!("checked {} fixture(s)", files.len());
+    assert!(!files.is_empty(), "no fixture metadata files were checked");
     failures.assert_empty("fixture metadata");
 }
 
@@ -5834,6 +5840,7 @@ fn rendered_output_matches_the_captured_fixtures() {
     }
 
     println!("replayed {checked} captured platform fixture(s)");
+    assert!(checked > 0, "no statusline fixtures were replayed");
     failures.assert_empty("statusline fixture equivalence");
 }
 

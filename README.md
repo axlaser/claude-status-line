@@ -740,7 +740,7 @@ Rate limit data is only available for Claude.ai Pro and Max subscribers. API use
 <details>
 <summary><strong>Notification sounds not playing</strong></summary>
 
-- Test directly: `~/.claude/bin/claude-statusline notify permission` (should play a sound). On Windows: `& "$env:USERPROFILE\.claude\bin\claude-statusline.exe" notify permission`
+- Test directly: `echo '{}' | ~/.claude/bin/claude-statusline notify permission` (should play a sound). On Windows: `'{}' | & "$env:USERPROFILE\.claude\bin\claude-statusline.exe" notify permission`. The pipe is required — `permission` is the one event that reads stdin, so without it the command waits for EOF instead of notifying
 - Check the event is not muted in `~/.claude/notify-config.json` — `"sound": false` genuinely mutes it
 - Confirm the hooks are registered — `settings.json` should carry `claude-statusline notify <event>` entries under `PermissionRequest`, `Stop`, `PreCompact` and `PostCompact`
 - Linux: ensure PulseAudio/PipeWire is running (`paplay` requires it) or ALSA is available (`aplay`)

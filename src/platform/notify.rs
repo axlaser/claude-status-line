@@ -137,6 +137,18 @@ fn spawn(program: &str, args: &[String], stdin: Option<&str>, background: bool) 
             Stdio::null()
         });
 
+    #[cfg(windows)]
+    {
+        // The third spawn site, and the one that needs this most: the toast is
+        // launched through the console-subsystem interpreter, and its parent is
+        // the detached `notify` child that `notify_state::spawn` deliberately
+        // created with no console of its own. There is nothing to inherit, so
+        // without this a window flashes on every visible notification.
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+
     let mut child = match command.spawn() {
         Ok(c) => c,
         Err(e) => {

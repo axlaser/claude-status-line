@@ -175,13 +175,28 @@ fn transcript_state(
         return (Some(scan), Some(record));
     }
 
-    let bytes = std::fs::read(path).unwrap_or_default();
+    // A failed read must not become an empty scan. `fold` would treat its zero
+    // totals as authoritative, write that record with this tick's
+    // (mtime, size), and the skip above would then serve the zero record on
+    // every later tick — one transient error rendering the tokens row wrong
+    // until the transcript happens to change again. Degrade this tick instead
+    // and leave the stored record for the next one to retry against.
+    let Ok(bytes) = std::fs::read(path) else {
+        crate::debug::log(|| "transcript: read failed, stored record left intact".to_string());
+        return (None, None);
+    };
     let scan = transcript::scan(&bytes, Some(size), true);
     let (record, needs_write) = TokenRecord::fold(previous.as_ref(), &scan, mtime, size);
 
     if needs_write {
         if let Some(p) = record_path.as_deref() {
-            crate::state::write_guarded(p, record.to_line().as_bytes());
+            // A record that never lands means the next tick re-scans the whole
+            // transcript, and the one after that, forever -- the cost the
+            // (mtime, size) skip exists to avoid. Nothing else can report it.
+            let outcome = crate::state::write_guarded(p, record.to_line().as_bytes());
+            if outcome != crate::state::WriteOutcome::Written {
+                crate::debug::log(move || format!("token record not persisted: {outcome:?}"));
+            }
         }
     }
     (Some(scan), Some(record))
@@ -214,8 +229,11 @@ fn learn_and_load(roots: &Roots, payload: &Payload) -> std::collections::BTreeMa
     base.insert(key.clone(), window);
     let body = serde_json::to_string(&base).unwrap_or_default();
     if !body.is_empty() {
-        crate::state::write_guarded(&path, format!("{body}\n").as_bytes());
-        crate::debug::log(|| format!("model-windows: learned {key}={window}"));
+        // Report what actually happened. Logging "learned" unconditionally
+        // claimed success on a hostile or unwritable target, which is the one
+        // case where the log is the only way to find out.
+        let outcome = crate::state::write_guarded(&path, format!("{body}\n").as_bytes());
+        crate::debug::log(|| format!("model-windows: learned {key}={window} -> {outcome:?}"));
     }
     map.insert(key, window);
     map
@@ -267,8 +285,15 @@ fn fire_alerts(roots: &Roots, payload: &Payload, session_id: &str, rendered: &st
         .unwrap_or(0);
     let (rate_max, resets_now) = rate_inputs(payload);
 
+    // Read once. The write below needs to know whether the latch was usable,
+    // and re-reading the file to find out cost a second open/read of the same
+    // path on every tick that crossed a threshold. Matching a fieldless variant
+    // binds nothing, so this does not move the value out from under `decide`.
+    let latch = notify_state::read_latch(&path);
+    let latch_unusable = matches!(latch, LatchState::Unusable);
+
     let decision = notify_state::decide(
-        notify_state::read_latch(&path),
+        latch,
         ctx_pct,
         config.threshold("context_high"),
         rate_max,
@@ -285,8 +310,17 @@ fn fire_alerts(roots: &Roots, payload: &Payload, session_id: &str, rendered: &st
             notify_state::spawn(alert);
         }
     }
-    if decision.changed && !matches!(notify_state::read_latch(&path), LatchState::Unusable) {
-        crate::state::write_guarded(&path, notify_state::latch_json(&decision.latch).as_bytes());
+    if decision.changed && !latch_unusable {
+        // A latch that does not persist re-fires the same alert on the next
+        // tick, so a failure here is worth a line in the debug log -- it is the
+        // only channel that can carry it.
+        let outcome = crate::state::write_guarded(
+            &path,
+            notify_state::latch_json(&decision.latch).as_bytes(),
+        );
+        if outcome != crate::state::WriteOutcome::Written {
+            crate::debug::log(move || format!("notify latch not persisted: {outcome:?}"));
+        }
     }
 }
 

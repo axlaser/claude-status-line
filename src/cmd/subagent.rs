@@ -20,10 +20,14 @@ use crate::state::{self, WriteOutcome};
 /// The per-task fields the status line reads back, in the order the scripts
 /// emit them.
 ///
-/// Order is part of the observable: the feed's bytes are an input to the status
-/// line's output-cache key, so a reordering would miss the cache on every tick
-/// while rendering identically — the exact shape of failure that byte-diffing
-/// cannot see.
+/// Order is part of the observable: the projected bytes are asserted
+/// byte-for-byte against the captured feed fixtures by
+/// `feed_bytes_match_the_captured_fixtures`, so a reordering fails the case
+/// table even though every rendered row would look identical.
+///
+/// The reason used to be the output cache — a reorder missed its key on every
+/// tick while rendering the same bytes. That cache is gone (CLAUDE.md: "There
+/// is no output cache"); the fixture assertion is what pins the order now.
 pub const TASK_FIELDS: [&str; 10] = [
     "id",
     "name",

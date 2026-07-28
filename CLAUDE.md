@@ -142,7 +142,7 @@ Install and uninstall scripts must never use `exit`. Windows scripts are invoked
 - **Bash error paths**: Use `return 1 2>/dev/null || exit 1`. `return` succeeds when sourced; `exit` is the fallback for subshell invocation via `curl | bash`.
 - **PowerShell error paths**: Use `return`. This exits the script scope without terminating the session.
 
-This rule applies to `install.*` and `uninstall.*` only, in both `install/` and the three entry-point directories. `install_scripts_never_exit_the_users_shell` asserts it.
+This rule applies to `install.*` and `uninstall.*` in `install/`, which is the only place they now live. `install_scripts_never_exit_the_users_shell` asserts it.
 
 ### Installers Gate On the Self-Check
 

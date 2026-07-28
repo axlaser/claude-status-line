@@ -108,6 +108,13 @@ fn settings_cli(rest: &[&str]) -> i32 {
             // Testing hooks: the platform default is what installers use.
             "--quote" => spec.quote = true,
             "--no-quote" => spec.quote = false,
+            // A mistyped flag must not reach `positional` and be dropped. This
+            // subcommand is exempt from the exit-0 contract precisely so a
+            // caller can tell it configured nothing; silently accepting
+            // `--subagnet` and then reporting success is the outcome that
+            // exemption exists to prevent. Non-flag tokens still fall through:
+            // `has`, `has-foreign` and `has-legacy` read a feature name there.
+            other if other.starts_with("--") => return fail(&format!("unknown option: {other}")),
             other => positional.push(other),
         }
     }

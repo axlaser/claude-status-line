@@ -21,6 +21,12 @@ use std::path::Path;
 
 use crate::platform;
 
+/// `#[must_use]` because the failure directions below are invisible at runtime:
+/// a dropped `SkippedHostile` or `Failed` means the caller's cache or record
+/// never persisted, and the silent-degradation contract guarantees no other
+/// signal. A caller that genuinely does not care still has to say so with
+/// `let _ =`.
+#[must_use]
 #[derive(Debug, PartialEq, Eq)]
 pub enum WriteOutcome {
     /// The bytes are on disk.

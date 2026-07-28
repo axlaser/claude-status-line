@@ -220,13 +220,13 @@ pub fn current_owner() -> Option<u64> {
     imp::current_owner()
 }
 
-/// The owner id of `path` itself (not its symlink target), or `None` when it
 /// Every owner id a state file may legitimately carry: this process's user,
 /// plus the Administrators group on Windows.
 pub fn trusted_owners() -> Vec<u64> {
     imp::trusted_owners()
 }
 
+/// The owner id of `path` itself (not its symlink target), or `None` when it
 /// cannot be determined.
 pub fn file_owner(path: &Path) -> Option<u64> {
     imp::file_owner(path)
