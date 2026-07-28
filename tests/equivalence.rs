@@ -636,6 +636,51 @@ fn the_release_tag_must_match_the_crate_version() {
     );
 }
 
+/// A release publishes the notes written for its tag, and every tag that has
+/// notes must actually have them reach the release.
+///
+/// The wiring is easy to unhook without noticing: drop `--notes-file` and
+/// `gh release create` still succeeds, just with whatever it was given instead.
+/// The release would look fine and say the wrong thing.
+#[test]
+fn a_tagged_release_publishes_the_notes_written_for_it() {
+    let wf = read_repo_file(RELEASE_WORKFLOW);
+    assert!(
+        wf.contains("--notes-file"),
+        "the release no longer publishes a notes file"
+    );
+    assert!(
+        wf.contains("docs/releases/${GITHUB_REF_NAME}.md"),
+        "nothing resolves notes by tag name, so a tag's notes cannot reach its release"
+    );
+    assert!(
+        wf.contains("name: release-notes"),
+        "the notes are not handed to the publishing job, which has no checkout of its own"
+    );
+
+    // Every notes file has to be named for a tag this workflow would accept,
+    // or it silently never publishes.
+    let dir = repo_file("docs/releases");
+    let entries = std::fs::read_dir(&dir).expect("docs/releases exists");
+    let mut seen = 0;
+    let mut failures = Failures::default();
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Some(tag) = name.strip_suffix(".md") else {
+            continue;
+        };
+        seen += 1;
+        let versioned = tag.starts_with('v')
+            && tag[1..].starts_with(|c: char| c.is_ascii_digit())
+            && tag.matches('.').count() >= 2;
+        failures.check(&name, versioned, || {
+            "is not named for a tag the release workflow triggers on".to_string()
+        });
+    }
+    assert!(seen > 0, "no release notes found, so this asserts nothing");
+    failures.assert_empty("release notes naming");
+}
+
 // ---------------------------------------------------------------------------
 // git-refresh
 // ---------------------------------------------------------------------------

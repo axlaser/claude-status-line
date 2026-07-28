@@ -76,6 +76,32 @@ jobs:
             exit 1
           fi
 
+      # Resolved here rather than in the publishing job on purpose. That job
+      # holds the signing and release grants and deliberately has no checkout;
+      # handing it the notes as an artifact keeps it that way.
+      - name: Resolve the release notes
+        run: |
+          notes="docs/releases/${GITHUB_REF_NAME}.md"
+          mkdir -p out
+          if [ -f "$notes" ]; then
+            cp "$notes" out/notes.md
+            echo "using $notes ($(wc -l < "$notes") lines)"
+          else
+            # A tag with no notes still publishes — a verification tag has
+            # nothing to announce, and a missing file must not block a release
+            # that is otherwise sound.
+            printf 'Verify before use:\n\n    sha256sum --check --ignore-missing checksums.txt\n    gh attestation verify claude-statusline-<target> --repo %s\n' \
+              "${GITHUB_REPOSITORY}" > out/notes.md
+            echo "::notice::No notes at $notes; publishing the verification boilerplate."
+          fi
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-notes
+          path: out/notes.md
+          if-no-files-found: error
+          retention-days: 7
+
   build:
     name: build ${{ matrix.target }}
     needs: version
@@ -272,6 +298,11 @@ jobs:
           name: checksums
           path: dist
 
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: release-notes
+          path: notes
+
       - name: Classify the tag
         id: tag
         run: |
@@ -374,11 +405,7 @@ jobs:
           gh release create "$TAG" \
             --repo "${{ github.repository }}" \
             --title "$TAG" \
-            --notes "Verify before use:
-
-              sha256sum --check --ignore-missing checksums.txt
-              gh attestation verify claude-statusline-<target> --repo ${{ github.repository }}
-            " \
+            --notes-file notes/notes.md \
             "${flags[@]}" \
             dist/claude-statusline-* \
             dist/checksums.txt
