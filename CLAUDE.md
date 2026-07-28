@@ -105,13 +105,16 @@ Naming: Rust conventions throughout the crate (`snake_case` items, `SCREAMING_CA
 
 ### Platform-Specific Code Is Confined
 
-There is one implementation. Platform-conditional code is confined to three areas and nowhere else:
+There is one implementation. Platform-conditional code is confined to four areas and nowhere else:
 
-1. notification delivery,
-2. file-ownership checks,
-3. process-entry stream handling.
+1. **notification delivery** -- the per-OS sound and toast mechanisms,
+2. **file-ownership checks** -- the uid and ACL guards,
+3. **process and stream handling** -- redirecting fd 2 at entry, and creation flags on spawned children,
+4. **environment spelling** -- `%USERPROFILE%` against `$HOME`, `%TEMP%` against `$TMPDIR`, and whether a stored command needs quoting.
 
 Anything else that reaches for `cfg!(windows)` is a design error -- most often a sign that a behaviour should be resolved to one recorded answer instead of branched. Path formatting is the worked example: the port compares the home prefix case-sensitively on every platform rather than matching Windows' case-insensitive comparison, because keeping both would need a branch here (see `docs/performance.md` §4).
+
+`platform_conditional_code_stays_in_its_areas` enforces this against the file list, in both directions -- a new branch outside the areas fails, and so does an exemption that is no longer used. One implementation grows back into three one `cfg!` at a time, which is why this is a test rather than a convention.
 
 ### Silent Degradation
 

@@ -45,8 +45,40 @@ env:
   CARGO_TERM_COLOR: never
 
 jobs:
+  # Runs before anything is built, because the failure it catches is silent: a
+  # tag and a Cargo.toml that disagree publish happily, and the mismatch only
+  # surfaces later when someone asks the artifact what version it is. Cheap to
+  # check, expensive to discover after six targets have built.
+  version:
+    name: tag matches Cargo.toml
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: The tag and the crate version agree
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          # `verify-*` tags are pipeline checks and claim no version, so there
+          # is nothing for them to disagree with. The digit matters: `verify-x`
+          # also begins with a v, and a bare `v*` guard would strip it to
+          # "erify" and fail every verification tag.
+          case "$tag" in
+            v[0-9]*) ;;
+            *) echo "::notice::$tag claims no version; skipping the check." ; exit 0 ;;
+          esac
+          # v1.2.3 and v1.2.3-rc.1 both claim crate version 1.2.3.
+          claimed="${tag#v}"
+          claimed="${claimed%%-*}"
+          actual=$(grep -m1 -E '^version[[:space:]]*=' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')
+          echo "tag claims $claimed; Cargo.toml declares $actual"
+          if [ "$claimed" != "$actual" ]; then
+            echo "::error::Tag $tag claims version $claimed but Cargo.toml declares $actual. Bump Cargo.toml or retag."
+            exit 1
+          fi
+
   build:
     name: build ${{ matrix.target }}
+    needs: version
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false

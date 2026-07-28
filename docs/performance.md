@@ -65,9 +65,10 @@ which half of the old model survives.
   case table (§4). If output must change, it is not a performance change — split the PR.
 - **Debug logging must never evaluate expensive arguments when disabled.** `debug::log`
   takes a closure for this reason; passing an eagerly-formatted `String` defeats it.
-- **Platform-conditional code stays in its three areas** (notification delivery,
-  ownership checks, stream handling). A `cfg!(windows)` on a hot path is a design smell
-  before it is a performance one.
+- **Platform-conditional code stays in its four areas** (notification delivery,
+  ownership checks, process and stream handling, environment spelling), enforced by
+  `platform_conditional_code_stays_in_its_areas`. A `cfg!(windows)` on a hot path is a
+  design smell before it is a performance one.
 
 ## 3. Measurement methodology (how numbers must be produced)
 
@@ -171,7 +172,7 @@ observed fresh/stale outcome, not only the rendered bytes — see
   done-linger stamp: the observed fresh/stale outcome asserted, not just the bytes (§4).
 - [ ] `RECORD_VERSION` bumped if any stored record format changed.
 - [ ] No debug-log call site evaluates expensive arguments when logging is off.
-- [ ] No new `cfg!(windows)` outside the three areas platform code is confined to.
+- [ ] No new `cfg!(windows)` outside the four areas platform code is confined to.
 - [ ] §6 reference numbers updated if the change moves them.
 
 ## 6. Reference numbers (update when a hot-path change moves them)

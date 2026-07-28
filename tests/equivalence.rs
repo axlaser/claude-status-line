@@ -605,6 +605,24 @@ fn stable_releases_are_gated_until_parity() {
     );
 }
 
+/// A tag and a `Cargo.toml` that disagree publish happily, and the mismatch
+/// surfaces later as an artifact that reports the wrong version. The gate is
+/// cheap; the thing that makes it worth a test is that it can be disabled
+/// without being deleted — drop `needs: version` and every later job runs
+/// regardless of what the check said.
+#[test]
+fn the_release_tag_must_match_the_crate_version() {
+    let wf = read_repo_file(RELEASE_WORKFLOW);
+    assert!(
+        wf.contains("name: The tag and the crate version agree"),
+        "the version gate is gone — a tag can now claim any version"
+    );
+    assert!(
+        wf.contains("needs: version"),
+        "nothing depends on the version gate, so its result cannot block a release"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // git-refresh
 // ---------------------------------------------------------------------------
@@ -1930,6 +1948,111 @@ fn code_lines(body: &str, comment: char) -> impl Iterator<Item = (usize, &str)> 
         .enumerate()
         .map(|(n, l)| (n + 1, l.trim()))
         .filter(move |(_, l)| !l.is_empty() && !l.starts_with(comment))
+}
+
+/// Every file allowed to hold platform-conditional code, and the area that
+/// earns it the exemption.
+///
+/// One implementation replaced three, and the way that erodes is one
+/// `cfg!(windows)` at a time until the file is three implementations again.
+/// These four areas are where a platform difference is irreducible; a branch
+/// anywhere else is a behaviour that should be resolved to one recorded answer
+/// instead of forked.
+const PLATFORM_CONDITIONAL: [(&str, &str); 8] = [
+    (
+        "src/platform/mod.rs",
+        "file-ownership checks and process-entry stream handling",
+    ),
+    ("src/platform/notify.rs", "notification delivery"),
+    ("src/cmd/notify.rs", "notification delivery"),
+    (
+        "src/notify_state.rs",
+        "notification delivery: creation flags on the spawned notifier",
+    ),
+    (
+        "src/git.rs",
+        "process creation flags: no console flash on the git child",
+    ),
+    (
+        "src/lib.rs",
+        "environment spelling: %USERPROFILE% against $HOME",
+    ),
+    (
+        "src/session.rs",
+        "environment spelling: %TEMP% against $TMPDIR",
+    ),
+    (
+        "src/settings.rs",
+        "whether a stored command needs quoting, which only Windows does",
+    ),
+];
+
+/// Every `.rs` file under `src/`, repo-relative and slash-separated.
+fn crate_sources() -> Vec<String> {
+    fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, out);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                out.push(path);
+            }
+        }
+    }
+    let mut found = Vec::new();
+    walk(&repo_file("src"), &mut found);
+    let base = repo_file("");
+    let mut rel: Vec<String> = found
+        .iter()
+        .filter_map(|p| p.strip_prefix(&base).ok())
+        .map(|p| p.to_string_lossy().replace('\\', "/"))
+        .collect();
+    rel.sort();
+    rel
+}
+
+/// Platform-conditional code stays where it is unavoidable.
+///
+/// The interesting direction is a *new* file appearing: a `cfg!(windows)` in
+/// the renderer or the payload reader means a behaviour got branched instead of
+/// decided, which is how one implementation grows back into three.
+#[test]
+fn platform_conditional_code_stays_in_its_areas() {
+    const MARKERS: [&str; 6] = [
+        "cfg!(windows)",
+        "cfg!(unix)",
+        "#[cfg(windows)]",
+        "#[cfg(unix)]",
+        "#[cfg(target_os",
+        "#[cfg(target_family",
+    ];
+
+    let allowed: std::collections::BTreeMap<&str, &str> =
+        PLATFORM_CONDITIONAL.iter().copied().collect();
+    let mut failures = Failures::default();
+
+    for rel in crate_sources() {
+        let body = read_repo_file(&rel);
+        let branches = MARKERS.iter().any(|m| body.contains(m));
+        match (branches, allowed.get(rel.as_str())) {
+            (true, None) => failures.check(&rel, false, || {
+                "branches on the platform but is not one of the areas where that is \
+                 allowed — resolve the behaviour to one answer, or widen the list \
+                 deliberately"
+                    .to_string()
+            }),
+            // A file that stops branching is fine, but the list must not keep
+            // claiming it does: a stale exemption quietly permits a new branch.
+            (false, Some(area)) => failures.check(&rel, false, || {
+                format!("is listed for `{area}` but no longer branches on the platform")
+            }),
+            _ => {}
+        }
+    }
+    failures.assert_empty("platform-conditional confinement");
 }
 
 /// `irm | iex` and `curl | bash` both run these in the user's live shell,

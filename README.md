@@ -500,6 +500,37 @@ Nothing here pipes a download into `iex` — every step is one you can inspect b
 
 ---
 
+### Prereleases
+
+The install commands above always resolve the latest **stable** release, so a
+prerelease is never installed by accident. To opt in, add `--pre`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/axlaser/claude-statusline/master/install/install.sh | bash -s -- --pre
+```
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/axlaser/claude-statusline/master/install/install.ps1))) --pre
+```
+
+> The PowerShell form is longer than the plain one-liner because `irm | iex` has
+> no way to pass arguments. If you would rather not read that, download the
+> installer first and run `.\install.ps1 --pre` — see
+> [Without piping to a shell](#without-piping-to-a-shell).
+
+`--pre` installs whatever is furthest ahead, prereleases included. Once a stable
+release overtakes them you get that stable release instead of an older preview,
+so `--pre` is safe to leave in an update command. Everything else is unchanged:
+the checksum is still verified and refusing to match still stops the install.
+
+To go back to stable, re-run the install command without `--pre`. To pin one
+exact version instead, set `CLAUDE_STATUSLINE_VERSION` to its tag:
+
+```bash
+CLAUDE_STATUSLINE_VERSION=v1.0.0-rc.1 bash install.sh
+```
+
+---
+
 ### From a cloned repo
 
 ```bash
@@ -566,22 +597,8 @@ gh attestation verify ~/.claude/bin/claude-statusline \
 To install a specific release rather than the latest, set
 `CLAUDE_STATUSLINE_VERSION` to its tag.
 
-### Prerelease channel
-
-The default resolves the latest **stable** release, so a prerelease is never
-installed by accident. To opt in:
-
-```bash
-bash install.sh --pre
-```
-```powershell
-.\install.ps1 --pre
-```
-
-`--pre` installs whatever is furthest ahead, prereleases included — so once a
-stable release overtakes them, `--pre` gives you that stable release rather
-than an older preview. Everything else is unchanged: the checksum is still
-verified, and provenance is still checked when `gh` is available.
+Both installers take `--pre` here too, selecting the prerelease channel — see
+[Prereleases](#prereleases).
 
 ---
 
