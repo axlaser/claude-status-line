@@ -602,19 +602,32 @@ fn write_permissions_are_confined_to_the_publishing_job() {
     failures.assert_empty("elevated permissions");
 }
 
-/// Until the dogfood gate passes, a stable tag must not be able to
-/// publish. The guard is a step rather than a convention so promoting a
-/// verification tag by accident fails loudly instead of shipping.
+/// Anything that is not exactly `vX.Y.Z` publishes as a prerelease, and the
+/// installer's default resolution skips those.
+///
+/// A step used to refuse stable tags outright, until the port had proved parity
+/// with the scripts it replaced. That was satisfied and the step is gone — so
+/// this is what remains between a verification tag and a user who just ran the
+/// one-liner. The classification failing open toward "prerelease" is the
+/// deliberate direction: an unexpected tag shape stays out of `releases/latest`
+/// rather than shipping to everyone.
 #[test]
-fn stable_releases_are_gated_until_parity() {
+fn anything_but_a_release_tag_publishes_as_a_prerelease() {
     let wf = read_repo_file(RELEASE_WORKFLOW);
     assert!(
-        wf.contains("name: Parity gate"),
-        "the parity gate step is gone — stable tags can now publish"
+        wf.contains("--prerelease"),
+        "nothing marks non-release tags as prereleases, so the installer would pick them up"
     );
     assert!(
-        wf.contains("--prerelease"),
-        "nothing marks verification tags as prereleases, so the installer would pick them up"
+        wf.contains("prerelease=true"),
+        "the tag classification is gone, so nothing decides what is a prerelease"
+    );
+    // The regex is the whole classification: a tag that fails to match this is
+    // a prerelease. Loosening it to something that also matches `v1.0.0-rc.1`
+    // would publish every candidate as stable.
+    assert!(
+        wf.contains(r"^v[0-9]+\.[0-9]+\.[0-9]+$"),
+        "the stable-tag pattern is no longer anchored, so a candidate could classify as stable"
     );
 }
 

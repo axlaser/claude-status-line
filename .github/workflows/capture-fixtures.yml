@@ -1,22 +1,22 @@
 name: capture-fixtures
 
-# U3. Runs the fixture-capture harness against the current scripts on macOS and
-# Linux and uploads the result for review (R33, KTD9).
+# Runs the fixture-capture harness against the current scripts on macOS and
+# Linux and uploads the result for review.
 #
-# Windows capture is deliberately absent. KTD9 puts it on the maintainer's
+# Windows capture is deliberately absent. It runs on the maintainer's
 # machine: the Windows script tree is the one with no hosted equivalent of a
 # real developer environment, and a hosted image would capture fixtures nobody
 # runs against.
 #
 # Fixtures are uploaded, never committed by this workflow. Each component's
 # fixtures land in the same commit as its Rust replacement and its script
-# deletion (R37), which is a decision a person makes — not something a
+# deletion, which is a decision a person makes — not something a
 # scheduled job gets to do on their behalf.
 
 on:
   # Pushing a `capture-<component>` tag runs a capture; the tag is deleted
   # afterwards. `capture-<component>@<commit>` captures against a historical
-  # tree, which is how R33's "regenerate any fixture" survives a component
+  # tree, which is how regenerating any fixture survives a component
   # whose scripts the branch tip has already deleted.
   #
   # This exists because `workflow_dispatch` is only offered for workflows that
@@ -33,7 +33,7 @@ on:
   workflow_dispatch:
     inputs:
       commit:
-        description: "Commit to capture from (blank = the branch tip). Regenerates that commit's fixtures per R33."
+        description: "Commit to capture from (blank = the branch tip). Regenerates that commit's fixtures."
         required: false
         type: string
       component:
@@ -75,7 +75,7 @@ jobs:
           # which needs the objects for it.
           fetch-depth: 0
 
-      # KTD9. macOS ships bash 3.2 as /bin/bash and always will — it predates
+      # macOS ships bash 3.2 as /bin/bash and always will — it predates
       # `mapfile` and the rest of the dialect the harness is written in. The
       # driver re-execs into whichever of these it finds; this step guarantees
       # one exists.
@@ -103,7 +103,7 @@ jobs:
           # other `capture-*` tag captures everything.
           #
           # An optional `@<commit>` suffix picks the tree whose scripts run --
-          # `capture-git-refresh@7ac72b8`. R33 requires any fixture to be
+          # `capture-git-refresh@7ac72b8`. Any fixture has to be
           # regenerable against a historical commit, and on this branch the tag
           # is the only trigger available (workflow_dispatch is offered only for
           # workflows already on the default branch), so without this the

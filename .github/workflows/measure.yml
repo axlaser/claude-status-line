@@ -1,21 +1,21 @@
 name: measure
 
-# U6, U13. Produces R38's paired script-vs-binary medians for macOS and Linux.
+# Produces the paired script-vs-binary medians for macOS and Linux.
 #
-# R38 requires both halves of a pair to come from a single hosted runner within
+# Both halves of a pair have to come from a single hosted runner within
 # one job, with the runs interleaved. Two jobs, or two workflow runs, would hand
 # back numbers taken on different machines under different load and present them
 # as a comparison — which is the mistake docs/performance.md §3 exists to
 # prevent. So each platform is one job that builds the binary and measures both
 # variants itself.
 #
-# Windows pairs are deliberately absent, for the same reason KTD9 keeps Windows
+# Windows pairs are deliberately absent, for the same reason that keeps Windows
 # capture off CI: the numbers that matter there are the maintainer's machine,
 # not a hosted image nobody runs the status line on.
 #
 # Results are uploaded, never committed by this workflow. The numbers land in
 # docs/performance.md in the same commit as the component's port and script
-# deletion (R37, R38), which is a decision a person makes.
+# deletion, which is a decision a person makes.
 
 on:
   # Pushing a `measure-<component>` tag runs a measurement; the tag is deleted
@@ -97,7 +97,7 @@ jobs:
           cargo --version
           cargo build --release --locked
 
-      # R43 / KTD5. An arm64 macOS binary needs a signature to execute, and the
+      # An arm64 macOS binary needs a signature to execute, and the
       # measured artifact should be the one that ships rather than a variant of
       # it. Signing costs nothing per tick — it is a property of the file — but
       # measuring an unsigned binary would measure something users never run.
@@ -113,9 +113,9 @@ jobs:
           IN_RUNS: ${{ inputs.runs }}
           IN_TRANSCRIPT_BYTES: ${{ inputs.transcript_bytes }}
           IN_COLD_CACHE: ${{ inputs.cold_cache }}
-          # R38 requires the runner label and image version beside the numbers,
+          # The runner label and image version belong beside the numbers,
           # so a runner-measured figure is never later held against a bare-metal
-          # baseline (R41).
+          # baseline.
           MEASURE_RUNNER: ${{ matrix.runner }}
         run: |
           component="$IN_COMPONENT"
@@ -146,7 +146,7 @@ jobs:
           echo "measuring $component, $runs pairs, on $MEASURE_RUNNER ($MEASURE_IMAGE)"
 
           mkdir -p measured
-          # R38 requires the statusline pair to cover the large-transcript
+          # The statusline pair has to cover the large-transcript
           # state. The driver generates the transcript to a target size, so the
           # number is reproducible on any runner rather than tied to the files
           # that happen to sit on one machine.

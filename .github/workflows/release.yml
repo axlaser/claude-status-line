@@ -1,29 +1,29 @@
 name: release
 
-# U2. Tagged pushes produce six native artifacts, one `checksums.txt`, and one
-# Sigstore bundle per artifact (R2, R4).
+# Tagged pushes produce six native artifacts, one `checksums.txt`, and one
+# Sigstore bundle per artifact.
 #
-# R2 left artifact packaging open. Decision: publish raw binaries, not archives.
+# Artifact packaging was left open. Decision: publish raw binaries, not archives.
 # The installers are POSIX sh and PowerShell with no unpacking dependency, and a
-# raw artifact lets R7's checksum gate hash exactly the bytes it places.
+# raw artifact lets the checksum gate hash exactly the bytes it places.
 #
-# Every target builds and tests on its own native runner (KTD2). The one
+# Every target builds and tests on its own native runner. The one
 # exception is `x86_64-apple-darwin`: GitHub withdrew free macOS x86 runners, so
 # it is cross-built on the arm64 runner and its tests run under Rosetta 2, with
-# the job failing rather than skipping when Rosetta is unavailable (R36).
+# the job failing rather than skipping when Rosetta is unavailable.
 #
 # No C toolchain is installed anywhere in this workflow, and none may be added.
 # The musl legs link self-contained because every dependency is pure Rust or
-# FFI declarations only (KTD8, KTD13); adding a libgit2-backed crate would drag
+# FFI declarations only; adding a libgit2-backed crate would drag
 # `musl-tools` back in and invalidate this matrix.
 
 on:
   push:
     tags:
-      # Stable releases. Blocked by the parity gate below until U17 passes.
+      # Stable releases.
       - "v[0-9]+.[0-9]+.[0-9]+"
-      # Pipeline-verification tags (R36). Published as prereleases so the
-      # installer's `releases/latest` resolution (R5) skips them, and deleted
+      # Pipeline-verification tags. Published as prereleases so the
+      # installer's `releases/latest` resolution skips them, and deleted
       # once the pipeline is verified.
       - "v[0-9]+.[0-9]+.[0-9]+-*"
       - "verify-*"
@@ -144,14 +144,14 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       # Rosetta has to exist before `cargo test --target x86_64-apple-darwin`
-      # tries to execute an x86 test binary on the arm64 runner. R36 requires a
-      # failure here rather than a skipped case table.
+      # tries to execute an x86 test binary on the arm64 runner. A failure here is
+      # required rather than a skipped case table.
       - name: Require Rosetta 2
         if: matrix.rosetta
         run: |
           softwareupdate --install-rosetta --agree-to-license
           if ! arch -x86_64 /usr/bin/true; then
-            echo "::error::R36: Rosetta 2 is unavailable, so the x86_64-apple-darwin case table cannot run."
+            echo "::error::Rosetta 2 is unavailable, so the x86_64-apple-darwin case table cannot run."
             exit 1
           fi
           echo "Rosetta 2 verified: an x86_64 process executes on $(uname -m)."
@@ -168,7 +168,7 @@ jobs:
       - name: Test on the target
         run: cargo test --release --locked --target "${{ matrix.target }}"
 
-      # R43 / KTD5. Apple Silicon SIGKILLs an unsigned arm64 binary and recent
+      # Apple Silicon SIGKILLs an unsigned arm64 binary and recent
       # macOS rejects the bare linker signature too. Under the silent-degradation
       # contract that surfaces as a status line that is simply absent, with
       # nothing on stderr and no way for the user to tell why — so signing is a
@@ -190,7 +190,7 @@ jobs:
           "$bin" self-check
           printf '' | "$bin" > /dev/null
 
-      # AE9. A dynamically linked artifact would still pass every step above on
+      # A dynamically linked artifact would still pass every step above on
       # the build host and fail only on the user's older distribution.
       - name: Verify static linking
         if: matrix.family == 'linux'
@@ -205,7 +205,7 @@ jobs:
           case "$desc" in
             *"statically linked"*|*"static-pie linked"*) ;;
             *)
-              echo "::error::AE9: ${{ matrix.target }} is not statically linked."
+              echo "::error::${{ matrix.target }} is not statically linked."
               exit 1
               ;;
           esac
@@ -214,7 +214,7 @@ jobs:
           # thing that actually breaks on an older loader.
           case "$desc" in
             *"dynamically linked"*|*"interpreter"*)
-              echo "::error::AE9: ${{ matrix.target }} carries a dynamic loader dependency."
+              echo "::error::${{ matrix.target }} carries a dynamic loader dependency."
               exit 1
               ;;
           esac
@@ -257,7 +257,7 @@ jobs:
           cd dist
           count=$(find . -maxdepth 1 -type f -name 'claude-statusline-*' | wc -l)
           if [ "$count" -ne 6 ]; then
-            echo "::error::R2: expected 6 artifacts, found $count."
+            echo "::error::expected 6 artifacts, found $count."
             ls -la
             exit 1
           fi
@@ -317,15 +317,17 @@ jobs:
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
-      # R36: no stable release before full parity. U17's dogfood gate and U15's
-      # parity release own lifting this; until then a stable tag is refused so a
-      # verification tag cannot be promoted into a user-facing release by
-      # accident.
-      - name: Parity gate
-        if: steps.tag.outputs.prerelease == 'false'
-        run: |
-          echo "::error::R36: stable releases are blocked until the parity gate (U17) passes. Tag a prerelease instead."
-          exit 1
+      # A step here used to refuse every stable tag outright, so that no release
+      # could ship before the port had proved parity with the scripts it
+      # replaced. That was satisfied on 2026-07-28 — the case table green on all
+      # six published targets, and live sessions on macOS and Linux with
+      # notifications confirmed on both channels — so the refusal is gone and a
+      # stable tag now publishes.
+      #
+      # What still stands between an accident and a release: a tag has to be
+      # pushed deliberately, the version job refuses a tag that disagrees with
+      # Cargo.toml, and anything that is not exactly vX.Y.Z publishes as a
+      # prerelease that `releases/latest` skips.
 
       # Re-verifying here rather than trusting the aggregation job proves the
       # recorded checksum matches the bytes this job is about to attest and
@@ -371,7 +373,7 @@ jobs:
         with:
           subject-path: dist/claude-statusline-aarch64-pc-windows-msvc.exe
 
-      # R4 / KTD3. The bundle ships as a release asset so verification does not
+      # The bundle ships as a release asset so verification does not
       # need an authenticated GitHub CLI: the attestation API serves its bundle
       # Snappy-compressed, which a shell installer cannot decode.
       - name: Collect the Sigstore bundles
@@ -384,7 +386,7 @@ jobs:
           cp "${{ steps.attest-aarch64-pc-windows-msvc.outputs.bundle-path }}"    dist/claude-statusline-aarch64-pc-windows-msvc.exe.sigstore.json
           bundles=$(find dist -maxdepth 1 -type f -name '*.sigstore.json' | wc -l)
           if [ "$bundles" -ne 6 ]; then
-            echo "::error::R4: expected 6 Sigstore bundles, found $bundles."
+            echo "::error::expected 6 Sigstore bundles, found $bundles."
             exit 1
           fi
 
