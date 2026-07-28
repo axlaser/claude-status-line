@@ -7,7 +7,6 @@ Cross-platform custom status line for Claude Code, shipped as one Rust binary. C
 ```
 src/                 the crate: one multi-call binary, one subcommand per former runtime script
 install/             install.sh + uninstall.sh (macOS and Linux), install.ps1 + uninstall.ps1 (Windows)
-macos/ linux/ windows/   install/uninstall entry-point shims only -- they delegate to install/
 tests/equivalence.rs the single integration test file; a table of named cases (R29)
 tests/fixtures/      golden captures, one directory per case
 tests/harness/       fixture capture and paired measurement drivers
@@ -15,7 +14,7 @@ docs/solutions/      documented fixes and practices, by category, with YAML fron
 docs/performance.md  standing performance rules: cost model, measurement methodology, equivalence matrix, PR checklist -- binding for any hot-path change
 ```
 
-The `macos/`, `linux/` and `windows/` directories hold **only** `install.*` and `uninstall.*`. They are the exact URLs `README.md` publishes for the one-liner install, so those paths must keep working; each sources or fetches the real body from `install/`. Do not delete them and do not put logic in them.
+`install/` holds the only installers. The per-OS `macos/`, `linux/` and `windows/` directories are gone: they had been reduced to shims that fetched `install/` anyway, so README now publishes `install/install.sh` and `install/install.ps1` directly and a piped install costs one fetch instead of two. `every_url_the_readme_publishes_resolves_to_a_file` asserts every published path still exists, because a 404 through `curl -fsSL … | bash` fails silently — no error, no install.
 
 ## Architecture
 
@@ -90,7 +89,7 @@ Enforced by `.gitattributes` -- do not override. It governs the installers and t
 
 - `*.sh` -- LF line endings
 - `*.ps1` -- CRLF line endings with UTF-8 BOM
-- **Exception:** `windows/install.ps1`, `windows/uninstall.ps1`, `install/install.ps1` and `install/uninstall.ps1` are **BOM-less and ASCII-only**. They run via `irm <url> | iex`, and a BOM survives `irm` as a stray U+FEFF that breaks `iex` on the first token (fixed in `762dcc0`, regressed once by re-applying the BOM rule mechanically -- do not "fix" the missing BOM back). ASCII-only keeps them safe to run from a local clone too.
+- **Exception:** `install/install.ps1` and `install/uninstall.ps1` are **BOM-less and ASCII-only**. They run via `irm <url> | iex`, and a BOM survives `irm` as a stray U+FEFF that breaks `iex` on the first token (fixed in `762dcc0`, regressed once by re-applying the BOM rule mechanically -- do not "fix" the missing BOM back). ASCII-only keeps them safe to run from a local clone too.
 
 `fetched_powershell_installers_are_bomless_ascii` asserts the exception, so a mechanical re-application fails the suite rather than shipping.
 

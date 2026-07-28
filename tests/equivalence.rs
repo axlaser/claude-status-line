@@ -1919,23 +1919,11 @@ fn notify_invocations_match_the_captured_fixtures() {
 // the published one-liner, a BOM breaks `iex` on the first token, and staging
 // in a shared temp reopens the window between verification and placement.
 
-/// Every shell installer, including the compatibility entry points at the
-/// published one-liner URLs. The rules below apply to whatever a user can pipe
-/// into their shell, not just to the file that holds the logic.
-const INSTALL_SH: [&str; 6] = [
-    "install/install.sh",
-    "install/uninstall.sh",
-    "macos/install.sh",
-    "macos/uninstall.sh",
-    "linux/install.sh",
-    "linux/uninstall.sh",
-];
-const INSTALL_PS1: [&str; 4] = [
-    "install/install.ps1",
-    "install/uninstall.ps1",
-    "windows/install.ps1",
-    "windows/uninstall.ps1",
-];
+/// Every shell installer. These are exactly what a user can pipe into their
+/// shell from the published one-liner URLs, so the rules below apply to all of
+/// them.
+const INSTALL_SH: [&str; 2] = ["install/install.sh", "install/uninstall.sh"];
+const INSTALL_PS1: [&str; 2] = ["install/install.ps1", "install/uninstall.ps1"];
 
 fn code_lines(body: &str, comment: char) -> impl Iterator<Item = (usize, &str)> {
     body.lines()
@@ -2078,48 +2066,13 @@ fn published_raw_paths(body: &str) -> Vec<String> {
     out
 }
 
-/// R6. `macos/`, `linux/` and `windows/` exist for exactly one reason: they are
-/// the paths the published one-liners use, and those URLs live in other
-/// people's bookmarks, dotfiles and blog posts where we cannot update them.
+/// R6. Every raw URL README hands a user has to resolve to a file that exists.
 ///
-/// Each entry point hardcodes its target twice — once as a repo-relative source
-/// for the cloned case, once as a raw URL for the piped case — and until now
-/// nothing checked either. The failure that would produce is silent, which is
-/// what makes it worth a test: `curl -fsSL <404> | bash` prints nothing (`-s`),
-/// hands bash an empty stdin, and exits 0. The user sees no error and no
-/// install. Renaming a file under `install/` is all it takes.
-#[test]
-fn every_published_entry_point_delegates_to_a_file_that_exists() {
-    const ENTRY_POINTS: [(&str, &str); 6] = [
-        ("macos/install.sh", "install/install.sh"),
-        ("macos/uninstall.sh", "install/uninstall.sh"),
-        ("linux/install.sh", "install/install.sh"),
-        ("linux/uninstall.sh", "install/uninstall.sh"),
-        ("windows/install.ps1", "install/install.ps1"),
-        ("windows/uninstall.ps1", "install/uninstall.ps1"),
-    ];
-
-    let mut failures = Failures::default();
-    for (shim, target) in ENTRY_POINTS {
-        let body = read_repo_file(shim);
-        failures.check(shim, repo_file(target).is_file(), || {
-            format!("delegates to `{target}`, which does not exist")
-        });
-        failures.check(shim, body.contains(target), || {
-            format!("does not name `{target}`, so it delegates somewhere unverified")
-        });
-        for path in published_raw_paths(&body) {
-            failures.check(shim, repo_file(&path).is_file(), || {
-                format!("fetches `{path}`, which is not in the repository")
-            });
-        }
-    }
-    failures.assert_empty("published entry points");
-}
-
-/// The same claim from the other end: every raw URL README hands a user has to
-/// resolve. This is what catches a rename of `macos/` or `assets/` — the
-/// documentation is the only place those paths are asserted at all.
+/// This is the only place the published paths are asserted at all, and the
+/// failure it guards is silent: `curl -fsSL <404> | bash` prints nothing
+/// (`-s`), hands bash an empty stdin, and exits 0. The user sees no error and
+/// no install. Moving `install/install.sh` or `assets/claude-icon.png` is all
+/// it takes, and nothing else in the suite would notice.
 #[test]
 fn every_url_the_readme_publishes_resolves_to_a_file() {
     let body = read_repo_file("README.md");

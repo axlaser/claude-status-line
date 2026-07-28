@@ -57,7 +57,7 @@ Every active subagent gets its own row — context bar, `used/window` tokens, mo
 
 Absence is not proof the agent set nothing, though. The segment is also missing when the live feed has gone stale and the row is rebuilt from the subagent transcript, which carries no effort — so a still-running agent can lose its segment. The **Upgrading** note below covers one more case.
 
-> **Upgrading:** this feature spans two scripts — the status line and the subagent feed handler — so re-run the install command for your platform to pick it up. Updating only `statusline.*` leaves the handler filtering the field out, and the row then looks exactly like the no-override case.
+> **Upgrading:** the status line and the subagent feed handler are subcommands of the same binary, so re-running the install command picks up both at once — there is no longer a partial-upgrade state where a new status line pairs with a stale handler and the row silently looks like the no-override case.
 
 ### Never miss a prompt
 Sound alerts and native OS toast notifications fire on permission requests, task completion, context compaction, and rate limit warnings. Each event and channel (sound vs. visual) is independently toggleable — get pinged when Claude needs you, stay quiet when it doesn't.
@@ -78,7 +78,7 @@ Sound alerts and native OS toast notifications fire on permission requests, task
 **Install:**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/axlaser/claude-statusline/master/macos/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/axlaser/claude-statusline/master/install/install.sh | bash
 ```
 
 Downloads a prebuilt, checksum-verified binary. No `jq`, no Bash version floor — nothing to install first.
@@ -90,7 +90,7 @@ Re-run the install command above — your other settings are preserved.
 **Uninstall:**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/axlaser/claude-statusline/master/macos/uninstall.sh | bash
+curl -fsSL https://raw.githubusercontent.com/axlaser/claude-statusline/master/install/uninstall.sh | bash
 ```
 
 <details>
@@ -220,7 +220,7 @@ Nothing here pipes a download into a shell — every step is one you can inspect
 **Install:**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/axlaser/claude-statusline/master/linux/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/axlaser/claude-statusline/master/install/install.sh | bash
 ```
 
 Downloads a prebuilt, checksum-verified binary, statically linked against musl — one artifact runs on any distribution, including Alpine and older glibc. No `jq`, no package manager involved.
@@ -232,7 +232,7 @@ Re-run the install command above — your other settings are preserved.
 **Uninstall:**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/axlaser/claude-statusline/master/linux/uninstall.sh | bash
+curl -fsSL https://raw.githubusercontent.com/axlaser/claude-statusline/master/install/uninstall.sh | bash
 ```
 
 <details>
@@ -363,7 +363,7 @@ Nothing here pipes a download into a shell — every step is one you can inspect
 **Install:**
 
 ```powershell
-irm https://raw.githubusercontent.com/axlaser/claude-statusline/master/windows/install.ps1 | iex
+irm https://raw.githubusercontent.com/axlaser/claude-statusline/master/install/install.ps1 | iex
 ```
 
 Downloads a prebuilt, checksum-verified binary. PowerShell is used only to run the installer — the status line itself has no PowerShell dependency and no version floor.
@@ -375,7 +375,7 @@ Re-run the install command above — your other settings are preserved.
 **Uninstall:**
 
 ```powershell
-irm https://raw.githubusercontent.com/axlaser/claude-statusline/master/windows/uninstall.ps1 | iex
+irm https://raw.githubusercontent.com/axlaser/claude-statusline/master/install/uninstall.ps1 | iex
 ```
 
 <details>

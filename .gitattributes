@@ -14,8 +14,7 @@
 # mechanically). ASCII-only keeps them safe to run from a local clone too.
 #
 # The exempt set is:
-#   windows/install.ps1     windows/uninstall.ps1     (published one-liner URLs)
-#   install/install.ps1     install/uninstall.ps1     (the bodies they delegate to)
+#   install/install.ps1     install/uninstall.ps1     (the published one-liner URLs)
 #
 # `fetched_powershell_installers_are_bomless_ascii` in tests/equivalence.rs
 # asserts this, so a mechanical re-application fails the suite rather than
@@ -23,7 +22,7 @@
 *.ps1 text eol=crlf
 
 # Unix shell scripts must keep LF, or shebangs break on Linux/macOS. This covers
-# install/*.sh, the macos/ and linux/ entry-point shims, and the harness.
+# install/*.sh and the harness.
 *.sh  text eol=lf
 
 # Rust sources carry no encoding constraint beyond git's defaults: rustc reads
