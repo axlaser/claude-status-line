@@ -5034,6 +5034,67 @@ fn rate_windows_render_burn_against_the_injected_clock() {
     );
 }
 
+/// `resets_at` reaches both consumers through the payload, and Claude Code is
+/// free to send it as a JSON number. Reading it with `as_str` alone dropped
+/// that form, and the test above never noticed because it hands
+/// `format_rate_window` a string directly, skipping the accessor where the
+/// value is actually lost.
+///
+/// It costs two things at once, one visible and one not: the cost row loses its
+/// burn arrow and countdown, and the rate-limit alert stops re-arming — the
+/// latch decides that by comparing the stored `resets_at` against the current
+/// one, and two empty strings never differ, so the alert fires once per install
+/// and then never again.
+#[test]
+fn a_numeric_resets_at_is_read_the_same_as_a_quoted_one() {
+    let now = 1_767_225_600;
+    let resets = now + 13_500; // 3h45m left of a 5h window
+
+    let payload_with = |value: String| {
+        Payload::parse(&format!(
+            r#"{{"rate_limits":{{"five_hour":{{"used_percentage":40,"resets_at":{value}}}}}}}"#
+        ))
+        .expect("the fixture is a JSON object")
+    };
+    let numeric = payload_with(resets.to_string());
+    let quoted = payload_with(format!("\"{resets}\""));
+    let iso = payload_with("\"2026-01-01T05:00:00Z\"".to_string());
+
+    let window = |p: &Payload| {
+        strip_ansi(&render::format_rate_window(
+            "5h",
+            p.rate_five_hour_percentage(),
+            &p.rate_five_hour_resets_at(),
+            18_000,
+            now,
+        ))
+    };
+
+    assert_eq!(
+        window(&numeric),
+        "5h 40% ⇡15% (3h45m)",
+        "a numeric resets_at lost the burn arrow and the countdown"
+    );
+    assert_eq!(
+        window(&numeric),
+        window(&quoted),
+        "the quoted and numeric spellings must render identically"
+    );
+    // Unchanged on purpose: neither script could parse an ISO-8601 instant
+    // either, so rendering nothing for it is the behaviour being preserved.
+    assert_eq!(
+        window(&iso),
+        "5h 40%",
+        "an ISO-8601 resets_at renders no arrow, matching the scripts"
+    );
+
+    assert!(
+        !numeric.rate_five_hour_resets_at().is_empty(),
+        "the latch compares this across ticks; empty can never differ from empty, \
+         so the rate alert would never re-arm"
+    );
+}
+
 #[test]
 fn elapsed_and_countdown_formats_match_their_scales() {
     assert_eq!(render::format_elapsed(45_000.0), "45s");

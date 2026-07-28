@@ -781,8 +781,8 @@ fn format_rate_row(p: &Payload, now: i64) -> String {
     if five.is_none() && seven.is_none() {
         return String::new();
     }
-    let five_part = format_rate_window("5h", five, p.rate_five_hour_resets_at(), 18_000, now);
-    let seven_part = format_rate_window("7d", seven, p.rate_seven_day_resets_at(), 604_800, now);
+    let five_part = format_rate_window("5h", five, &p.rate_five_hour_resets_at(), 18_000, now);
+    let seven_part = format_rate_window("7d", seven, &p.rate_seven_day_resets_at(), 604_800, now);
     match (five_part.is_empty(), seven_part.is_empty()) {
         (true, true) => String::new(),
         (false, true) => five_part,

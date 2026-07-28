@@ -22,6 +22,8 @@
 //! corrupt values that never reach the screen, notably `transcript_path`, which
 //! has to survive byte-intact to open a file.
 
+use std::borrow::Cow;
+
 use serde_json::Value;
 
 /// A parsed stdin payload.
@@ -82,6 +84,23 @@ impl Payload {
     /// output is defensible on screen, so the row falls back instead.
     pub fn text(&self, path: &[&str]) -> &str {
         self.at(path).and_then(Value::as_str).unwrap_or("")
+    }
+
+    /// A field read as text, accepting a JSON number as its decimal spelling.
+    ///
+    /// The scripts interpolated whatever they were handed into a string before
+    /// parsing it — `"$resetsAt"` in PowerShell, `jq -r` in bash — so a numeric
+    /// field and a quoted one behaved identically. `as_str` alone drops the
+    /// numeric form, and for `resets_at` that is expensive twice over: the cost
+    /// row loses its burn arrow and countdown, and the rate-limit alert stops
+    /// re-arming, because the latch compares the stored `resets_at` against the
+    /// current one and two empty strings never differ.
+    pub fn text_or_number(&self, path: &[&str]) -> Cow<'_, str> {
+        match self.at(path) {
+            Some(Value::String(s)) => Cow::Borrowed(s.as_str()),
+            Some(Value::Number(n)) => Cow::Owned(n.to_string()),
+            _ => Cow::Borrowed(""),
+        }
     }
 
     /// A numeric field, accepting a JSON number or a numeric string.
@@ -216,8 +235,8 @@ impl Payload {
     }
 
     /// `J_RATE_5H_RESETS`.
-    pub fn rate_five_hour_resets_at(&self) -> &str {
-        self.text(&["rate_limits", "five_hour", "resets_at"])
+    pub fn rate_five_hour_resets_at(&self) -> Cow<'_, str> {
+        self.text_or_number(&["rate_limits", "five_hour", "resets_at"])
     }
 
     /// `J_RATE_7D_PCT`.
@@ -226,8 +245,8 @@ impl Payload {
     }
 
     /// `J_RATE_7D_RESETS`.
-    pub fn rate_seven_day_resets_at(&self) -> &str {
-        self.text(&["rate_limits", "seven_day", "resets_at"])
+    pub fn rate_seven_day_resets_at(&self) -> Cow<'_, str> {
+        self.text_or_number(&["rate_limits", "seven_day", "resets_at"])
     }
 
     /// `J_AGENT_NAME`. Present only in a subagent's own session; its emptiness
