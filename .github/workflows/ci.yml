@@ -135,16 +135,44 @@ jobs:
       # it to a form bash and PowerShell both accept.
       - name: Point the profile at a scratch directory
         run: |
-          scratch="${RUNNER_TEMP//\\//}/install-probe"
+          # Under the *real* profile on Windows, not RUNNER_TEMP. The installer
+          # refuses to place an executable into a directory that grants write
+          # access to Users or Everyone -- correctly, since anyone who can write
+          # there can swap the binary after it is verified -- and the runner's
+          # `D:\a\_temp` grants exactly that. Probing there tested the guard
+          # rather than the install. A subdirectory of the user profile inherits
+          # the ACL a real installation actually lands on.
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            base="${USERPROFILE//\\//}"
+          else
+            base="${RUNNER_TEMP//\\//}"
+          fi
+          scratch="$base/statusline-install-probe"
+          rm -rf "$scratch"
           mkdir -p "$scratch"
+          # `base` is exported too, because the steps below need the *real*
+          # profile location and USERPROFILE is about to stop pointing at it.
           {
+            echo "PROBE_BASE=$base"
             echo "HOME=$scratch"
             echo "USERPROFILE=$scratch"
             echo "PROBE=$scratch"
           } >> "$GITHUB_ENV"
 
       - name: Install from the prerelease channel
-        run: ${{ matrix.run }} --pre < /dev/null
+        run: |
+          ${{ matrix.run }} --pre < /dev/null
+          # Asserted here rather than left to the next step. `install.ps1`
+          # returns 0 even when it refuses -- `exit` would close the session of
+          # anyone running it through `irm | iex` -- so its exit code cannot be
+          # the signal, and a refusal would otherwise sail through this step and
+          # surface as a puzzling assertion failure further down. Reading an
+          # exit code that cannot mean what it appears to is the same mistake
+          # the stale `$LASTEXITCODE` gate made.
+          test -e "$PROBE/.claude/bin/${{ matrix.bin }}" || {
+            echo "::error::the installer exited without placing a binary; its output is above"
+            exit 1
+          }
 
       - name: It installed, it renders, and settings.json points at it
         run: |
@@ -232,7 +260,9 @@ jobs:
       # of a user running it through `irm | iex`.
       - name: The stable channel resolves or refuses, whichever is true today
         run: |
-          probe="${RUNNER_TEMP//\\//}/stable-probe"
+          # PROBE_BASE, not USERPROFILE: that now points at the install probe.
+          probe="$PROBE_BASE/statusline-stable-probe"
+          rm -rf "$probe"
           mkdir -p "$probe"
           log="$probe/install.log"
 
