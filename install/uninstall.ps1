@@ -35,6 +35,25 @@ function Ok([string]$msg)    { Write-Host "  ${GREEN}${BOLD} +${RESET} $msg" }
 function Warn([string]$msg)  { Write-Host "  ${YELLOW}${BOLD} !${RESET} $msg" }
 function Info([string]$msg)  { Write-Host "  ${DIM}   $msg${RESET}" }
 
+# See install.ps1's copy for the full reasoning. $LASTEXITCODE is only written
+# by a process that starts, so an executable that cannot launch leaves the
+# previous command's code in place and a bare check reads it as success. Here
+# that would report the settings entries removed when nothing ran.
+function Invoke-Binary {
+    param([string]$Exe, [string[]]$BinArgs)
+    $global:LASTEXITCODE = $null
+    $output = $null
+    try {
+        $output = & $Exe @BinArgs 2>&1
+    } catch {
+        return [PSCustomObject]@{ Ran = $false; Code = $null; Output = $_.Exception.Message }
+    }
+    if ($null -eq $LASTEXITCODE) {
+        return [PSCustomObject]@{ Ran = $false; Code = $null; Output = $output }
+    }
+    return [PSCustomObject]@{ Ran = $true; Code = $LASTEXITCODE; Output = $output }
+}
+
 Write-Host ""
 Write-Host "  ${DIM}claude-statusline uninstaller${RESET}"
 Write-Host "  ${GRAY}-----------------------------------------${RESET}"
@@ -47,13 +66,13 @@ Step "Updating Claude Code settings"
 if (-not (Test-Path $settingsPath)) {
     Warn "settings.json not found"
 } elseif (Test-Path $binPath) {
-    $out = & $binPath settings remove --binary $binPath 2>&1
-    if ($LASTEXITCODE -eq 0) {
+    $removed = Invoke-Binary $binPath @('settings', 'remove', '--binary', $binPath)
+    if ($removed.Ran -and $removed.Code -eq 0) {
         Ok "Removed statusline entries and hooks from settings.json"
         Info $settingsPath
     } else {
         Warn "Failed to update settings.json"
-        if ($out) { Info ($out -join ' ') }
+        if ($removed.Output) { Info ($removed.Output -join ' ') }
         Info "Remove the statusLine, subagentStatusLine and claude-statusline hook entries manually"
     }
 } else {

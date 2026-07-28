@@ -100,6 +100,21 @@ case "$COMPONENT" in
 esac
 (( RUNS >= 7 )) || fail "R38 and docs/performance.md §3 require at least 7 runs; got $RUNS"
 
+# The paired script-vs-binary measurement needs a script to pair against, and
+# the trees were deleted at 1f5acf2. Checking here rather than letting the run
+# fail per-probe: a missing interpreter target reads as a zero-length runtime
+# and silently produces a flattering median.
+if [[ ! -d "$REPO_ROOT/$PLATFORM" ]]; then
+    printf 'harness: no %s/ script tree -- deleted at 1f5acf2.\n' "$PLATFORM" >&2
+    printf '         Paired measurement compares the scripts against the binary, so it\n' >&2
+    printf '         needs a worktree at a commit that still has them:\n\n' >&2
+    printf '           git worktree add /tmp/statusline-scripts eb56345\n\n' >&2
+    printf '         Then re-run from there. For binary-only numbers, measure the\n' >&2
+    printf '         subcommand directly and record the host class per\n' >&2
+    printf '         docs/performance.md §3.\n' >&2
+    exit 1
+fi
+
 if [[ $COMPONENT == statusline ]]; then
     SCRIPT="$REPO_ROOT/$PLATFORM/statusline.sh"
     [[ -n $PAYLOAD ]] || PAYLOAD="$REPO_ROOT/tests/harness/payloads/full.json"

@@ -339,7 +339,7 @@ fn write_to_hostile_target_is_skipped_not_followed() {
     std::fs::write(&victim, b"original").unwrap();
 
     if !make_symlink(&victim, &link) {
-        eprintln!("skipped: this platform/session cannot create symlinks unprivileged");
+        skipped_for_want_of_symlinks();
         return;
     }
 
@@ -418,6 +418,143 @@ fn our_own_state_file_round_trips_through_the_guard() {
     assert!(
         state::latch_reads_as_notified(&target),
         "a latch we wrote with notified_context_high=true did not read as notified"
+    );
+}
+
+/// `settings` at the process boundary, which is the only place its contract
+/// exists.
+///
+/// `settings_cli` lives in `src/main.rs`, private to the bin crate, so this
+/// file cannot call it — and nothing spawned the binary to reach it either, so
+/// the subcommand had no coverage at all. That matters more here than anywhere
+/// else in the tree: `settings` is *exempt* from the exit-0 contract precisely
+/// so an installer can branch on its exit code, and both installers do. An
+/// exit code that lied would be invisible everywhere except a user's
+/// half-configured machine.
+#[test]
+fn the_settings_subcommand_reports_through_its_exit_code() {
+    let dir = scratch_dir("settings-cli");
+    let path = dir.join("settings.json");
+    let settings = path.to_str().expect("the scratch path is UTF-8");
+    let binary = "/home/someone/.claude/bin/claude-statusline";
+
+    let settings_run = |args: &[&str]| {
+        let mut full = vec!["settings"];
+        full.extend_from_slice(args);
+        full.extend_from_slice(&["--binary", binary, "--settings", settings]);
+        run_bin(&full, "", &[])
+    };
+
+    // Applying to an absent file creates it and reports success.
+    let applied = settings_run(&["apply", "--all", "--no-quote"]);
+    assert_eq!(applied.code, Some(0), "apply --all should succeed");
+    let body = std::fs::read_to_string(&path).expect("apply wrote no settings.json");
+    for key in ["statusLine", "subagentStatusLine", "git-refresh", "notify"] {
+        assert!(body.contains(key), "apply --all omitted {key}:\n{body}");
+    }
+
+    // The query forms answer through the exit code, which is what the
+    // installers read; 0 is yes and 1 is no.
+    assert_eq!(settings_run(&["has", "statusline"]).code, Some(0));
+    assert_eq!(settings_run(&["has", "subagent"]).code, Some(0));
+    assert_eq!(
+        settings_run(&["has-foreign", "statusline"]).code,
+        Some(1),
+        "our own entry is not foreign"
+    );
+    assert_eq!(
+        settings_run(&["has-legacy"]).code,
+        Some(1),
+        "a binary installation is not a script installation"
+    );
+
+    // `remove` is `apply`'s inverse, and says so.
+    assert_eq!(settings_run(&["remove"]).code, Some(0));
+    let body = std::fs::read_to_string(&path).expect("remove deleted settings.json");
+    assert!(
+        !body.contains("claude-statusline"),
+        "remove left entries behind:\n{body}"
+    );
+    assert_eq!(
+        settings_run(&["has", "statusline"]).code,
+        Some(1),
+        "has must report the removal"
+    );
+
+    // Failure directions. Each of these used to exit 0 or be silently dropped,
+    // which is the exact outcome the exit-0 exemption exists to prevent: an
+    // installer reporting success having configured nothing.
+    assert_eq!(
+        run_bin(&["settings", "apply", "--settings", settings], "", &[]).code,
+        Some(1),
+        "--binary is required"
+    );
+    assert_eq!(
+        settings_run(&["apply", "--subagnet"]).code,
+        Some(1),
+        "a mistyped flag must not be dropped into positionals and reported as success"
+    );
+    assert_eq!(
+        settings_run(&["frobnicate"]).code,
+        Some(1),
+        "an unknown action is a failure"
+    );
+    assert_eq!(settings_run(&["has"]).code, Some(1), "has needs a feature");
+
+    // A settings.json that is valid JSON but not an object must be refused, not
+    // replaced -- replacing it discards everything the user configured while
+    // reporting success.
+    std::fs::write(&path, b"[1, 2, 3]").expect("failed to stage a non-object settings.json");
+    let refused = settings_run(&["apply", "--all"]);
+    assert_eq!(
+        refused.code,
+        Some(1),
+        "a non-object root must be refused: {}",
+        refused.stdout
+    );
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("the file was removed"),
+        "[1, 2, 3]",
+        "the refused file must be left exactly as it was"
+    );
+
+    // Diagnostics go to stdout, because fd 2 is redirected to the null device
+    // before any subcommand runs -- anything written there would vanish and
+    // leave a failing installer with nothing to show.
+    assert!(
+        !refused.stdout.is_empty(),
+        "a failure must say why on stdout"
+    );
+    assert!(refused.stderr.is_empty(), "nothing may reach stderr");
+}
+
+/// Announces a symlink case that could not run, loudly enough to survive
+/// `cargo test`'s output capture.
+///
+/// These two cases cover the load-bearing half of the state-file trust guard,
+/// and they skip on Windows without Developer Mode. They used to say so with
+/// `eprintln!`, which `cargo test` captures and shows only on failure — so a
+/// skipped case printed nothing at all on a green run, and CLAUDE.md's claim
+/// that they "print a reason but report as passing" was true only under
+/// `--nocapture`. The maintainer develops on Windows, which is exactly where
+/// that silence is most expensive.
+///
+/// A marker file makes the skip legible after the fact regardless of capture;
+/// `CI=true` turns it into a hard failure, because CI's Unix runners have no
+/// excuse for lacking symlinks and a silent skip there would retire the
+/// coverage entirely.
+fn skipped_for_want_of_symlinks() {
+    let reason = "this platform/session cannot create symlinks unprivileged";
+    if std::env::var("CI").is_ok_and(|v| !v.is_empty() && v != "0") {
+        panic!("symlink cases cannot be skipped in CI: {reason}");
+    }
+    eprintln!("skipped: {reason}");
+    let marker = std::env::temp_dir().join("statusline-skipped-symlink-cases.txt");
+    let _ = std::fs::write(&marker, format!("{reason}\n"));
+    println!(
+        "SKIPPED: a symlink case did not run ({reason}). \
+         A green local run is not evidence these passed; see {}",
+        marker.display()
     );
 }
 
@@ -1194,7 +1331,7 @@ fn a_hostile_feed_target_is_refused_not_followed() {
     std::fs::write(&victim, b"original").unwrap();
 
     if !make_symlink(&victim, &link) {
-        eprintln!("skipped: this platform/session cannot create symlinks unprivileged");
+        skipped_for_want_of_symlinks();
         return;
     }
 
@@ -2153,10 +2290,17 @@ fn install_scripts_never_exit_the_users_shell() {
     for rel in INSTALL_PS1 {
         let body = read_repo_file(rel);
         for (n, line) in code_lines(&body, '#') {
+            // Case-insensitively, because PowerShell keywords are. The gate
+            // compared `w == "exit"` for a while, which `Exit` and `EXIT` walked
+            // straight through while still closing the user's session.
             let has_exit = line
                 .split(|c: char| !c.is_ascii_alphanumeric() && c != '-')
-                .any(|w| w == "exit");
-            if has_exit {
+                .any(|w| w.eq_ignore_ascii_case("exit"));
+            // The two spellings that do not contain the bare word: both end the
+            // session just as hard.
+            let lowered = line.to_ascii_lowercase();
+            let has_call = lowered.contains("::exit(") || lowered.contains("setshouldexit");
+            if has_exit || has_call {
                 failures.check(&format!("{rel}:{n}"), false, || {
                     format!("`exit` would close the user's PowerShell session: {line}")
                 });
@@ -2164,6 +2308,106 @@ fn install_scripts_never_exit_the_users_shell() {
         }
     }
     failures.assert_empty("no-exit rule");
+}
+
+/// `$LASTEXITCODE` is only written by a process that actually starts. An
+/// executable that cannot launch — wrong architecture, a truncated download, an
+/// antivirus quarantine — leaves the *previous* command's code in place, so a
+/// bare `if ($LASTEXITCODE -ne 0)` reads a stale value and treats a binary that
+/// never ran as a success.
+///
+/// That is not theoretical: `gh attestation verify` sets it to 0 a few steps
+/// before the self-check, so an unlaunchable binary passed its own gate and the
+/// install went on to rewrite `settings.json` and delete the user's superseded
+/// scripts. `Invoke-Binary` clears it first and reports whether the process ran
+/// at all; this asserts nothing goes back to reading the variable raw.
+#[test]
+fn powershell_installers_never_read_a_stale_exit_code() {
+    let mut failures = Failures::default();
+
+    for rel in INSTALL_PS1 {
+        let body = read_repo_file(rel);
+        let mut defines_helper = false;
+
+        for (n, line) in code_lines(&body, '#') {
+            if line.contains("function Invoke-Binary") {
+                defines_helper = true;
+            }
+            // The helper owns the only legitimate reads: the clear, and the
+            // two checks immediately after the invocation it guards.
+            let is_helper_internal = line.contains("$global:LASTEXITCODE = $null")
+                || line.contains("if ($null -eq $LASTEXITCODE)")
+                || line.contains("Code = $LASTEXITCODE");
+            if line.contains("LASTEXITCODE") && !is_helper_internal {
+                failures.check(&format!("{rel}:{n}"), false, || {
+                    format!("reads $LASTEXITCODE directly instead of Invoke-Binary: {line}")
+                });
+            }
+            // `& $exe` outside the helper bypasses the clear, so the next
+            // reader inherits whatever this one left behind.
+            let calls_native = line.trim_start().starts_with("& $") || line.contains("| & $");
+            if calls_native && !line.contains("Invoke-Binary") {
+                failures.check(&format!("{rel}:{n}"), false, || {
+                    format!("invokes a native command outside Invoke-Binary: {line}")
+                });
+            }
+        }
+
+        // Guards against the assertions above passing vacuously on a file that
+        // simply stopped calling anything.
+        failures.check(
+            &format!("{rel}: defines Invoke-Binary"),
+            defines_helper,
+            || "the helper is gone, so nothing clears $LASTEXITCODE before a check".to_string(),
+        );
+    }
+    failures.assert_empty("stale $LASTEXITCODE");
+}
+
+/// `/releases/latest` redirects to the releases *index*, not to a tag, when no
+/// stable release exists — so the final path segment is `releases`. Guarding
+/// only against the literal `latest` let that through, and the install built a
+/// download URL from it and failed on a 404 reported as "Download failed",
+/// which names neither the cause nor the fix. Both installers must match a tag
+/// shape instead.
+#[test]
+fn release_resolution_requires_a_tag_shape() {
+    let mut failures = Failures::default();
+
+    let sh = read_repo_file("install/install.sh");
+    failures.check(
+        "install.sh matches a tag shape",
+        sh.contains("v[0-9]*)"),
+        || "no `v[0-9]*)` case guarding the resolved tag".to_string(),
+    );
+    failures.check(
+        "install.sh dropped the bare `latest` guard",
+        !sh.contains(r#"$TAG == "latest""#),
+        || "still guards on the literal `latest`, which `releases` walks past".to_string(),
+    );
+
+    let ps1 = read_repo_file("install/install.ps1");
+    failures.check(
+        "install.ps1 matches a tag shape",
+        ps1.contains("$tag -notmatch '^v[0-9]'"),
+        || "no `-notmatch '^v[0-9]'` guarding the resolved tag".to_string(),
+    );
+    failures.check(
+        "install.ps1 dropped the bare `latest` guard",
+        !ps1.contains("$tag -eq 'latest'"),
+        || "still guards on the literal `latest`, which `releases` walks past".to_string(),
+    );
+
+    // PowerShell 6+ rebuilt Invoke-WebRequest on HttpClient, where BaseResponse
+    // is an HttpResponseMessage with no ResponseUri at all — the redirected URI
+    // lives on RequestMessage.RequestUri. Reading only the 5.1 spelling aborted
+    // every stable install on PowerShell 7.
+    failures.check(
+        "install.ps1 reads the PowerShell 7 redirect spelling",
+        ps1.contains("RequestMessage.RequestUri"),
+        || "only reads BaseResponse.ResponseUri, which is absent on PowerShell 7".to_string(),
+    );
+    failures.assert_empty("release resolution");
 }
 
 /// The `irm | iex` exception in `.gitattributes`. A BOM survives `irm` as a
@@ -2361,8 +2605,16 @@ fn the_self_check_gates_every_destructive_step() {
         },
         Gate {
             rel: "install/install.ps1",
-            check: "& $binPath self-check",
-            after: &["Remove-Item $path -Force", "settings apply --binary"],
+            // Routed through `Invoke-Binary` so the gate can tell a binary that
+            // rendered wrongly from one that never launched — a raw `& $binPath`
+            // leaves `$LASTEXITCODE` holding the previous command's 0 and reads
+            // an unlaunchable binary as a pass. See
+            // `powershell_installers_never_read_a_stale_exit_code`.
+            check: "Invoke-Binary $binPath @('self-check')",
+            after: &[
+                "Remove-Item $path -Force",
+                "'settings', 'apply', '--binary'",
+            ],
         },
     ];
 
@@ -4916,8 +5168,13 @@ fn the_fallback_tier_reads_transcripts_and_skips_stale_agents() {
         .with_mtime(&stale, 9_000);
     let windows = Windows::new("", None, learned(&[]));
 
+    let temp = dir.join("temp");
+    std::fs::create_dir_all(&temp).expect("failed to create the temp root");
+
     let rows = subagent::rows_from_transcripts(
         &clock,
+        &temp,
+        "session-abc",
         transcript.to_str().expect("the scratch path is UTF-8"),
         &windows,
     );
@@ -4935,6 +5192,143 @@ fn the_fallback_tier_reads_transcripts_and_skips_stale_agents() {
             done: false,
         }],
         "an agent quiet for more than three minutes is not this session's"
+    );
+}
+
+/// The linger the module doc promises for *both* tiers, on the tier that had
+/// none. A finished fallback row used to stay visible for the whole 180s
+/// staleness window instead of `DONE_LINGER_SECS`, because the port dropped the
+/// per-agent stamp the scripts kept at
+/// `eb56345:linux/statusline.sh:1287` and applied at `:1357`. No fixture covered
+/// it, so a green table said nothing either way.
+#[test]
+fn a_finished_fallback_agent_lingers_then_disappears() {
+    let dir = scratch_dir("fallback-linger");
+    let transcript = dir.join("session-fin.jsonl");
+    let agents = dir.join("session-fin").join("subagents");
+    let temp = dir.join("temp");
+    std::fs::create_dir_all(&agents).expect("failed to create the subagents directory");
+    std::fs::create_dir_all(&temp).expect("failed to create the temp root");
+
+    let done = agents.join("agent-done.jsonl");
+    std::fs::write(
+        &done,
+        concat!(
+            r#"{"type":"assistant","message":{"stop_reason":"end_turn","model":"claude-sonnet-5","usage":{"input_tokens":10}}}"#,
+            "\n"
+        ),
+    )
+    .expect("failed to write the finished agent transcript");
+
+    let windows = Windows::new("", None, learned(&[]));
+    let rows_at = |t: i64| {
+        // One mtime throughout: the file stops changing once the agent is done,
+        // which is also what exercises the read skip.
+        let clock = TestClock::at(t).with_mtime(&done, 10_000);
+        subagent::rows_from_transcripts(
+            &clock,
+            &temp,
+            "session-fin",
+            transcript.to_str().expect("the scratch path is UTF-8"),
+            &windows,
+        )
+    };
+
+    // First sighting stamps the completion and shows the row.
+    let first = rows_at(10_000);
+    assert_eq!(
+        first.len(),
+        1,
+        "the finished row is visible when first seen"
+    );
+    assert!(first[0].done, "a terminal stop reason renders as done");
+
+    assert_eq!(
+        rows_at(10_000 + subagent::DONE_LINGER_SECS).len(),
+        1,
+        "the row is still visible at the linger boundary"
+    );
+    assert!(
+        rows_at(10_000 + subagent::DONE_LINGER_SECS + 1).is_empty(),
+        "one second past the linger the row is gone, rather than lasting the \
+         full 180s staleness window"
+    );
+
+    // The stamp has to survive the process that observed the completion, which
+    // is the whole reason it is a file rather than a field.
+    let stamped = std::fs::read_dir(&temp)
+        .expect("the temp root is readable")
+        .flatten()
+        .any(|e| {
+            e.file_name()
+                .to_str()
+                .is_some_and(|n| n.starts_with("statusline-sa-session-fin-agent-done"))
+        });
+    assert!(
+        stamped,
+        "the done stamp is persisted per agent, keyed off the `-task-` namespace \
+         that `disappeared_rows` scans"
+    );
+}
+
+/// The read skip that pairs with it. An agent file whose mtime has not moved is
+/// served from the stored record, not re-read -- the fallback tier used to
+/// `std::fs::read` and re-parse every agent transcript on every refresh, which
+/// is the same unconditional-scan cost that made the main transcript 4x slower
+/// than the script it replaced.
+#[test]
+fn an_unchanged_agent_transcript_is_not_rescanned() {
+    let dir = scratch_dir("fallback-skip");
+    let transcript = dir.join("session-skip.jsonl");
+    let agents = dir.join("session-skip").join("subagents");
+    let temp = dir.join("temp");
+    std::fs::create_dir_all(&agents).expect("failed to create the subagents directory");
+    std::fs::create_dir_all(&temp).expect("failed to create the temp root");
+
+    let agent = agents.join("agent-one.jsonl");
+    std::fs::write(
+        &agent,
+        concat!(
+            r#"{"type":"assistant","message":{"stop_reason":"tool_use","model":"claude-sonnet-5","usage":{"input_tokens":42}}}"#,
+            "\n"
+        ),
+    )
+    .expect("failed to write the agent transcript");
+
+    let windows = Windows::new("", None, learned(&[]));
+    let run = |t: i64| {
+        let clock = TestClock::at(t).with_mtime(&agent, 9_990);
+        subagent::rows_from_transcripts(
+            &clock,
+            &temp,
+            "session-skip",
+            transcript.to_str().expect("the scratch path is UTF-8"),
+            &windows,
+        )
+    };
+
+    let first = run(10_000);
+    assert_eq!(first.len(), 1, "the agent is read on the first tick");
+    assert_eq!(first[0].used, 42);
+
+    // Rewritten with contradictory content but the SAME mtime. A tick that
+    // still reads the file would report the new number; one honouring the
+    // record reports the old one. Asserting the stale value is the only way to
+    // prove the read was skipped -- a correct token count would be produced by
+    // both the skipping and the non-skipping implementation.
+    std::fs::write(
+        &agent,
+        concat!(
+            r#"{"type":"assistant","message":{"stop_reason":"tool_use","model":"claude-sonnet-5","usage":{"input_tokens":999}}}"#,
+            "\n"
+        ),
+    )
+    .expect("failed to rewrite the agent transcript");
+
+    let second = run(10_001);
+    assert_eq!(
+        second[0].used, 42,
+        "an unchanged mtime serves the stored record instead of re-reading"
     );
 }
 

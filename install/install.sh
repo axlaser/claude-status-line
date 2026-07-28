@@ -164,13 +164,28 @@ else
     _effective=$(curl -fsSLI -o /dev/null -w '%{url_effective}' \
         "https://github.com/$REPO_SLUG/releases/latest" 2>/dev/null)
     TAG="${_effective##*/}"
-    if [[ -z $TAG || $TAG == "latest" ]]; then
+    if [[ -z $TAG ]]; then
         err "Could not resolve the latest release"
         info "Set CLAUDE_STATUSLINE_VERSION=<tag> to pin a version, or --pre for the"
         info "prerelease channel, or check your connection."
         info "Your existing installation was left untouched."
         return 1 2>/dev/null || exit 1
     fi
+    # A tag shape, not merely "not the word latest". With no stable release
+    # published, /releases/latest redirects to the releases index rather than to
+    # a tag, so the final path segment is "releases" -- which the old guard let
+    # through. The install then built a download URL from it and failed on a 404
+    # reported as "Download failed", which names neither the cause nor the fix.
+    case "$TAG" in
+        v[0-9]*) ;;
+        *)
+            err "No stable release has been published yet"
+            info "Install from the prerelease channel with --pre, or pin a version"
+            info "with CLAUDE_STATUSLINE_VERSION=<tag>."
+            info "Your existing installation was left untouched."
+            return 1 2>/dev/null || exit 1
+            ;;
+    esac
     ok "$TAG"
 fi
 BASE_URL="https://github.com/$REPO_SLUG/releases/download/$TAG"

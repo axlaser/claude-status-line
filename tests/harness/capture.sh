@@ -118,6 +118,22 @@ if [[ -n $AT_COMMIT ]]; then
 else
     SOURCE_COMMIT=$(git -C "$REPO_ROOT" rev-parse HEAD)
     SCRIPTS_ROOT="$REPO_ROOT"
+    # The scripts were deleted at 1f5acf2, so the working tree has nothing to
+    # capture from and `--at` is no longer optional. Said here, once, because
+    # the alternative is a `bash: .../statusline.sh: No such file or directory`
+    # folded into the captured stderr and recorded as though it were output --
+    # and the dirty-tree guard below cannot catch it, since a directory that was
+    # deleted and committed reports no modification at all.
+    if [[ ! -d "$SCRIPTS_ROOT/macos" && ! -d "$SCRIPTS_ROOT/linux" && ! -d "$SCRIPTS_ROOT/windows" ]]; then
+        printf 'harness: no script trees in the working tree -- they were deleted at 1f5acf2.\n' >&2
+        printf '         Fixtures are captured from the scripts, so this needs an explicit\n' >&2
+        printf '         commit that still has them:\n\n' >&2
+        printf '           %s --at eb56345 --component %s\n\n' "$0" "${FILTER_COMPONENT:-<component>}" >&2
+        printf '         eb56345 is their final state. Capturing from the binary instead\n' >&2
+        printf '         would make the fixture agree with the port by construction and\n' >&2
+        printf '         prove nothing about parity.\n' >&2
+        exit 1
+    fi
     # A fixture records the commit its scripts came from. Capturing a dirty
     # tree would record a commit that does not describe what actually ran, and
     # nothing downstream could tell.

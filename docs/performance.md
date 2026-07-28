@@ -128,7 +128,11 @@ adds:
   no record at all. Multibyte fixtures must include a 4-byte (astral-plane) character, not
   just CJK.
 - **Subagent feed states**: fresh feed, stale feed, absent feed falling back to transcript
-  parsing, and the done-linger window both inside and past expiry.
+  parsing, and the done-linger window both inside and past expiry — on **both** tiers.
+  That qualifier is new and was a real gap: the linger was covered on the feed tier only,
+  and the fallback tier turned out not to implement it at all (`a_finished_fallback_agent_lingers_then_disappears`
+  now pins it, alongside `an_unchanged_agent_transcript_is_not_rescanned` for the read skip
+  that shares its record).
 
 Known parsing traps this matrix exists to catch: porcelain v2 emits `# branch.oid (initial)`
 on unborn HEAD, omits `# branch.ab` when no upstream, and omits `# stash` at zero; a branch
@@ -444,3 +448,61 @@ Two things worth keeping from the measurement:
 Reopen condition: a transcript large enough that a full parse becomes visible
 next to the ~124 ms interpreter floor the migration removes — on this hardware
 that is somewhere north of 25 MB.
+
+### Bounded git child and drained stdout — 2026-07-28
+
+`read_from_git` stopped calling `Command::output()`. It now spawns, drains stdout on a
+helper thread, polls `try_wait` against a 2 s deadline, and kills the child past it. The
+change was made for correctness — `output()` blocks unbounded on the render path, and this
+process is respawned every couple of seconds, so a repo on a stalled mount accumulated one
+blocked process per tick — but it is a hot-path change and therefore belongs here.
+
+Two costs added, both bounded and neither on the common path:
+
+- **One thread per `git` invocation.** Spawned to drain the pipe, because waiting for exit
+  without reading deadlocks on a status large enough to fill it. Two invocations per
+  uncached tick, so at most two threads, for the lifetime of the subprocess that already
+  dominates them.
+- **A 5 ms poll interval.** Adds up to 5 ms of latency to detecting an exit that has
+  already happened. Against a ~74 ms subprocess pair on the maintainer's machine that is
+  under 7% of the cost it is measuring, and it is latency in the *wait*, not extra work.
+
+`reader.join()` was replaced by a channel `recv_timeout`. Joining was unbounded in exactly
+the case the deadline exists for: killing the child closes only the child's handle on the
+write end, and anything `git status` spawned — a `core.fsmonitor` daemon is the ordinary
+case — inherited the same piped stdout and holds it open. On Windows `TerminateProcess`
+does not touch descendants at all. The drain gets the remainder of the deadline, floored at
+`DRAIN_GRACE` (250 ms) so the kill path still has a moment to notice the closed pipe. Worst
+case is therefore `GIT_TIMEOUT + DRAIN_GRACE` = 2.25 s, still under the 5 s cache TTL.
+
+**Not re-measured against §6.** The paired harness cannot run: it compares the binary
+against the scripts, and those were deleted at `1f5acf2`. Both drivers now refuse with that
+explanation instead of failing per-probe on a missing interpreter, which previously read as
+a zero-length runtime and produced a flattering median. Re-measuring needs a worktree at
+`eb56345`. The §6 statusline rows predate this change and should be treated as a floor.
+
+### The §6 statusline rows never exercised git or a populated temp — 2026-07-28
+
+Recorded because it changes how those numbers should be read, not because anything moved.
+
+`measure.sh` / `measure.ps1` stage a scratch working directory with **no `.git`**, so the
+official §6 "statusline" paired medians never spawn `git` and never touch the git cache —
+despite §1 naming the subprocess as one of the two dominant per-tick costs. A `git.rs`
+regression can pass the §5 before/after-medians gate untouched.
+
+The same isolation hides a second cost. `disappeared_rows` calls `read_dir` over the whole
+OS temp root once per tick, filtering by a `statusline-sa-<session>-task-` prefix. The
+harness empties `TMPDIR`/`TEMP` by design — see
+`docs/solutions/workflow-issues/isolate-profile-and-temp-when-benchmarking-statusline.md` —
+so every recorded number reflects an empty directory, and a user's temp root is not empty.
+
+The scan itself is **kept**, deliberately. The scripts did the same thing with a shell glob
+(`eb56345:linux/statusline.sh:1239`), and it is what finds task files orphaned by a session
+that died without cleaning up. Replacing it with a set of previously-seen ids persisted
+beside the feed would make the cost proportional to live tasks, but it changes reclamation
+semantics, and no measurement yet shows the scan mattering. What is wrong today is the
+claim, not the code.
+
+Reopen condition: a §6 row measured with a populated temp root and a real `.git`, showing
+either cost above the noise floor. Until such a row exists, the statusline medians describe
+a best case, and this entry is the reason.

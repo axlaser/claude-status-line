@@ -58,6 +58,38 @@ function Remove-Stage {
     }
 }
 
+# Runs a native command and reports whether it actually ran, separately from
+# what it returned.
+#
+# $LASTEXITCODE is only written by a process that starts. When an executable
+# cannot launch -- wrong architecture, a truncated download, an antivirus
+# quarantine, a corrupt PE -- PowerShell raises a native error and leaves the
+# PREVIOUS command's exit code in place. A bare `if ($LASTEXITCODE -ne 0)` then
+# reads a stale value and treats a binary that never ran as a success.
+#
+# That is not hypothetical: `gh attestation verify` sets it to 0 a few steps
+# above, so an unlaunchable binary used to pass the self-check gate, and the
+# install went on to rewrite settings.json and delete the user's superseded
+# scripts -- the exact sequence CLAUDE.md's self-check rule exists to prevent.
+#
+# Clearing it first and reporting Ran=$false for "did not run" is what lets each
+# gate below distinguish "answered no" from "could not answer", and pick its own
+# safe direction for the second case.
+function Invoke-Binary {
+    param([string]$Exe, [string[]]$BinArgs)
+    $global:LASTEXITCODE = $null
+    $output = $null
+    try {
+        $output = & $Exe @BinArgs 2>&1
+    } catch {
+        return [PSCustomObject]@{ Ran = $false; Code = $null; Output = $_.Exception.Message }
+    }
+    if ($null -eq $LASTEXITCODE) {
+        return [PSCustomObject]@{ Ran = $false; Code = $null; Output = $output }
+    }
+    return [PSCustomObject]@{ Ran = $true; Code = $LASTEXITCODE; Output = $output }
+}
+
 # --- Options ---
 $requireAttestation = $false
 $allowPrerelease = $false
@@ -141,14 +173,42 @@ if ($pinnedVersion) {
     try {
         $resp = Invoke-WebRequest -Uri "https://github.com/$repoSlug/releases/latest" `
             -MaximumRedirection 5 -UseBasicParsing -ErrorAction Stop
-        $tag = ($resp.BaseResponse.ResponseUri.AbsoluteUri -split '/')[-1]
+        # Both spellings, because the two PowerShell editions expose the
+        # redirected URI on different objects. Windows PowerShell 5.1 returns a
+        # System.Net.HttpWebResponse, which carries ResponseUri. PowerShell 6+
+        # rebuilt Invoke-WebRequest on HttpClient, so BaseResponse is a
+        # System.Net.Http.HttpResponseMessage -- which has no ResponseUri at
+        # all, and puts the final URI on RequestMessage.RequestUri. Reading only
+        # the 5.1 spelling left $tag empty on PowerShell 7 and aborted every
+        # stable install there with "Could not resolve the latest release",
+        # while --pre kept working because it parses the atom feed instead.
+        $final = $null
+        if ($resp.BaseResponse.PSObject.Properties['ResponseUri']) {
+            $final = $resp.BaseResponse.ResponseUri.AbsoluteUri
+        }
+        if (-not $final -and $resp.BaseResponse.PSObject.Properties['RequestMessage']) {
+            $final = $resp.BaseResponse.RequestMessage.RequestUri.AbsoluteUri
+        }
+        if ($final) { $tag = ($final -split '/')[-1] }
     } catch {
         try { $tag = ($_.Exception.Response.ResponseUri.AbsoluteUri -split '/')[-1] } catch {}
     }
-    if (-not $tag -or $tag -eq 'latest') {
+    if (-not $tag) {
         Err "Could not resolve the latest release"
         Info "Set CLAUDE_STATUSLINE_VERSION=<tag> to pin a version, or --pre for the"
         Info "prerelease channel, or check your connection."
+        Info "Your existing installation was left untouched."
+        return
+    }
+    # A tag shape, not merely "not the word latest". With no stable release
+    # published, /releases/latest redirects to the releases index rather than to
+    # a tag, so the last path segment is "releases" -- which the old guard let
+    # through, producing a download 404 reported as "Download failed" instead of
+    # the real reason.
+    if ($tag -notmatch '^v[0-9]') {
+        Err "No stable release has been published yet"
+        Info "Install from the prerelease channel with --pre, or pin a version with"
+        Info "CLAUDE_STATUSLINE_VERSION=<tag>."
         Info "Your existing installation was left untouched."
         return
     }
@@ -330,11 +390,20 @@ if (Get-Command gh -ErrorAction SilentlyContinue) {
         # Verified against the downloaded bundle rather than the attestation
         # API: the API serves its bundle Snappy-compressed and needs an
         # authenticated gh, which is why the bundle ships as a release asset.
-        & gh attestation verify $script:stagePath --bundle $script:bundlePath `
-            --repo $repoSlug --signer-workflow $signerWorkflow 2>&1 | Out-Null
-        if ($LASTEXITCODE -eq 0) {
+        $verify = Invoke-Binary 'gh' @(
+            'attestation', 'verify', $script:stagePath,
+            '--bundle', $script:bundlePath,
+            '--repo', $repoSlug,
+            '--signer-workflow', $signerWorkflow)
+        if ($verify.Ran -and $verify.Code -eq 0) {
             $attested = $true
             Ok "Provenance verified (built by $signerWorkflow)"
+        } elseif (-not $verify.Ran) {
+            # gh was on PATH but could not be launched. That is an inability to
+            # verify, not a negative result, and the policy above tolerates only
+            # the former -- so warn and let the --require-attestation check below
+            # decide, rather than aborting as though the signature was bad.
+            Warn "gh could not be launched - provenance not verified"
         } else {
             Err "Attestation verification FAILED for $asset"
             Info "The download matched its checksum but does not carry a valid"
@@ -403,11 +472,26 @@ Step "Verifying the binary renders"
 # what went wrong, this is a per-target failure CI cannot reproduce, and the
 # binary that produced it is about to be moved out of the way.
 $checkLog = Join-Path $binDir "$stagePrefix$PID.self-check.txt"
-& $binPath self-check 2>&1 | Set-Content -Path $checkLog -Encoding utf8
-if ($LASTEXITCODE -ne 0) {
-    Err "The installed binary failed its self-check"
-    Info "It downloaded and verified but does not render correctly, so it was"
-    Info "not activated."
+$check = Invoke-Binary $binPath @('self-check')
+Set-Content -Path $checkLog -Value $check.Output -Encoding utf8
+if (-not $check.Ran -or $check.Code -ne 0) {
+    if (-not $check.Ran) {
+        # Distinguished from a render mismatch on purpose: these have different
+        # causes and different things worth reporting. A binary that cannot
+        # start is an architecture, download-integrity or antivirus problem, and
+        # its log is empty because fd 2 is redirected to the null device before
+        # the subcommand is read -- so saying "what it rendered" would point the
+        # user at a blank file.
+        Err "The installed binary could not be launched"
+        Info "It downloaded and matched its checksum but will not start on this"
+        Info "machine, so it was not activated. The usual causes are a mismatched"
+        Info "architecture or an antivirus product that altered the file."
+        if ($check.Output) { Info "$($check.Output)" }
+    } else {
+        Err "The installed binary failed its self-check"
+        Info "It downloaded and verified but does not render correctly, so it was"
+        Info "not activated."
+    }
     # Renamed aside, not deleted. Windows refuses to delete a file that is still
     # held open, and -ErrorAction SilentlyContinue swallowed exactly that -- the
     # failed binary stayed active while the script reported it gone. Renaming is
@@ -429,9 +513,9 @@ if ($LASTEXITCODE -ne 0) {
             Info "It is still at $sidecarPath -- move it back to $binPath by hand."
         }
     }
-    Info "What it rendered: $checkLog"
-    if ($failedBin) { Info "The binary it rendered with: $failedBin" }
-    Info "Please attach both when reporting this."
+    if ($check.Ran) { Info "What it rendered: $checkLog" }
+    if ($failedBin) { Info "The binary: $failedBin" }
+    Info "Please attach the above when reporting this."
     Remove-Stage
     return
 }
@@ -459,8 +543,14 @@ $legacyFound = @($legacyScripts | Where-Object { Test-Path (Join-Path $claudeDir
 Step "Configuring Claude Code settings"
 $applyFlags = @()
 
-& $binPath settings has-foreign --binary $binPath statusline | Out-Null
-if ($LASTEXITCODE -eq 0) {
+# The prompt fires only on a definite yes. A query that could not run falls to
+# the else branch and writes our entry, which is the safe direction here: the
+# apply below prunes a script installation's entries unconditionally, so
+# skipping the write would leave a migrating user with no statusLine at all.
+# Overwriting another tool's entry is recoverable; having none is the failure
+# this whole gate exists to avoid.
+$foreignStatusline = Invoke-Binary $binPath @('settings', 'has-foreign', '--binary', $binPath, 'statusline')
+if ($foreignStatusline.Ran -and $foreignStatusline.Code -eq 0) {
     Write-Host ""
     $answer = Read-Host "  ${YELLOW}${BOLD} ?${RESET} Existing statusLine config found. Overwrite? (${GREEN}y${RESET}/${RED}n${RESET})"
     if ($answer -match '^[Yy]$') { $applyFlags += '--statusline' }
@@ -470,8 +560,8 @@ if ($LASTEXITCODE -eq 0) {
     $applyFlags += '--statusline'
 }
 
-& $binPath settings has-foreign --binary $binPath subagent | Out-Null
-if ($LASTEXITCODE -eq 0) {
+$foreignSubagent = Invoke-Binary $binPath @('settings', 'has-foreign', '--binary', $binPath, 'subagent')
+if ($foreignSubagent.Ran -and $foreignSubagent.Code -eq 0) {
     Write-Host ""
     $answer = Read-Host "  ${YELLOW}${BOLD} ?${RESET} Existing subagentStatusLine config found. Overwrite? (${GREEN}y${RESET}/${RED}n${RESET})"
     if ($answer -match '^[Yy]$') { $applyFlags += '--subagent' } else { Warn "Skipped subagentStatusLine update" }
@@ -513,11 +603,15 @@ Info "Plays a sound and shows a popup when Claude needs attention."
 # who enabled notifications under the scripts has hooks pointing at notify.ps1,
 # which `has` does not recognise, and re-prompting them would turn a silent
 # upgrade into a question they already answered.
-& $binPath settings has --binary $binPath notify | Out-Null
-$notifyConfigured = ($LASTEXITCODE -eq 0)
+# A query that could not run counts as "already configured", so the flag is
+# carried forward rather than dropped. Losing a setting the user had is worse
+# than re-applying one they already have, and this path is reached only after
+# the self-check proved the binary runs.
+$hasNotify = Invoke-Binary $binPath @('settings', 'has', '--binary', $binPath, 'notify')
+$notifyConfigured = (-not $hasNotify.Ran) -or ($hasNotify.Code -eq 0)
 if (-not $notifyConfigured) {
-    & $binPath settings has-legacy --binary $binPath notify | Out-Null
-    $notifyConfigured = ($LASTEXITCODE -eq 0)
+    $hasLegacyNotify = Invoke-Binary $binPath @('settings', 'has-legacy', '--binary', $binPath, 'notify')
+    $notifyConfigured = (-not $hasLegacyNotify.Ran) -or ($hasLegacyNotify.Code -eq 0)
 }
 if ($notifyConfigured) {
     Ok "Already configured"
@@ -540,10 +634,13 @@ if (-not (Test-Path $iconPath)) {
 
 # --- Apply ---
 Write-Host ""
-$applyOutput = & $binPath settings apply --binary $binPath @applyFlags 2>&1
-if ($LASTEXITCODE -ne 0) {
+# The load-bearing one. Everything below this point deletes the user's previous
+# installation, so a merge that did not run must stop here just as firmly as one
+# that failed -- otherwise the scripts go and nothing replaces them.
+$apply = Invoke-Binary $binPath (@('settings', 'apply', '--binary', $binPath) + $applyFlags)
+if (-not $apply.Ran -or $apply.Code -ne 0) {
     Err "Failed to update settings.json"
-    if ($applyOutput) { Info ($applyOutput -join ' ') }
+    if ($apply.Output) { Info ($apply.Output -join ' ') }
     Info "The binary is installed at $binPath but Claude Code is not pointing at it yet."
     return
 }

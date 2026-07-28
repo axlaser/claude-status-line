@@ -280,7 +280,18 @@ pub fn status(clock: &dyn Clock, temp: &Path, cwd: &Path, session_id: &str) -> O
     let fresh = read_from_git(cwd);
 
     if let Some(path) = cache.as_deref() {
-        let _ = state::write_guarded(path, cache_record(index_mtime, &fresh).as_bytes());
+        // Reported, not discarded. A cache that never lands means every tick
+        // pays the subprocess the TTL exists to bound, forever, and the
+        // silent-degradation contract guarantees no other signal — which is
+        // precisely the blind spot
+        // `docs/solutions/best-practices/byte-diff-cannot-see-cache-hit-regressions.md`
+        // exists to close. The path is named because a reader triaging a stale
+        // row needs to know *which* file refused the write.
+        let outcome = state::write_guarded(path, cache_record(index_mtime, &fresh).as_bytes());
+        if outcome != state::WriteOutcome::Written {
+            let p = path.display().to_string();
+            debug::log(move || format!("git: cache not persisted to {p}: {outcome:?}"));
+        }
     }
     Some(fresh)
 }
@@ -343,6 +354,15 @@ const GIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 /// How often the deadline is checked while the child runs.
 const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(5);
 
+/// How long the stdout drain may still take once the child is resolved.
+///
+/// The child's deadline does not cover the drain: on the kill path there is
+/// nothing left of it, and that is exactly the moment the reader needs to
+/// notice the closed pipe. A short floor keeps the total bounded — the worst
+/// case is `GIT_TIMEOUT` plus this, still under the 5s cache TTL — without
+/// discarding output that had already arrived.
+const DRAIN_GRACE: std::time::Duration = std::time::Duration::from_millis(250);
+
 /// Runs git and returns its trimmed stdout, or `None` for any failure.
 ///
 /// `--no-optional-locks` keeps a status read from writing the index, which
@@ -384,14 +404,28 @@ fn run_git(cwd: &Path, args: &[&str]) -> Option<String> {
 
     // Drained on a helper thread: a child that fills the pipe blocks on write,
     // so waiting for exit without reading would deadlock on a large status.
+    //
+    // The buffer comes back over a channel rather than from `join`, because the
+    // drain needs its own bound. Killing the child closes *its* handle on the
+    // write end, not every handle: anything `git status` spawned — a
+    // `core.fsmonitor` daemon is the ordinary case — inherited the same piped
+    // stdout and keeps it open, and on Windows `TerminateProcess` does not
+    // touch descendants at all. A `join` here would then block exactly as the
+    // unbounded `output()` this replaced did, on the render path, once per
+    // tick. The thread is left running in that case: it is blocked on a read
+    // that ends when the last writer goes away, and the process exits within
+    // milliseconds regardless.
     let mut pipe = child.stdout.take();
-    let reader = std::thread::spawn(move || {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
         let mut buf = Vec::new();
         if let Some(p) = pipe.as_mut() {
             use std::io::Read;
             let _ = p.read_to_end(&mut buf);
         }
-        buf
+        // The receiver is gone when the deadline already passed. Nothing to do
+        // about it and nothing to report: the send failing *is* the timeout.
+        let _ = tx.send(buf);
     });
 
     let deadline = std::time::Instant::now() + GIT_TIMEOUT;
@@ -414,8 +448,18 @@ fn run_git(cwd: &Path, args: &[&str]) -> Option<String> {
         }
     };
 
-    // Joined either way: killing the child closes the pipe, which ends the read.
-    let stdout = reader.join().unwrap_or_default();
+    // Whatever is left of the child's deadline, floored at the drain grace so
+    // the kill path — where nothing is left of it — still gets a moment.
+    let budget = deadline
+        .saturating_duration_since(std::time::Instant::now())
+        .max(DRAIN_GRACE);
+    let stdout = match rx.recv_timeout(budget) {
+        Ok(buf) => buf,
+        Err(_) => {
+            debug::log(|| "git: stdout drain did not finish before the deadline".to_string());
+            return None;
+        }
+    };
     if !status?.success() {
         return None;
     }

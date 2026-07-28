@@ -9,9 +9,20 @@
 //!
 //! Both tiers share a done signal and a linger: a finished row stays visible
 //! for [`DONE_LINGER_SECS`] so a subagent that completes between refreshes does
-//! not vanish without ever having been seen. The stamp lives in a per-task
-//! state file because the linger has to survive the process that observed
-//! the completion.
+//! not vanish without ever having been seen. The stamp lives in a state file
+//! because the linger has to survive the process that observed the completion —
+//! `statusline-sa-<session>-task-<id>.txt` for the feed tier,
+//! `statusline-sa-<session>-<agent-base>.txt` for the fallback one. The two
+//! namespaces are deliberately distinct: [`disappeared_rows`] scans the
+//! `-task-` prefix, and a fallback file landing there would be read back as a
+//! vanished task and rendered a second time.
+//!
+//! This paragraph described both tiers before either one implemented it on the
+//! fallback side; that tier had no stamp and no linger, so a finished row stayed
+//! visible for the full [`FALLBACK_MAX_AGE_SECS`] window instead. The scripts
+//! did carry it (`eb56345:linux/statusline.sh:1287` and `:1357`), and the same
+//! record now also serves as the mtime skip that keeps the tier from re-reading
+//! every agent transcript on every refresh.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -310,6 +321,91 @@ fn task_state_path(temp: &Path, session_id: &str, task_id: &str) -> Option<PathB
     Some(temp.join(format!("statusline-sa-{session}-task-{task}.txt")))
 }
 
+/// The per-agent state file the fallback tier keys on.
+///
+/// Deliberately `-<base>` and never `-task-<id>`: `disappeared_rows` scans the
+/// `-task-` prefix, and a fallback file landing in that namespace would be read
+/// back as a vanished feed task and rendered a second time. The scripts kept the
+/// two apart the same way.
+fn agent_state_path(temp: &Path, session_id: &str, agent_base: &str) -> Option<PathBuf> {
+    let session = session::sanitize_session_id(session_id);
+    let base = session::sanitize_session_id(agent_base);
+    if session.is_empty() || base.is_empty() {
+        return None;
+    }
+    Some(temp.join(format!("statusline-sa-{session}-{base}.txt")))
+}
+
+/// The per-agent record:
+/// `mtime|stop_reason|input|cache_write|cache_read|model|display|done`.
+///
+/// Field order is the scripts' verbatim, because this is the same file on disk:
+/// a user upgrading mid-session has these sitting in their temp directory, and
+/// reading one back under a different layout would mean a wrong token count
+/// rather than a miss.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct AgentState {
+    mtime: i64,
+    stop_reason: String,
+    input_tokens: u64,
+    cache_write_tokens: u64,
+    cache_read_tokens: u64,
+    model: String,
+    display: String,
+    done_at: Option<i64>,
+}
+
+impl AgentState {
+    fn parse(raw: &str) -> Option<Self> {
+        let fields: Vec<&str> = raw.trim_end_matches(['\r', '\n']).split('|').collect();
+        // The scripts wrote exactly eight. A shorter record is a torn or
+        // foreign file, and guessing at it would render a confident wrong
+        // number -- the one outcome the silent-degradation contract cannot
+        // announce.
+        if fields.len() != 8 {
+            return None;
+        }
+        let at = |i: usize| fields[i];
+        Some(Self {
+            mtime: at(0).parse().ok()?,
+            stop_reason: at(1).to_string(),
+            input_tokens: at(2).parse().unwrap_or(0),
+            cache_write_tokens: at(3).parse().unwrap_or(0),
+            cache_read_tokens: at(4).parse().unwrap_or(0),
+            model: at(5).to_string(),
+            display: at(6).to_string(),
+            done_at: at(7).parse().ok(),
+        })
+    }
+
+    fn to_line(&self) -> String {
+        format!(
+            "{}|{}|{}|{}|{}|{}|{}|{}",
+            self.mtime,
+            scrub_field(&self.stop_reason),
+            self.input_tokens,
+            self.cache_write_tokens,
+            self.cache_read_tokens,
+            scrub_field(&self.model),
+            scrub_field(&self.display),
+            self.done_at.map(|d| d.to_string()).unwrap_or_default()
+        )
+    }
+
+    fn used(&self) -> u64 {
+        self.input_tokens
+            .saturating_add(self.cache_write_tokens)
+            .saturating_add(self.cache_read_tokens)
+    }
+}
+
+/// Keeps a `|` in a value from shifting every later field on read-back.
+fn scrub_field(s: &str) -> String {
+    s.chars()
+        .map(|c| if c == '|' || c.is_control() { ' ' } else { c })
+        .collect()
+}
+
 /// The per-task record: `tokens|window|model|display|done|start|effort`.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 struct TaskState {
@@ -404,7 +500,13 @@ pub fn rows_from_feed(
             // already skip an unchanged write; this store rewrote every visible
             // task's file on every tick, which is most ticks of a long task.
             if previous.as_ref() != Some(&record) {
-                let _ = state::write_guarded(path, record.to_line().as_bytes());
+                let outcome = state::write_guarded(path, record.to_line().as_bytes());
+                if outcome != state::WriteOutcome::Written {
+                    let p = path.display().to_string();
+                    debug::log(move || {
+                        format!("subagent: task state not persisted to {p}: {outcome:?}")
+                    });
+                }
             }
         }
 
@@ -484,7 +586,16 @@ fn disappeared_rows(
             Some(stamp) => stamp,
             None => {
                 record.done_at = Some(now);
-                let _ = state::write_guarded(&path, record.to_line().as_bytes());
+                // A stamp that never lands re-stamps `now` on every later tick,
+                // so the row lingers indefinitely instead of for
+                // `DONE_LINGER_SECS`. Nothing else can report that.
+                let outcome = state::write_guarded(&path, record.to_line().as_bytes());
+                if outcome != state::WriteOutcome::Written {
+                    let p = path.display().to_string();
+                    debug::log(move || {
+                        format!("subagent: done stamp not persisted to {p}: {outcome:?}")
+                    });
+                }
                 now
             }
         };
@@ -617,6 +728,8 @@ pub fn agent_display(meta: Option<&str>, agent_base: &str) -> String {
 /// Builds the fallback tier's rows by parsing each agent transcript.
 pub fn rows_from_transcripts(
     clock: &dyn Clock,
+    temp: &Path,
+    session_id: &str,
     transcript_path: &str,
     windows: &Windows,
 ) -> Vec<Row> {
@@ -646,25 +759,103 @@ pub fn rows_from_transcripts(
             continue;
         }
 
-        let Ok(bytes) = std::fs::read(&path) else {
-            continue;
-        };
-        let reading = read_agent(&bytes);
         let base = name.trim_end_matches(".jsonl");
-        let meta = std::fs::read_to_string(dir.join(format!("{base}.meta.json"))).ok();
-        let display = agent_display(meta.as_deref(), base);
+        let state_path = agent_state_path(temp, session_id, base);
+
+        // The record from a previous tick, when there is a trustworthy one.
+        let previous = state_path
+            .as_deref()
+            .and_then(state::read_trusted)
+            .and_then(|b| String::from_utf8(b).ok())
+            .and_then(|t| AgentState::parse(&t));
+
+        // The whole point of the record: an agent file whose mtime has not
+        // moved is re-read from the previous tick's fields instead of from
+        // disk. Without it the fallback tier re-read and re-parsed every agent
+        // transcript on every refresh -- the same unconditional-scan cost that
+        // made the main transcript 4x slower than the script it replaced, in
+        // the tier that runs whenever the tasks feed is unavailable.
+        // The scripts' `sa_cache_dirty`: a fresh read, or a stamp that moved.
+        // Anything else leaves the file alone rather than rewriting an
+        // identical line on every refresh.
+        let mut dirty = false;
+        let mut record = match previous {
+            Some(prev) if prev.mtime == mtime => prev,
+            prev => {
+                let Ok(bytes) = std::fs::read(&path) else {
+                    continue;
+                };
+                let reading = read_agent(&bytes);
+                let meta = std::fs::read_to_string(dir.join(format!("{base}.meta.json"))).ok();
+                dirty = true;
+                AgentState {
+                    mtime,
+                    stop_reason: reading.stop_reason,
+                    input_tokens: reading.input_tokens,
+                    cache_write_tokens: reading.cache_write_tokens,
+                    cache_read_tokens: reading.cache_read_tokens,
+                    model: reading.model,
+                    display: agent_display(meta.as_deref(), base),
+                    // Carried across a re-read: the stamp records when the
+                    // completion was first *seen*, and re-stamping it on every
+                    // content change would make the row linger forever.
+                    done_at: prev.and_then(|p| p.done_at),
+                }
+            }
+        };
+
+        // A terminal stop reason stamps once and keeps its stamp; anything else
+        // clears it, so an agent that resumes is not still carrying a
+        // completion time from earlier.
+        let done = stop_reason_is_done(&record.stop_reason);
+        match (done, record.done_at) {
+            (true, None) => {
+                record.done_at = Some(now);
+                dirty = true;
+            }
+            (false, Some(_)) => {
+                record.done_at = None;
+                dirty = true;
+            }
+            _ => {}
+        }
+
+        if dirty {
+            if let Some(p) = state_path.as_deref() {
+                let outcome = state::write_guarded(p, record.to_line().as_bytes());
+                if outcome != state::WriteOutcome::Written {
+                    let path = p.display().to_string();
+                    debug::log(move || {
+                        format!("subagent: agent state not persisted to {path}: {outcome:?}")
+                    });
+                }
+            }
+        }
+
+        // The linger the module doc promises for *both* tiers. The port had it
+        // on the feed tier only, so a finished fallback row stayed visible for
+        // the full 180s staleness window instead of DONE_LINGER_SECS -- a
+        // divergence from the scripts (eb56345:linux/statusline.sh:1357) that no
+        // fixture covered.
+        if done {
+            if let Some(stamp) = record.done_at {
+                if now - stamp > DONE_LINGER_SECS {
+                    continue;
+                }
+            }
+        }
 
         rows.push((
             sort_key("", base),
             Row {
-                used: reading.used(),
-                window: windows.resolve(&reading.model),
-                model: reading.model,
-                display,
+                used: record.used(),
+                window: windows.resolve(&record.model),
+                model: record.model.clone(),
+                display: record.display.clone(),
                 // The feed reports an effort override; a transcript cannot, and
                 // nothing is inferred from the session's own effort here.
                 effort: String::new(),
-                done: stop_reason_is_done(&reading.stop_reason),
+                done,
             },
         ));
     }

@@ -172,6 +172,20 @@ pub fn pct_color(pct: i64) -> &'static str {
     }
 }
 
+/// The whole effort segment — separator, colour, label — shared by the model
+/// row and every subagent row.
+///
+/// Extracted because `effort_color` below was the *only* shared part: the guard
+/// and the surrounding format string were written out twice, byte-identically,
+/// and the subagent copy has no fixture covering it. Two copies where one is
+/// unobserved is how a divergence lands without any test noticing.
+fn effort_segment(sep: &str, effort: &str) -> String {
+    if effort.is_empty() {
+        return String::new();
+    }
+    format!("{sep}{}{effort} effort{RESET}", effort_color(effort))
+}
+
 /// Shared by the model row and every subagent row so the two cannot drift.
 /// Unknown values — including the integer form agent frontmatter allows — fall
 /// through to `WHITE` rather than being rejected.
@@ -538,9 +552,7 @@ pub fn format_subagent_row(row: &Row) -> String {
     }
     // Present only when the feed reported an override; absence is meaningful,
     // so nothing is inferred from the session's own effort here.
-    if !effort.is_empty() {
-        out += &format!("{sep}{}{effort} effort{RESET}", effort_color(&effort));
-    }
+    out += &effort_segment(&sep, &effort);
     if !display.is_empty() {
         let display = if display.chars().count() > 40 {
             let head: String = display.chars().take(39).collect();
@@ -647,9 +659,7 @@ pub fn render(inputs: &Inputs) -> String {
         format!("{YELLOW}○{RESET}  {YELLOW}working{RESET}")
     };
     let mut model_row = format!("{MAGENTA}{model_short}{RESET}");
-    if !effort.is_empty() {
-        model_row += &format!("{sep}{}{effort} effort{RESET}", effort_color(&effort));
-    }
+    model_row += &effort_segment(&sep, &effort);
     model_row += &format!("{sep}{status_part}");
 
     // --- tokens -----------------------------------------------------------

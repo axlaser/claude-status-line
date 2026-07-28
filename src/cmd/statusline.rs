@@ -64,6 +64,22 @@ impl Roots {
 /// last good tick recorded.
 pub fn run(clock: &dyn Clock, roots: &Roots, raw: &str) -> String {
     let Some(payload) = Payload::parse(raw) else {
+        // The one user-visible failure the status line has, and until now it
+        // wrote nothing to the log — so the scenario README's own
+        // troubleshooting section describes produced no evidence at all, even
+        // with STATUSLINE_DEBUG=1. The reason is recovered by re-parsing rather
+        // than plumbed out of `Payload::parse`, which keeps that function pure
+        // and keeps the cost behind the flag: this runs only when logging is on.
+        if crate::debug::is_enabled() {
+            let n = raw.len();
+            let reason = match serde_json::from_str::<serde_json::Value>(raw) {
+                Ok(_) => "valid JSON, but not an object".to_string(),
+                Err(e) => e.to_string(),
+            };
+            crate::debug::log(move || {
+                format!("statusline: {n} byte(s) of input did not parse: {reason}")
+            });
+        }
         return render::BAD_JSON.to_string();
     };
 
@@ -195,7 +211,10 @@ fn transcript_state(
             // (mtime, size) skip exists to avoid. Nothing else can report it.
             let outcome = crate::state::write_guarded(p, record.to_line().as_bytes());
             if outcome != crate::state::WriteOutcome::Written {
-                crate::debug::log(move || format!("token record not persisted: {outcome:?}"));
+                let path = p.display().to_string();
+                crate::debug::log(move || {
+                    format!("token record not persisted to {path}: {outcome:?}")
+                });
             }
         }
     }
@@ -262,7 +281,13 @@ fn subagent_rows(
             }
         }
     }
-    subagent::rows_from_transcripts(clock, payload.transcript_path(), windows)
+    subagent::rows_from_transcripts(
+        clock,
+        &roots.temp,
+        session_id,
+        payload.transcript_path(),
+        windows,
+    )
 }
 
 /// Reads the latch, decides the edges, spawns what crossed, stores the result.
@@ -319,7 +344,8 @@ fn fire_alerts(roots: &Roots, payload: &Payload, session_id: &str, rendered: &st
             notify_state::latch_json(&decision.latch).as_bytes(),
         );
         if outcome != crate::state::WriteOutcome::Written {
-            crate::debug::log(move || format!("notify latch not persisted: {outcome:?}"));
+            let path = path.display().to_string();
+            crate::debug::log(move || format!("notify latch not persisted to {path}: {outcome:?}"));
         }
     }
 }

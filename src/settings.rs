@@ -27,8 +27,21 @@ pub fn default_path() -> Option<PathBuf> {
 pub fn load(path: &Path) -> Result<Value, String> {
     match std::fs::read_to_string(path) {
         Ok(text) if text.trim().is_empty() => Ok(Value::Object(Map::new())),
-        Ok(text) => serde_json::from_str(&text)
-            .map_err(|e| format!("{} is not valid JSON: {e}", path.display())),
+        // A root that parses but is not an object — `[1, 2, 3]`, a bare string —
+        // is refused here rather than downstream. `ensure_object` would replace
+        // it with an empty map and the install would report success having
+        // discarded the file, which is the same data loss the unparseable case
+        // already refuses. Rejecting it here is also what makes
+        // `ensure_object`'s comment true: by the time it runs, the caller really
+        // has decided to discard the input.
+        Ok(text) => match serde_json::from_str::<Value>(&text) {
+            Ok(v) if v.is_object() => Ok(v),
+            Ok(_) => Err(format!(
+                "{} is valid JSON but not an object; refusing to replace it",
+                path.display()
+            )),
+            Err(e) => Err(format!("{} is not valid JSON: {e}", path.display())),
+        },
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Value::Object(Map::new())),
         Err(e) => Err(format!("cannot read {}: {e}", path.display())),
     }
@@ -49,12 +62,24 @@ pub fn save(path: &Path, root: &Value) -> Result<(), String> {
             .map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
     }
 
-    let tmp = path.with_extension(format!("json.tmp{}", std::process::id()));
+    // Through the link, not over it. `settings.json` is a dotfiles-managed
+    // symlink often enough to matter, and renaming onto the link name replaces
+    // it with a regular file — detaching the user's config silently, since
+    // everything afterwards still reads correctly. `canonicalize` falls back to
+    // the given path for a first install, where there is nothing to resolve.
+    //
+    // Deliberately not `state::write_guarded`: that refuses a symlink outright,
+    // which is correct for a cache in a shared temp directory and wrong here,
+    // where the link is the user's own arrangement.
+    let target = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    // Derived from the resolved parent so the rename stays on one filesystem
+    // and therefore stays atomic.
+    let tmp = target.with_extension(format!("json.tmp{}", std::process::id()));
     std::fs::write(&tmp, text.as_bytes())
         .map_err(|e| format!("cannot write {}: {e}", tmp.display()))?;
-    std::fs::rename(&tmp, path).map_err(|e| {
+    std::fs::rename(&tmp, &target).map_err(|e| {
         let _ = std::fs::remove_file(&tmp);
-        format!("cannot replace {}: {e}", path.display())
+        format!("cannot replace {}: {e}", target.display())
     })
 }
 

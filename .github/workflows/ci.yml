@@ -60,3 +60,306 @@ jobs:
       # compiled-in fixture fails on a branch rather than at install time.
       - name: Self-check
         run: cargo run --locked --quiet -- self-check
+
+  # Runs the installers. Nothing did, until three defects shipped past a green
+  # `gates` matrix on all three platforms: a stale `$LASTEXITCODE` that let an
+  # unlaunchable binary pass the self-check gate and go on to delete a migrating
+  # user's scripts, a `BaseResponse.ResponseUri` read that does not exist on
+  # PowerShell 7 and aborted every stable install there, and a release sentinel
+  # that guarded against the literal `latest` while the real redirect lands on
+  # `releases`. All three are control flow, and `tests/equivalence.rs` can only
+  # assert properties of the script *text*, so none of them was visible to
+  # anything that existed.
+  #
+  # The install is the product's front door and the only part of it that edits a
+  # user's existing configuration. It gets executed here, or it gets executed
+  # for the first time by whoever installs first.
+  #
+  # Every leg runs under bash so the interpreter under test is named explicitly
+  # and its stdin can be closed. That is load-bearing rather than tidiness: the
+  # notification prompt has no terminal here, and `< /dev/null` is what makes
+  # PowerShell's `Read-Host` and bash's `read </dev/tty` both decline and carry
+  # on instead of hanging the job.
+  #
+  # `--pre` because the stable channel has nothing to resolve until a vX.Y.Z tag
+  # exists. It performs the same resolution, download, checksum, attestation,
+  # placement, self-check and settings merge that the stable channel does.
+  installers:
+    name: install ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    needs: gates
+
+    defaults:
+      run:
+        shell: bash
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            name: linux
+            run: bash install/install.sh
+            undo: bash install/uninstall.sh
+            bin: claude-statusline
+          - os: macos-15
+            name: macos
+            run: bash install/install.sh
+            undo: bash install/uninstall.sh
+            bin: claude-statusline
+          # Both Windows editions, deliberately. Where this script is concerned
+          # they are different programs: 5.1 is .NET Framework and hands back an
+          # HttpWebResponse, 7 is .NET and hands back an HttpResponseMessage
+          # whose members differ. Testing one proves nothing about the other,
+          # which is exactly how the PowerShell 7 break reached a release
+          # candidate.
+          - os: windows-2025
+            name: windows-powershell-5.1
+            run: powershell.exe -NoProfile -File install/install.ps1
+            undo: powershell.exe -NoProfile -File install/uninstall.ps1
+            bin: claude-statusline.exe
+          - os: windows-2025
+            name: windows-pwsh-7
+            run: pwsh.exe -NoProfile -File install/install.ps1
+            undo: pwsh.exe -NoProfile -File install/uninstall.ps1
+            bin: claude-statusline.exe
+
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      # A scratch profile, so a run never reads or writes the runner's real one
+      # and every leg starts from "no previous installation". Both spellings are
+      # set on every platform: the shell installers read $HOME and the
+      # PowerShell ones read %USERPROFILE%, and setting the pair costs nothing.
+      # RUNNER_TEMP arrives backslashed on Windows; the substitution normalises
+      # it to a form bash and PowerShell both accept.
+      - name: Point the profile at a scratch directory
+        run: |
+          scratch="${RUNNER_TEMP//\\//}/install-probe"
+          mkdir -p "$scratch"
+          {
+            echo "HOME=$scratch"
+            echo "USERPROFILE=$scratch"
+            echo "PROBE=$scratch"
+          } >> "$GITHUB_ENV"
+
+      - name: Install from the prerelease channel
+        run: ${{ matrix.run }} --pre < /dev/null
+
+      - name: It installed, it renders, and settings.json points at it
+        run: |
+          bin="$PROBE/.claude/bin/${{ matrix.bin }}"
+          settings="$PROBE/.claude/settings.json"
+
+          test -e "$bin" || { echo "::error::no binary at $bin"; exit 1; }
+          "$bin" self-check \
+            || { echo "::error::the installed binary fails its own self-check"; exit 1; }
+          test -f "$settings" \
+            || { echo "::error::settings.json was never written"; exit 1; }
+
+          # Each entry separately. A merge that runs but writes less than it
+          # claimed still exits 0 and looks identical from outside, which is the
+          # failure mode the exit-0 exemption on `settings` exists to expose.
+          for key in claude-statusline subagentStatusLine git-refresh; do
+            grep -q "$key" "$settings" || {
+              echo "::error::settings.json is missing $key"
+              cat "$settings"
+              exit 1
+            }
+          done
+          echo "installed, renders, and settings.json points at it"
+
+      # Windows has to store the command quoted, or a profile directory
+      # containing a space word-splits it, the binary never runs, and the
+      # silent-degradation contract hides the failure completely.
+      - name: The Windows command is stored quoted
+        if: runner.os == 'Windows'
+        run: |
+          grep -q '"command": *"\\"' "$PROBE/.claude/settings.json" || {
+            echo "::error::the Windows command is stored unquoted"
+            cat "$PROBE/.claude/settings.json"
+            exit 1
+          }
+          echo "the stored command is quoted"
+
+      # A re-run has to be a no-op rather than a second set of entries. The hook
+      # writer de-duplicates by binary path, and nothing else asserts it does.
+      - name: Installing twice changes nothing
+        run: |
+          settings="$PROBE/.claude/settings.json"
+          before=$(cksum < "$settings")
+          ${{ matrix.run }} --pre < /dev/null
+          after=$(cksum < "$settings")
+          if [ "$before" != "$after" ]; then
+            echo "::error::settings.json changed on re-install"
+            cat "$settings"
+            exit 1
+          fi
+          echo "re-install left settings.json byte-identical"
+
+      - name: Uninstall removes the binary and every entry
+        run: |
+          ${{ matrix.undo }} < /dev/null
+          bin="$PROBE/.claude/bin/${{ matrix.bin }}"
+          settings="$PROBE/.claude/settings.json"
+
+          test ! -e "$bin" || { echo "::error::the binary survived uninstall"; exit 1; }
+          if grep -q 'claude-statusline' "$settings"; then
+            echo "::error::settings.json still references the binary after uninstall"
+            cat "$settings"
+            exit 1
+          fi
+          echo "uninstall left no binary and no entries"
+
+      # The stable channel, which every step above leaves untested. `--pre`
+      # resolves through the releases atom feed; the stable path resolves
+      # through the `/releases/latest` redirect, and *both* release-resolution
+      # defects lived there — the `BaseResponse.ResponseUri` read that does not
+      # exist on PowerShell 7, and the sentinel that guarded against the literal
+      # `latest` while the real redirect lands on `releases`.
+      #
+      # Self-adjusting rather than pinned to today's answer: it asks GitHub what
+      # `/releases/latest` currently resolves to and asserts whichever outcome is
+      # correct for that. Before the first stable tag it must refuse and change
+      # nothing; after it, it must install. Nothing here needs revisiting when
+      # v1.0.0 lands, which is the point — a step that has to be flipped by hand
+      # is a step that gets flipped late.
+      #
+      # Asserted on output and side effects, never the exit code: the two
+      # dialects legitimately disagree there. `install.sh` aborts through
+      # CLAUDE.md's `return 1 2>/dev/null || exit 1` and exits 1; `install.ps1`
+      # uses a bare `return` and exits 0, because `exit` would close the session
+      # of a user running it through `irm | iex`.
+      - name: The stable channel resolves or refuses, whichever is true today
+        run: |
+          probe="${RUNNER_TEMP//\\//}/stable-probe"
+          mkdir -p "$probe"
+          log="$probe/install.log"
+
+          # The slug the installers hardcode. Kept in step with REPO_SLUG /
+          # $repoSlug in install/install.sh and install/install.ps1.
+          slug="axlaser/claude-statusline"
+          effective=$(curl -fsSLI -o /dev/null -w '%{url_effective}' \
+            "https://github.com/$slug/releases/latest" 2>/dev/null || true)
+          tag="${effective##*/}"
+          echo "releases/latest currently resolves to: '$tag'"
+
+          # The installer aborts here by design in one of the two branches, and
+          # the job's `-e` would treat that as a step failure.
+          set +e
+          HOME="$probe" USERPROFILE="$probe" ${{ matrix.run }} < /dev/null > "$log" 2>&1
+          set -e
+          cat "$log"
+
+          bin="$probe/.claude/bin/${{ matrix.bin }}"
+          case "$tag" in
+            v[0-9]*)
+              test -e "$bin" || {
+                echo "::error::a stable release ($tag) exists, but the stable channel installed nothing"
+                exit 1
+              }
+              "$bin" self-check || {
+                echo "::error::the stable channel installed a binary that fails its own self-check"
+                exit 1
+              }
+              echo "stable channel installed $tag and it renders"
+              ;;
+            *)
+              grep -qi 'no stable release' "$log" || {
+                echo "::error::no stable release exists, but the installer did not say so"
+                echo "::error::this is the '$tag' sentinel defect: it used to proceed and 404"
+                exit 1
+              }
+              test ! -e "$bin" || {
+                echo "::error::the installer refused but placed a binary anyway"
+                exit 1
+              }
+              echo "stable channel correctly refused: no stable release published yet"
+              ;;
+          esac
+
+  # The upgrade, which is the highest-risk path in the release and the only one
+  # that deletes files a user already has. It is separated from the matrix above
+  # because it needs a script installation staged first, and because its failure
+  # means something different: not "the install is broken" but "upgrading breaks
+  # a working setup".
+  #
+  # The scripts themselves are gone from the tree, so the stand-ins are files at
+  # the paths a v0.1.0 installation left behind, with settings.json pointing at
+  # them exactly as the released script installers wrote it. What is under test
+  # is the migration's ordering -- that the scripts are removed only after
+  # settings.json points at the binary -- not the scripts' own behaviour.
+  upgrade:
+    name: upgrade from a script installation
+    runs-on: ubuntu-24.04
+    needs: gates
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Stage a v0.1.0 script installation
+        run: |
+          scratch="${RUNNER_TEMP}/upgrade-probe"
+          mkdir -p "$scratch/.claude"
+          echo "HOME=$scratch" >> "$GITHUB_ENV"
+          echo "PROBE=$scratch" >> "$GITHUB_ENV"
+
+          for s in statusline notify git-refresh subagent-statusline; do
+            printf '#!/usr/bin/env bash\necho legacy\n' > "$scratch/.claude/$s.sh"
+            chmod +x "$scratch/.claude/$s.sh"
+          done
+
+          # The shape the script installers wrote: a bare tilde path, and the
+          # notify hooks a user who had enabled notifications would carry.
+          cat > "$scratch/.claude/settings.json" <<'JSON'
+          {
+            "theme": "dark",
+            "statusLine": { "type": "command", "command": "~/.claude/statusline.sh" },
+            "hooks": {
+              "PermissionRequest": [
+                { "hooks": [ { "type": "command", "command": "~/.claude/notify.sh permission" } ] }
+              ]
+            }
+          }
+          JSON
+          echo "staged 4 scripts and a settings.json pointing at them"
+
+      - name: Upgrade
+        run: bash install/install.sh --pre < /dev/null
+
+      - name: The scripts are gone, the binary is wired in, and the user's keys survive
+        run: |
+          settings="$PROBE/.claude/settings.json"
+          cat "$settings"
+
+          for s in statusline notify git-refresh subagent-statusline; do
+            test ! -e "$PROBE/.claude/$s.sh" \
+              || { echo "::error::$s.sh survived the upgrade"; exit 1; }
+          done
+
+          # The ordering guarantee, stated as an outcome: no entry may still
+          # point at a script this run deleted. That pairing -- scripts removed,
+          # settings.json left pointing at them -- is the failure d9e61f4 fixed,
+          # and it leaves a user with no status line and nothing to fall back to.
+          grep -q '\.claude/statusline\.sh' "$settings" \
+            && { echo "::error::settings.json still points at a deleted script"; exit 1; }
+          grep -q 'claude-statusline' "$settings" \
+            || { echo "::error::settings.json does not point at the binary"; exit 1; }
+
+          # Notifications were on before, so they stay on without re-prompting --
+          # and this job answers no to every prompt, so an entry here can only
+          # have come from the legacy hook being recognised.
+          grep -q 'notify permission' "$settings" \
+            || { echo "::error::the upgrade dropped the user's notification setting"; exit 1; }
+
+          # Unrelated keys are the user's, not ours.
+          grep -q '"theme"' "$settings" \
+            || { echo "::error::the upgrade discarded an unrelated user key"; exit 1; }
+
+          "$PROBE/.claude/bin/claude-statusline" self-check \
+            || { echo "::error::the upgraded binary fails its own self-check"; exit 1; }
+          echo "upgraded: scripts removed, binary wired in, user settings intact"
