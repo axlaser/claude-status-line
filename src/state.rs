@@ -1,4 +1,4 @@
-//! Guarded reads and writes of predictable-path state files (R23, KTD12).
+//! Guarded reads and writes of predictable-path state files.
 //!
 //! One module owns every guard so the failure that cost this project nine days
 //! is unrepresentable: two sibling guards over one dependency failing in

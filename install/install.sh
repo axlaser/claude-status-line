@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Installs the claude-statusline binary into ~/.claude/bin and registers it in
-# settings.json. Covers macOS and Linux from one file (R6).
+# settings.json. Covers macOS and Linux from one file.
 #
 # No `set -e`: this script can be sourced (see CLAUDE.md), and errexit would
 # leak into the caller's shell and persist after return. Failures are handled
@@ -48,7 +48,7 @@ human_size() {
 }
 
 # Removes the staged download. Called on every path that does not place it
-# (R10) -- a staged file left behind is an unverified binary sitting in the
+# -- a staged file left behind is an unverified binary sitting in the
 # install directory under a predictable-ish name.
 discard_stage() {
     [[ -n ${STAGE:-} ]] && rm -f "$STAGE"
@@ -58,7 +58,7 @@ discard_stage() {
 }
 
 # Puts the previous binary back after a failure that has already moved it
-# aside. R11 requires a binary that fails its self-check to leave the prior
+# aside. A binary that fails its self-check has to leave the prior
 # installation untouched, and by then the new one is already in place -- so
 # "untouched" has to be restored rather than merely not disturbed.
 restore_previous() {
@@ -69,7 +69,7 @@ restore_previous() {
     return 0
 }
 
-# The scripts a pre-binary installation left in ~/.claude (R16). Removed only
+# The scripts a pre-binary installation left in ~/.claude. Removed only
 # after the self-check passes: until then they are still the working
 # installation.
 LEGACY_SCRIPTS=(statusline.sh notify.sh git-refresh.sh subagent-statusline.sh)
@@ -92,9 +92,9 @@ printf "\n  ${DIM}claude-statusline installer${RESET}\n"
 printf "  ${GRAY}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}\n"
 echo ""
 
-# --- Platform detection (R13) ---
+# --- Platform detection ---
 # First, and before anything is created, removed, or written: an unsupported
-# platform must leave an existing installation exactly as it was (AE16).
+# platform must leave an existing installation exactly as it was.
 step "Detecting platform"
 _os=""
 case "$(uname -s 2>/dev/null)" in
@@ -124,7 +124,7 @@ for _tool in curl uname awk; do
 done
 echo ""
 
-# --- Resolve the release (R5) ---
+# --- Resolve the release ---
 step "Resolving release"
 if [[ -n $PINNED_VERSION ]]; then
     TAG="$PINNED_VERSION"
@@ -152,7 +152,7 @@ elif [[ $ALLOW_PRERELEASE == true ]]; then
 else
     # The /releases/latest redirect resolves the current stable tag without an
     # authenticated API call, and excludes prereleases -- which is what keeps
-    # the pipeline-verification tags of R36 from ever being installed.
+    # pipeline-verification tags from ever being installed.
     _effective=$(curl -fsSLI -o /dev/null -w '%{url_effective}' \
         "https://github.com/$REPO_SLUG/releases/latest" 2>/dev/null)
     TAG="${_effective##*/}"
@@ -168,7 +168,7 @@ fi
 BASE_URL="https://github.com/$REPO_SLUG/releases/download/$TAG"
 echo ""
 
-# --- Verify the install directory (R9) ---
+# --- Verify the install directory ---
 # Deliberately inverted relative to the runtime guard: at runtime an
 # undeterminable owner leaves the guard passing, because failing a read closed
 # kills every cache and re-fires alerts (see
@@ -219,7 +219,7 @@ fi
 ok "Owned by you, mode $_dir_mode"
 echo ""
 
-# --- Stage the download (R10) ---
+# --- Stage the download ---
 step "Downloading"
 # Sweep anything a previous interrupted run left behind before adding one.
 rm -f "$BIN_DIR/$STAGE_PREFIX"* 2>/dev/null
@@ -243,10 +243,10 @@ chmod 600 "$STAGE" 2>/dev/null
 ok "$ASSET ($(human_size "$(file_bytes "$STAGE")"))"
 echo ""
 
-# --- Verify the checksum (R7) ---
+# --- Verify the checksum ---
 # Verification that cannot be performed counts as verification failure. There is
 # no "proceed without checking" path here: the checksum is the fail-closed gate
-# for the whole transport (KTD3).
+# for the whole transport.
 step "Verifying checksum"
 if ! curl -fsSL "$BASE_URL/checksums.txt" -o "$SUMS"; then
     err "Could not fetch checksums.txt"
@@ -279,8 +279,8 @@ fi
 ok "SHA-256 matches"
 echo ""
 
-# --- Verify the attestation (R8) ---
-# Opportunistic but fail-closed when it runs (KTD3): a negative result stops the
+# --- Verify the attestation ---
+# Opportunistic but fail-closed when it runs: a negative result stops the
 # install with or without --require-attestation; only the inability to verify is
 # tolerated, and only without the flag.
 step "Verifying build provenance"
@@ -289,8 +289,8 @@ if command -v gh &>/dev/null; then
     if curl -fsSL "$BASE_URL/$ASSET.sigstore.json" -o "$BUNDLE"; then
         # Verified against the downloaded bundle rather than the attestation
         # API: the API serves its bundle Snappy-compressed and needs an
-        # authenticated gh, which is exactly why R4 publishes the bundle as a
-        # release asset.
+        # authenticated gh, which is exactly why the release publishes the
+        # bundle as an asset.
         if gh attestation verify "$STAGE" \
                 --bundle "$BUNDLE" \
                 --repo "$REPO_SLUG" \
@@ -324,10 +324,10 @@ if [[ $_attested != true ]]; then
 fi
 echo ""
 
-# --- Place the binary (R9, R10) ---
+# --- Place the binary ---
 step "Installing"
 # Move any existing binary aside rather than overwriting it, so the self-check
-# below has something to roll back to (AE8). The stage prefix is deliberate:
+# below has something to roll back to. The stage prefix is deliberate:
 # a run interrupted between here and the self-check leaves the backup where
 # the next run's sweep will find it.
 BACKUP=""
@@ -348,14 +348,14 @@ if ! mv -f "$STAGE" "$BIN_PATH"; then
 fi
 STAGE=""
 # The execute bit goes on only now, after both gates have passed. 0700 also
-# satisfies R9's "writable only by that user".
+# leaves it writable only by this user.
 chmod 700 "$BIN_PATH" 2>/dev/null || warn "Could not set permissions on $BIN_PATH"
 rm -f "$SUMS" "$BUNDLE" 2>/dev/null
 ok "$BIN_PATH"
 info "$(human_size "$(file_bytes "$BIN_PATH")")"
 echo ""
 
-# --- Self-check (R11, AE8) ---
+# --- Self-check ---
 # A binary can pass its checksum, launch, and still render wrongly -- a bad
 # build, a corrupt fixture, an architecture that runs but misbehaves. The
 # silent-degradation contract guarantees that failure would reach the user as
@@ -375,10 +375,10 @@ BACKUP=""
 ok "Renders correctly"
 echo ""
 
-# --- Migrate from a script installation (R16, F2) ---
+# --- Migrate from a script installation ---
 # Only now, with a binary that has proved it renders. notify-config.json is
 # deliberately not in this list: it is the user's configuration, its schema is
-# unchanged, and the binary reads it as-is (R44).
+# unchanged, and the binary reads it as-is.
 _legacy_found=()
 for _script in "${LEGACY_SCRIPTS[@]}"; do
     [[ -e "$CLAUDE_DIR/$_script" ]] && _legacy_found+=("$_script")
@@ -396,7 +396,7 @@ if (( ${#_legacy_found[@]} > 0 )); then
     echo ""
 fi
 
-# --- Configure settings.json (R14) ---
+# --- Configure settings.json ---
 # The merge runs through the binary just placed. It is the only JSON
 # implementation on hand: a fresh install has to work with no jq and no package
 # manager, and hand-rolling a JSON merge in shell against the user's own
@@ -431,7 +431,7 @@ fi
 # and it costs nothing when idle.
 _apply_flags+=(--git-refresh)
 
-# --- Notification configuration (R15, R44) ---
+# --- Notification configuration ---
 echo ""
 step "Notification configuration"
 if [[ -f $NOTIFY_CONFIG_PATH ]]; then
@@ -457,7 +457,7 @@ fi
 echo ""
 step "Notifications"
 info "Plays a sound and shows a popup when Claude needs attention."
-# The legacy check is what carries the choice across an upgrade (R16): someone
+# The legacy check is what carries the choice across an upgrade: someone
 # who enabled notifications under the scripts has hooks pointing at notify.sh,
 # which `has` does not recognise, and re-prompting them would turn a silent
 # upgrade into a question they already answered.

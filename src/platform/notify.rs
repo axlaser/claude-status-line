@@ -1,10 +1,10 @@
 //! Executing what `cmd::notify` planned, and probing the machine it planned
-//! against (R25).
+//! against.
 //!
 //! Everything here is impure. The decisions all live in `cmd::notify::plan`;
 //! this file only carries them out and reports the environment the planner
-//! reads. Keeping the split sharp is what lets the case table assert R31's
-//! observable without spawning a single process.
+//! reads. Keeping the split sharp is what lets the case table assert
+//! what this component invokes without spawning a single process.
 
 use std::collections::BTreeSet;
 use std::io::Write;

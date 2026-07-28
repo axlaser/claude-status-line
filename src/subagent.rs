@@ -10,7 +10,7 @@
 //! Both tiers share a done signal and a linger: a finished row stays visible
 //! for [`DONE_LINGER_SECS`] so a subagent that completes between refreshes does
 //! not vanish without ever having been seen. The stamp lives in a per-task
-//! state file (R28) because the linger has to survive the process that observed
+//! state file because the linger has to survive the process that observed
 //! the completion.
 
 use std::collections::BTreeMap;

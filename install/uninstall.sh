@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Removes the claude-statusline binary and every settings.json entry the
-# installer wrote. Covers macOS and Linux from one file (R6).
+# installer wrote. Covers macOS and Linux from one file.
 #
 # No `set -e` and no bare `exit` -- see install.sh for why both matter when the
 # published one-liner pipes this into the user's live shell.
@@ -64,7 +64,7 @@ else
     warn "Binary not found (already removed?)"
 fi
 
-# Anything an interrupted install left staged (R10).
+# Anything an interrupted install left staged.
 rm -f "$BIN_DIR/$STAGE_PREFIX"* 2>/dev/null
 
 # Only if we created it and it is now empty -- the user may keep other tools here.
@@ -102,7 +102,7 @@ echo ""
 
 # --- Notification config and debug log ---
 # Both are removed unconditionally, which is what the script uninstaller did.
-# R15 says preserve today's prompts, and today there is no prompt here --
+# The uninstaller preserves today's prompts, and today there is none here --
 # adding one would be a UX change smuggled in under a port.
 step "Removing notification configuration"
 if [[ -f $NOTIFY_CONFIG_PATH ]]; then

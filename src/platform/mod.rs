@@ -1,4 +1,4 @@
-//! The only `#[cfg]`-gated surface in the crate (R25): notification delivery,
+//! The only `#[cfg]`-gated surface in the crate: notification delivery,
 //! file-ownership checks, and process-entry stream handling.
 //!
 //! Success Criteria requires enumerating every platform-conditional branch at
@@ -14,7 +14,8 @@ mod imp {
     use std::os::unix::fs::MetadataExt;
     use std::path::Path;
 
-    /// KTD7 layer 1. Nothing below the panic hook can be trusted to stay quiet
+    /// Layer 1 of silent degradation. Nothing below the panic hook can be trusted
+    /// to stay quiet
     /// — a stack overflow or allocation failure writes straight to fd 2 from
     /// the runtime — so the descriptor is redirected before anything runs.
     pub fn redirect_stderr_to_null() {
@@ -66,7 +67,7 @@ mod imp {
             .collect()
     }
 
-    /// KTD7 layer 1, Windows form: swap the process's standard error handle for
+    /// Layer 1, Windows form: swap the process's standard error handle for
     /// one on `NUL`.
     pub fn redirect_stderr_to_null() {
         unsafe {

@@ -37,7 +37,7 @@ which half of the old model survives.
 5. **Absolute savings differ by an order of magnitude across platforms, proportions do
    not.** bash's floor was ~10 ms where PowerShell's was ~124 ms, so the same proportional
    win is a very different number of milliseconds. A conclusion measured on Windows must
-   not be generalised to Linux without measuring there — R27's incremental-parser
+   not be generalised to Linux without measuring there — the incremental-parser
    conclusion was over-generalised exactly this way and cost a 4x regression (§7).
 6. **Isolated micro-costs still do not sum.** Attribute a saving with an end-to-end
    before/after median, never a sum of isolated probes. Render-path micro-optimisation in
@@ -76,17 +76,17 @@ codebase** — they understate first-call costs by up to 100×. Production spawn
 process per tick, so measurements must too.
 
 - **One fresh process per probe.** Never loop a probe inside a warm host to average it.
-- **Median of ≥ 7 runs**; state machine, OS, and PowerShell/bash version alongside numbers.
+- **Median of ≥ 7 runs**; state machine, OS, and toolchain version alongside numbers.
 - **Isolated numbers do not sum and must not be used for claims.** Removing one first-call
   cost shifts load onto the next operation. Only **end-to-end before/after** medians of the
-  real script justify a "saves X ms" claim.
+  real binary justify a "saves X ms" claim.
 - **Isolate the environment.** Every harness run points `TEMP`/`TMP` *and*
   `USERPROFILE`/`HOME` at a scratch directory (with a `.claude` subdir) and warms the
   learned-model map before sampling — otherwise the harness fights live sessions over a
   cache-key input and "hit" samples silently measure misses. When a benchmark claims to
   measure the hit path, verify hit-ness (cache-file mtime unchanged, or the debug log's
   HIT line); see `docs/solutions/workflow-issues/` and `docs/solutions/best-practices/`.
-- **Host class is part of the number** (R41). A hosted-runner figure must never later be
+- **Host class is part of the number.** A hosted-runner figure must never later be
   held against a bare-metal baseline, so every row in §6 carries the runner label and image
   version it came from. Rows without one are unusable as baselines.
 - **Measure both the warm and the cold state.** A warm-only pair flatters whichever variant
@@ -96,7 +96,7 @@ process per tick, so measurements must too.
 - **Paired measurements go through `tests/harness/measure.sh` / `measure.ps1`**, which
   implement every rule above and refuse to report a number until each variant has been
   proven to do its work. A probe that silently no-opped reads as a spectacular speed-up:
-  that guard is what caught a measurement of an unimplemented subcommand at U6.
+  that guard is what caught a measurement of an unimplemented subcommand.
 - **Bash on Git Bash: process counts are portable, milliseconds are not** (emulated fork is
   ~20–50× a real one). This applied to the scripts; it still applies to anything measured
   through an MSYS shell.
@@ -116,7 +116,7 @@ adds:
   untracked-only, dirty, stashes present, ahead-of-upstream, detached HEAD, no upstream,
   collapsed untracked dir, stash-cleared. The table runs on every published target, so
   "matches recorded behaviour" is now one statement rather than three — the per-platform
-  qualifier the scripts needed is what R20 retired.
+  qualifier the scripts needed is what resolving those divergences retired.
 - **Payload states**: full payload, minimal payload (missing optional fields), empty stdin,
   malformed JSON (all must exit 0, no stderr), plus adversarial variants: Windows-illegal
   path characters, overlong paths, decoy field names inside string values, astral-plane
@@ -155,7 +155,7 @@ observed fresh/stale outcome, not only the rendered bytes — see
   slashes under `$HOME` collapses to `~` (the script normalised the `cwd`'s separators but never
   `$USERPROFILE`'s own, so it fell through to `.../parent/leaf`), and the comparison is
   case-sensitive, so `c:\users\me\src` no longer collapses (the script used `OrdinalIgnoreCase`).
-  Keeping the second would require a platform-conditional comparison, which R25 does not allow for
+  Keeping the second would require a platform-conditional comparison, which the confinement rule does not allow for
   path formatting. Neither shape is reachable in practice — Claude Code supplies native backslash
   paths in canonical casing on Windows, confirmed against a live session — which is why four
   rounds of fixture captures never produced either. Asserted as literals by
@@ -171,12 +171,12 @@ observed fresh/stale outcome, not only the rendered bytes — see
   done-linger stamp: the observed fresh/stale outcome asserted, not just the bytes (§4).
 - [ ] `RECORD_VERSION` bumped if any stored record format changed.
 - [ ] No debug-log call site evaluates expensive arguments when logging is off.
-- [ ] No new `cfg!(windows)` outside R25's three areas.
+- [ ] No new `cfg!(windows)` outside the three areas platform code is confined to.
 - [ ] §6 reference numbers updated if the change moves them.
 
 ## 6. Reference numbers (update when a hot-path change moves them)
 
-Every row carries its host class (R41). A hosted-runner number and a bare-metal number are
+Every row carries its host class. A hosted-runner number and a bare-metal number are
 not comparable, and a row that does not say which it is cannot serve as a baseline.
 
 ### Historical — the script trees (2026-07-26)
@@ -208,10 +208,10 @@ The two costs a hot-path change is most likely to move, both *maintainer machine
 subprocess `git` at ~73.9 ms for the status+diff pair (§7), and a full transcript parse at
 46.9 ms against 8.4 MB (§7) — which an unchanged transcript now skips entirely.
 
-### R38 paired medians — script vs. binary (2026-07-27)
+### Paired medians — script vs. binary (2026-07-27)
 
 The Rust migration replaces each runtime script with a subcommand of one binary.
-R38 requires both halves of the pair to be measured end to end, one fresh
+Both halves of the pair are measured end to end, one fresh
 process per probe, on a single host with the runs interleaved, and recorded
 before that component's scripts are deleted — after deletion the script half can
 never be measured again.
@@ -222,7 +222,7 @@ per host, payload `tests/harness/payloads/tasks-feed.json`, isolated
 append the other skips.
 
 **Host class is part of the number.** A hosted-runner figure must never later be
-held against a bare-metal baseline (R41), so every row carries the runner label
+held against a bare-metal baseline, so every row carries the runner label
 and image version it came from.
 
 | Component | Host | Host class | Script | Binary | Delta |
@@ -244,10 +244,10 @@ Reading them:
 
 Provenance: the binary half was built from a throwaway commit
 (`d7a963ccbc975fd36b11091afc197de3173bd3d3`) that is deliberately not on the
-branch. R37 keeps a component's port, its fixtures and its script deletion in
-one commit, and R38 requires these medians to be recorded *before* that commit —
+branch. A component's port, its fixtures and its script deletion all land in
+one commit, and these medians have to be recorded *before* that commit —
 so the tree that was measured could not itself be a branch commit. The measured
-content is what the U6 port commit lands.
+content is what the subagent port commit lands.
 
 #### `statusline` (2026-07-27)
 
@@ -255,7 +255,7 @@ Payload `tests/harness/payloads/full.json`, with the transcript and the learned
 model-window map staged into the isolated `HOME` the payload points at, so both
 variants parse a real session rather than an empty one.
 
-R38 requires this pair to cover the large-transcript state. The transcript is
+This pair has to cover the large-transcript state. The transcript is
 **generated to a target size** rather than pointed at a real session file: a
 machine-local transcript is not reproducible on CI, on another machine, or next
 month, and a number nobody else can reproduce is an anecdote rather than
@@ -290,7 +290,7 @@ things are worth keeping from how that number was arrived at:
 - **The first version of this table had the binary 4× *slower* on Linux.** The
   port scanned the transcript unconditionally, which cost ~50 ms on 8 MB —
   invisible under PowerShell's ~124 ms interpreter floor, four times bash's
-  entire tick. R27 had argued the scripts' incremental machinery "buys nothing
+  entire tick. The porting decision had argued the scripts' incremental machinery "buys nothing
   once the interpreter is gone", measured against a *growing* transcript. That
   was the script's worst case, and the conclusion was over-generalised to
   platforms whose floor is an order of magnitude lower. The port now skips the
@@ -310,9 +310,9 @@ is generated to size rather than pointed at a real session file, so these
 numbers are reproducible on any runner instead of tied to one machine's files.
 
 Provenance note: unlike the `subagent` pair above, this one needed no throwaway
-commit. The port landed at U12 and the scripts are deleted at U13, so a commit
+commit. The port landed one commit before the scripts were deleted, so a commit
 carrying both the Rust statusline and the three scripts exists on the branch and
-could be measured directly. The R37/R38 collision only bites when a single
+could be measured directly. That collision only bites when a single
 commit has to do both.
 
 ## 7. Decision record (settled design questions — do not re-litigate without new evidence)
@@ -367,7 +367,7 @@ satisfies the same pure-Rust constraint and benchmarks faster than git itself.
 
 Measured cost of the calls being kept — fresh-process medians, 15 runs, this
 repository, git 2.48.1 on the maintainer's Windows machine. Indicative, not an
-R38 pair:
+paired medians:
 
 | Call | Median |
 |---|---|
@@ -400,7 +400,7 @@ diff rather than a rewrite.
 The scripts' incremental parse (stored byte offset, head checksum over
 `min(4096, size)` bytes, truncation and rewrite detection) exists because a full
 rescan of a large transcript costs ~1470 ms in PowerShell. The Rust port does not
-inherit that cost, so U9 measured a full parse before porting any of it.
+inherit that cost, so a full parse was measured before porting any of it.
 
 Fresh-process medians, maintainer's machine (Windows 11 26200), release build,
 15 runs, largest transcript available locally — 8,406,985 bytes. The plan's
@@ -417,7 +417,7 @@ Against §6's script rows for 13.4 MB — 568 ms for an incremental growth tick 
 ~1470 ms for a cold full rescan — a full Rust parse is roughly an order of
 magnitude cheaper than the incremental path it would be replacing, before
 adjusting for the smaller file. The offset, checksum and resume machinery are
-therefore deleted rather than ported (R27).
+therefore deleted rather than ported.
 
 Two things worth keeping from the measurement:
 
@@ -428,7 +428,7 @@ Two things worth keeping from the measurement:
 - **The token record is not deleted with the parser.** The per-bucket `(+N)`
   deltas are this tick's totals minus the previous tick's, and an unchanged
   transcript re-displays the stored deltas rather than recomputing them to zero.
-  That makes the record a render input under R28, not a performance cache. What
+  That makes the record a render input, not a performance cache. What
   goes is the offset and checksum; what stays is mtime, size, four totals and
   four deltas.
 

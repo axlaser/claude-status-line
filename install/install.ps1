@@ -1,6 +1,6 @@
 #Requires -Version 5.1
 # Installs the claude-statusline binary into %USERPROFILE%\.claude\bin and
-# registers it in settings.json (R6).
+# registers it in settings.json.
 #
 # BOM-LESS and ASCII-ONLY, deliberately. This file is fetched with `irm <url> |
 # iex`, and a BOM survives irm as a stray U+FEFF that breaks iex on the first
@@ -50,7 +50,7 @@ function Format-Size([long]$bytes) {
 }
 
 # Removes the staged download. Called on every path that does not place it
-# (R10): a staged file left behind is an unverified binary sitting in the
+#: a staged file left behind is an unverified binary sitting in the
 # install directory.
 function Remove-Stage {
     foreach ($p in @($script:stagePath, $script:sumsPath, $script:bundlePath)) {
@@ -73,9 +73,9 @@ Write-Host "  ${DIM}claude-statusline installer${RESET}"
 Write-Host "  ${GRAY}-----------------------------------------${RESET}"
 Write-Host ""
 
-# --- Platform detection (R13) ---
+# --- Platform detection ---
 # Before anything is created, removed, or written: an unsupported platform must
-# leave an existing installation exactly as it was (AE16).
+# leave an existing installation exactly as it was.
 Step "Detecting platform"
 $archRaw = $env:PROCESSOR_ARCHITECTURE
 if (-not $archRaw) { $archRaw = "" }
@@ -105,7 +105,7 @@ $asset  = "claude-statusline-$target.exe"
 Ok $target
 Write-Host ""
 
-# --- Resolve the release (R5) ---
+# --- Resolve the release ---
 Step "Resolving release"
 if ($pinnedVersion) {
     $tag = $pinnedVersion
@@ -136,7 +136,7 @@ if ($pinnedVersion) {
 } else {
     # The /releases/latest redirect resolves the current stable tag without an
     # authenticated API call, and excludes prereleases -- which is what keeps
-    # the pipeline-verification tags of R36 from ever being installed.
+    # pipeline-verification tags from ever being installed.
     $tag = $null
     try {
         $resp = Invoke-WebRequest -Uri "https://github.com/$repoSlug/releases/latest" `
@@ -157,7 +157,7 @@ if ($pinnedVersion) {
 $baseUrl = "https://github.com/$repoSlug/releases/download/$tag"
 Write-Host ""
 
-# --- Verify the install directory (R9) ---
+# --- Verify the install directory ---
 # Deliberately inverted relative to the runtime guard: at runtime an
 # undeterminable owner leaves the guard passing, because failing a read closed
 # kills every cache and re-fires alerts. Here the check runs once, at install
@@ -239,7 +239,7 @@ foreach ($ace in $acl.Access) {
 Ok "Owned by you, no broad write access"
 Write-Host ""
 
-# --- Sweep leftovers (R10, R12) ---
+# --- Sweep leftovers ---
 # Every run clears both what an interrupted download staged and what a previous
 # replace renamed aside.
 Get-ChildItem -Path $binDir -Filter "$stagePrefix*" -Force -ErrorAction SilentlyContinue |
@@ -250,7 +250,7 @@ if (Test-Path $sidecarPath) {
     Remove-Item $sidecarPath -Force -ErrorAction SilentlyContinue
 }
 
-# --- Stage the download (R10) ---
+# --- Stage the download ---
 Step "Downloading"
 # Staged inside the destination directory, never in a shared temp: %TEMP%
 # staging would allow a swap between verification and placement, and a
@@ -273,7 +273,7 @@ $ProgressPreference = $oldProgress
 Ok "$asset ($(Format-Size (Get-Item $script:stagePath).Length))"
 Write-Host ""
 
-# --- Verify the checksum (R7) ---
+# --- Verify the checksum ---
 # Verification that cannot be performed counts as verification failure. There
 # is no "proceed without checking" path: the checksum is the fail-closed gate
 # for the whole transport.
@@ -313,7 +313,7 @@ if ($actual.ToLower() -ne $expected.ToLower()) {
 Ok "SHA-256 matches"
 Write-Host ""
 
-# --- Verify the attestation (R8) ---
+# --- Verify the attestation ---
 # Opportunistic but fail-closed when it runs: a negative result stops the
 # install with or without --require-attestation; only the inability to verify is
 # tolerated, and only without the flag.
@@ -361,7 +361,7 @@ if (-not $attested) {
 }
 Write-Host ""
 
-# --- Place the binary (R12) ---
+# --- Place the binary ---
 # Windows will not let a running executable be deleted or overwritten, but it
 # will let it be renamed. Renaming aside first is what makes an upgrade work
 # while Claude Code is open.
@@ -391,7 +391,7 @@ Ok $binPath
 Info (Format-Size (Get-Item $binPath).Length)
 Write-Host ""
 
-# --- Self-check (R11, AE8) ---
+# --- Self-check ---
 # A binary can pass its checksum, launch, and still render wrongly -- a bad
 # build, a corrupt fixture, an architecture that runs but misbehaves. The
 # silent-degradation contract guarantees that failure would reach the user as an
@@ -415,10 +415,10 @@ if (Test-Path $sidecarPath) { Remove-Item $sidecarPath -Force -ErrorAction Silen
 Ok "Renders correctly"
 Write-Host ""
 
-# --- Migrate from a script installation (R16, F2) ---
+# --- Migrate from a script installation ---
 # Only now, with a binary that has proved it renders. notify-config.json is
 # deliberately not in this list: it is the user's configuration, its schema is
-# unchanged, and the binary reads it as-is (R44).
+# unchanged, and the binary reads it as-is.
 $legacyScripts = @('statusline.ps1', 'notify.ps1', 'git-refresh.ps1', 'subagent-statusline.ps1')
 $legacyFound = @($legacyScripts | Where-Object { Test-Path (Join-Path $claudeDir $_) })
 if ($legacyFound.Count -gt 0) {
@@ -436,8 +436,8 @@ if ($legacyFound.Count -gt 0) {
     Write-Host ""
 }
 
-# --- Configure settings.json (R14) ---
-# The bare path is passed deliberately. R14 requires the stored command to be
+# --- Configure settings.json ---
+# The bare path is passed deliberately. The stored command has to be
 # quoted, but quoting it here does not survive: PowerShell consumes the
 # surrounding quotes of a pre-quoted argument as delimiters, so the binary would
 # receive a bare path anyway and write an unquoted command. The binary adds the
@@ -470,7 +470,7 @@ if ($LASTEXITCODE -eq 0) {
 # nothing when idle.
 $applyFlags += '--git-refresh'
 
-# --- Notification configuration (R15, R44) ---
+# --- Notification configuration ---
 Write-Host ""
 Step "Notification configuration"
 if (Test-Path $configPath) {
@@ -495,7 +495,7 @@ if (Test-Path $configPath) {
 Write-Host ""
 Step "Notifications"
 Info "Plays a sound and shows a popup when Claude needs attention."
-# The legacy check is what carries the choice across an upgrade (R16): someone
+# The legacy check is what carries the choice across an upgrade: someone
 # who enabled notifications under the scripts has hooks pointing at notify.ps1,
 # which `has` does not recognise, and re-prompting them would turn a silent
 # upgrade into a question they already answered.

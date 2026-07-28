@@ -1,7 +1,7 @@
 //! claude-statusline: one multi-call binary replacing the three per-platform
 //! script trees.
 //!
-//! The library half exists so the single integration test file (R29) can reach
+//! The library half exists so the single integration test file can reach
 //! internal behaviour — the state guards and the clock — which a binary-only
 //! crate cannot expose.
 
@@ -43,17 +43,17 @@ pub fn claude_dir() -> Option<PathBuf> {
     home_dir().map(|h| h.join(".claude"))
 }
 
-/// The payload the `self-check` subcommand renders (R11, KTD15).
+/// The payload the `self-check` subcommand renders.
 ///
 /// The same file the `self-check` case feeds to the scripts, compiled in.
 pub const SELF_CHECK_PAYLOAD: &str = include_str!("../tests/harness/payloads/minimal.json");
 
-/// Output the `self-check` subcommand compares against (R11, KTD15).
+/// Output the `self-check` subcommand compares against.
 ///
 /// `include_str!` of the fixture the case table asserts, never a
 /// hand-maintained literal: a literal drifts from the renderer on the first
-/// render change and then fails every install, which R11 answers by refusing to
-/// upgrade. The three platforms' captures of this case are identical, so which
+/// render change and then fails every install, which the installer answers by
+/// refusing to upgrade. The three platforms' captures of this case are identical, so which
 /// one is compiled in does not matter — the case table holds that claim.
 pub const SELF_CHECK_FIXTURE: &str =
     include_str!("../tests/fixtures/statusline/self-check/expected/linux.txt");
@@ -76,7 +76,7 @@ const SELF_CHECK_CLOCK: i64 = 1_767_225_600;
 ///
 /// Exempt from the exit-0 catch: this is the installer's only guard against
 /// placing a binary that launches but renders wrongly, so it has to be able to
-/// fail (R11 / AE8).
+/// fail.
 ///
 /// Deliberately not routed through `cmd::statusline::run`. That would resolve
 /// the git working directory, read the home directory, and stat the temp root —

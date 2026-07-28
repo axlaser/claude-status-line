@@ -63,7 +63,7 @@ if (-not (Test-Path $settingsPath)) {
 }
 Write-Host ""
 
-# --- Binary (R12) ---
+# --- Binary ---
 # Windows will not delete a running executable but will rename it, so the
 # rename-aside is what makes uninstall work while Claude Code is open. A failed
 # delete of the sidecar is tolerated; the next install sweeps it.
@@ -127,7 +127,7 @@ Write-Host ""
 
 # --- Notification config and debug log ---
 # Both are removed unconditionally, which is what the script uninstaller did.
-# R15 says preserve today's prompts, and today there is no prompt here --
+# The uninstaller preserves today's prompts, and today there is none here --
 # adding one would be a UX change smuggled in under a port.
 Step "Removing notification configuration"
 if (Test-Path $configPath) {

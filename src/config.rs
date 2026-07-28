@@ -1,4 +1,4 @@
-//! `~/.claude/notify-config.json` (R44).
+//! `~/.claude/notify-config.json`.
 //!
 //! Two subcommands read this file: `notify` uses the per-event `sound` and
 //! `visual` flags to decide what to deliver, and the status line uses
@@ -25,7 +25,7 @@ pub const EVENTS: [&str; 6] = [
 ];
 
 /// Defaults for the two edge-triggered alerts, used when the key is absent or
-/// not an integer (R44).
+/// not an integer.
 pub const DEFAULT_CONTEXT_HIGH_THRESHOLD: i64 = 70;
 pub const DEFAULT_RATE_LIMIT_THRESHOLD: i64 = 80;
 
@@ -82,8 +82,8 @@ impl NotifyConfig {
     /// shipped bash behaviour. Both shell scripts read the flag as
     /// `jq -r '.[$e].sound // true'`, and jq's `//` yields its right-hand side
     /// when the left is `false` as well as when it is null — so `false // true`
-    /// is `true`, and muting has never worked on macOS or Linux. R44 makes the
-    /// flags gate delivery, and the Product Contract wins on behaviour.
+    /// is `true`, and muting has never worked on macOS or Linux. Here the
+    /// flags gate delivery: intended behaviour wins over reproducing a bug.
     pub fn event(&self, event: &str) -> EventConfig {
         let mut cfg = EventConfig::default();
         let Some(entry) = self.root.as_ref().and_then(|r| r.get(event)) else {

@@ -47,7 +47,7 @@ pub struct Scan {
 /// read as a fresh one. Bump this whenever the field list changes.
 pub const RECORD_VERSION: &str = "v4";
 
-/// The per-session token record (R28), the only part of the scripts' transcript
+/// The per-session token record, the only part of the scripts' transcript
 /// cache that survives the port.
 ///
 /// It is a render input, not a performance cache. The `(+N)` beside each token
@@ -57,7 +57,7 @@ pub const RECORD_VERSION: &str = "v4";
 /// why the mtime and size are part of the record and not just its key.
 ///
 /// What the scripts stored and this does not: the incremental parser's byte
-/// offset and head checksum, deleted with the parser itself (R27), and
+/// offset and head checksum, deleted with the parser itself, and
 /// `working_start_out_tokens`, which both scripts compute, store, and read back
 /// solely to compute again — no platform renders it.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]

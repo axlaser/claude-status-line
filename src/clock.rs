@@ -1,4 +1,4 @@
-//! The single injectable time source (R26, KTD6).
+//! The single injectable time source.
 //!
 //! Filesystem timestamps live on this trait alongside wall-clock reads on
 //! purpose: feed freshness and transcript staleness are both `now - mtime`, so
@@ -45,7 +45,7 @@ impl Clock for SystemClock {
 }
 
 /// A clock whose `now` and per-path mtimes are both pinned, so a fixture
-/// captured in the past renders identically forever (R30).
+/// captured in the past renders identically forever.
 #[derive(Debug, Default, Clone)]
 pub struct TestClock {
     now: i64,

@@ -1,6 +1,6 @@
 //! Entry point for the multi-call binary.
 //!
-//! The whole file is the silent-degradation contract (R21, R22, KTD7). Claude
+//! The whole file is the silent-degradation contract. Claude
 //! Code spawns this process on every refresh and renders whatever reaches
 //! stdout; anything on stderr, or a non-zero exit, breaks the user's status
 //! line. Every layer below exists because one of them alone is not enough.
@@ -35,7 +35,7 @@ fn main() {
     let sub = args.first().map(String::as_str).unwrap_or("statusline");
     let rest: Vec<&str> = args.iter().skip(1).map(String::as_str).collect();
 
-    // R11 / AE8: `self-check` is deliberately outside the catch below. It is
+    // `self-check` is deliberately outside the catch below. It is
     // the installer's only signal that a binary launches but renders wrongly,
     // so it has to be able to exit non-zero.
     if sub == "self-check" {
@@ -161,7 +161,7 @@ fn settings_cli(rest: &[&str]) -> i32 {
             Some(_) => 1,
             None => fail("has-foreign needs a feature name"),
         },
-        // R16. Unlike its siblings the feature name is optional: the installer
+        // Unlike its siblings the feature name is optional: the installer
         // asks the unscoped form to decide whether it is migrating at all, and
         // the scoped form to carry one setting across.
         "has-legacy" => {
@@ -223,8 +223,8 @@ fn dispatch(sub: &str, rest: &[&str]) {
             let payload = read_stdin();
             cmd::subagent::run(&payload, &session::temp_dir());
         }
-        // AE4's trigger. Kept in release builds so the shipped artifact is the
-        // one the acceptance example exercises.
+        // Forces a panic so the catch above can be exercised. Kept in release
+        // builds so the test drives the artifact that actually ships.
         "__panic-probe" => panic!("deliberate panic probe"),
         other => {
             let other = other.to_string();

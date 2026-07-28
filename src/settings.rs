@@ -1,4 +1,4 @@
-//! `settings.json` merge, shared by both installers (R14, R15).
+//! `settings.json` merge, shared by both installers.
 //!
 //! The installers cannot use `jq`: a fresh install has to complete on a machine
 //! with no `jq` and no package manager, which is one of the migration's stated
@@ -58,15 +58,16 @@ pub fn save(path: &Path, root: &Value) -> Result<(), String> {
     })
 }
 
-/// The matcher today's PostToolUse hook registers. Kept verbatim: R15 requires
-/// the same hook entries, and this string decides which tool uses invalidate
+/// The matcher today's PostToolUse hook registers. Kept verbatim: an install has to write
+/// the same hook entries it always did, and this string decides which tool uses
+/// invalidate
 /// the git cache.
 pub const POST_TOOL_MATCHER: &str = "Edit|Write|MultiEdit|Bash|NotebookEdit";
 
 /// Claude Code's refresh cadence for the status line, in seconds.
 pub const REFRESH_INTERVAL: u64 = 2;
 
-/// The four scripts a pre-binary installation left in `~/.claude` (R16).
+/// The four scripts a pre-binary installation left in `~/.claude`.
 ///
 /// Held as basenames because that is what the script installers themselves
 /// matched on when they de-duplicated their own entries, so an entry any
@@ -75,7 +76,8 @@ const LEGACY_SCRIPTS: [&str; 4] = ["statusline", "notify", "git-refresh", "subag
 
 /// Both dialects, on both platforms. A macOS machine never held a `.ps1`, but
 /// recognising it costs nothing and keeps one list rather than a
-/// platform-conditional pair — which R25 would have to account for.
+/// platform-conditional pair, which the confinement rule would have to account
+/// for.
 const LEGACY_EXTENSIONS: [&str; 2] = [".sh", ".ps1"];
 
 /// Whether `command` invokes one of the scripts this binary supersedes.
@@ -124,7 +126,7 @@ pub struct ApplySpec {
     pub subagent: bool,
     pub git_refresh: bool,
     pub notify: bool,
-    /// Store the binary path wrapped in quotes (R14).
+    /// Store the binary path wrapped in quotes.
     ///
     /// Quoting is decided here rather than by the caller because the caller is
     /// a shell, and shells eat quotes. PowerShell consumes the surrounding
@@ -150,8 +152,8 @@ pub const fn quote_for_this_platform() -> bool {
 ///
 /// `PermissionRequest` and `Stop` carry no matcher; `PreCompact` and
 /// `PostCompact` carry `*`. That asymmetry is what the current installer
-/// produces, and R15 says preserve today's entries — so it is reproduced rather
-/// than tidied.
+/// produces, and an install must preserve today's entries — so it is reproduced
+/// rather than tidied.
 const NOTIFY_HOOKS: [(&str, Option<&str>, &str); 4] = [
     ("PermissionRequest", None, "permission"),
     ("Stop", None, "stop"),
@@ -164,13 +166,13 @@ const NOTIFY_HOOKS: [(&str, Option<&str>, &str); 4] = [
 ///
 /// `binary` is the command reference exactly as it should appear in
 /// `settings.json` — already quoted on Windows, where a profile directory
-/// containing a space would otherwise word-split the command (R14). Quoting is
+/// containing a space would otherwise word-split the command. Quoting is
 /// the installer's business because it is platform-specific; concatenation is
 /// this function's.
 pub fn apply(root: &mut Value, binary: &str, spec: &ApplySpec) {
     ensure_object(root);
 
-    // R16. Whatever this writes supersedes a script installation's entries, and
+    // Whatever this writes supersedes a script installation's entries, and
     // by the time the installer reaches here the scripts themselves are already
     // gone. Pruning unconditionally rather than behind a caller flag is
     // deliberate: a platform whose installer forgot to pass the flag would
@@ -208,7 +210,8 @@ pub fn apply(root: &mut Value, binary: &str, spec: &ApplySpec) {
 
     if spec.git_refresh {
         // `async: true` is preserved deliberately. The plan left its survival
-        // open, but R15 says the same hook entries, and without it the hook
+        // open, but the entries have to match what the installer always wrote,
+        // and without it the hook
         // runs synchronously inside every file-modifying tool call.
         set_hook(
             root,
@@ -235,7 +238,7 @@ pub fn remove(root: &mut Value, binary: &str) {
     remove_matching(root, &|command| references(command, binary));
 }
 
-/// Removes every entry left by a script installation (R16).
+/// Removes every entry left by a script installation.
 ///
 /// The same traversal as `remove` under a different predicate. Sharing it is
 /// the point: two hand-written walks over the user's settings would eventually
@@ -284,8 +287,8 @@ fn remove_matching(root: &mut Value, matches: &dyn Fn(&str) -> bool) {
 
 /// Whether an entry referencing `binary` is already present for `feature`.
 ///
-/// Drives the installer's "Already configured" path, which is how R15's
-/// idempotent re-runs avoid re-prompting for something already set up.
+/// Drives the installer's "Already configured" path, which is how an
+/// idempotent re-run avoids re-prompting for something already set up.
 pub fn has(root: &Value, binary: &str, feature: &str) -> bool {
     let present = |key: &str| {
         root.get(key)
@@ -308,7 +311,7 @@ pub fn has(root: &Value, binary: &str, feature: &str) -> bool {
 /// Whether any entry at all exists for `key`, ours or not.
 ///
 /// The installer asks before overwriting a `statusLine` it did not write, which
-/// is today's prompt and therefore R15's requirement.
+/// is the prompt the installer has always shown.
 pub fn has_foreign(root: &Value, binary: &str, feature: &str) -> bool {
     let occupied = |key: &str| {
         root.get(key).is_some_and(|v| {
@@ -317,7 +320,7 @@ pub fn has_foreign(root: &Value, binary: &str, feature: &str) -> bool {
             // not a stranger's. Prompting "existing config found, overwrite?"
             // for it would ask the user to approve replacing us with us, and a
             // declined prompt would leave `settings.json` pointing at a script
-            // the same run is about to delete (R16).
+            // the same run is about to delete.
             !v.is_null()
                 && !command.is_some_and(|c| references(c, binary))
                 && !command.is_some_and(references_legacy_script)
@@ -441,7 +444,7 @@ fn set_hook(root: &mut Value, event: &str, matcher: Option<&str>, command: &str)
 
     let list = entries.as_array_mut().expect("entries is an array");
     // Drop any previous entry of ours for this event before appending, or a
-    // re-run accumulates duplicates — R15's idempotence requirement.
+    // re-run accumulates duplicates, and a re-run has to be idempotent.
     list.retain(|e| !entry_references(e, command_binary(command)));
 
     let mut entry = Map::new();

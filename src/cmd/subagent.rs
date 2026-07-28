@@ -5,7 +5,7 @@
 //! anything on stdout replaces Claude Code's default agent panel, so an
 //! accidental byte here does not degrade the display, it deletes it.
 //!
-//! The feed is a data store, not a performance cache (R28). Its freshness
+//! The feed is a data store, not a performance cache. Its freshness
 //! window is a render input the status line consults, which is why
 //! `git-refresh` deliberately leaves it alone.
 
@@ -127,7 +127,7 @@ pub fn project(payload: &str) -> Option<(String, String)> {
 
 /// Tees one tick's payload to this session's feed file.
 ///
-/// The write goes through the shared guard (R23): a symlink or reparse point
+/// The write goes through the shared guard: a symlink or reparse point
 /// planted at either the final path or the temporary one is removed and
 /// re-checked, and the write is abandoned if it survives. On a shared `/tmp`
 /// the feed path is entirely predictable from the session id, so this is the

@@ -1,4 +1,4 @@
-//! The assembled box (R19, R24, R26).
+//! The assembled box.
 //!
 //! Everything here is a pure function over already-gathered data: the payload,
 //! the transcript scan, the git status, and the subagent rows. Nothing in this
@@ -35,7 +35,7 @@ pub const WHITE: &str = "\x1b[37m";
 pub const GRAY: &str = "\x1b[90m";
 pub const BAR_EMPTY: &str = "\x1b[38;5;242m";
 
-/// Shown instead of the box when stdin is empty or not a JSON object (AE3).
+/// Shown instead of the box when stdin is empty or not a JSON object.
 pub const BAD_JSON: &str = "\x1b[31m[statusline: bad JSON]\x1b[0m";
 
 const LABEL_W: usize = 7;
@@ -448,7 +448,7 @@ pub fn format_bucket(
 /// `~/projects/thing`, or `.../parent/leaf` when it is not under home.
 ///
 /// Separators are normalised on **both** sides so one implementation covers
-/// both platforms (R25), and the home comparison stays case-sensitive, which is
+/// both platforms, and the home comparison stays case-sensitive, which is
 /// what bash does. Each of those diverges from `windows/statusline.ps1:287`,
 /// which normalised only the `cwd` and compared with `OrdinalIgnoreCase`; both
 /// are resolved to the behaviour here and recorded in the plan's Scope
@@ -507,7 +507,7 @@ pub fn format_git(status: &GitStatus) -> String {
 /// One subagent row.
 ///
 /// The three untrusted display fields are scrubbed here, at the render sink,
-/// rather than at ingest (R24, AE13): every source path — a live feed, a
+/// rather than at ingest: every source path — a live feed, a
 /// read-back cache, a transcript fallback — funnels through this function, so
 /// a value planted in any of them is caught once.
 pub fn format_subagent_row(row: &Row) -> String {

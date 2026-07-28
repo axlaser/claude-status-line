@@ -1,4 +1,4 @@
-//! The single integration test file for claude-statusline (R29).
+//! The single integration test file for claude-statusline.
 //!
 //! Cases live in tables. Every failure names the case, so a red run points at
 //! the exact scenario without a second lookup. Fixtures live under
@@ -92,7 +92,7 @@ impl Failures {
 }
 
 // ---------------------------------------------------------------------------
-// Entry contract (R21, R22 / AE3, AE4)
+// Entry contract
 // ---------------------------------------------------------------------------
 
 struct EntryCase {
@@ -152,7 +152,7 @@ fn entry_contract_always_exits_zero_and_silent() {
             args: &["subagent"],
             stdin: "",
         },
-        // AE4: an unwinding panic must not escape as stderr or a non-zero code.
+        // an unwinding panic must not escape as stderr or a non-zero code.
         EntryCase {
             name: "forced-panic",
             args: &["__panic-probe"],
@@ -173,7 +173,7 @@ fn entry_contract_always_exits_zero_and_silent() {
     failures.assert_empty("entry contract");
 }
 
-/// AE5. `std::process::exit` runs no destructors, so a buffered writer dropped
+/// `std::process::exit` runs no destructors, so a buffered writer dropped
 /// unflushed produces empty output that still satisfies every exit-code and
 /// stderr assertion above. This is the case that catches that.
 #[test]
@@ -195,7 +195,7 @@ fn buffered_output_reaches_stdout_before_exit() {
     );
 }
 
-/// AE8. The self-check is the installer's only guard against placing a binary
+/// The self-check is the installer's only guard against placing a binary
 /// that launches but renders wrongly, so it must be able to fail.
 #[test]
 fn self_check_reports_failure_with_nonzero_exit() {
@@ -212,10 +212,10 @@ fn self_check_reports_failure_with_nonzero_exit() {
 }
 
 // ---------------------------------------------------------------------------
-// Clock (R26, KTD6)
+// Clock
 // ---------------------------------------------------------------------------
 
-/// R26 covers filesystem timestamps as well as wall-clock reads: feed freshness
+/// The clock covers filesystem timestamps as well as wall-clock reads: feed freshness
 /// and transcript staleness are both `now - mtime`, so pinning only the clock
 /// would leave those comparisons reading real file times.
 #[test]
@@ -251,10 +251,10 @@ fn test_clock_reports_missing_mtime_for_unknown_path() {
 }
 
 // ---------------------------------------------------------------------------
-// State-file guards (R23 / AE11, AE12)
+// State-file guards
 // ---------------------------------------------------------------------------
 
-/// AE12 and the nine-day incident in
+/// The guard's fail direction, and the nine-day incident in
 /// `docs/solutions/logic-errors/get-acl-unavailable-inverts-trust-check.md`.
 /// An owner that cannot be determined must NOT fail the read closed: that
 /// inversion silently killed every read-side cache and re-fired the context
@@ -316,7 +316,7 @@ fn unreadable_state_reads_as_its_conservative_value() {
     );
 }
 
-/// AE11. A hostile target that cannot be removed must abort the write rather
+/// A hostile target that cannot be removed must abort the write rather
 /// than following the link. On a sticky directory the unlink fails, so a guard
 /// that removes-then-writes without re-checking would write through the
 /// attacker's symlink into a victim-owned file.
@@ -420,7 +420,7 @@ fn make_symlink(target: &Path, link: &Path) -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// Debug log (R45)
+// Debug log
 // ---------------------------------------------------------------------------
 
 /// `CLAUDE.md`'s Silent Degradation rule has two halves: never write to stderr,
@@ -446,7 +446,7 @@ fn debug_log_writes_only_when_enabled() {
 }
 
 // ---------------------------------------------------------------------------
-// Release workflow contract (R2, R3, R36, R43, KTD2 / U2)
+// Release workflow contract
 // ---------------------------------------------------------------------------
 //
 // A release workflow is only exercised by pushing a tag, which is a slow and
@@ -472,7 +472,7 @@ fn read_repo_file(rel: &str) -> String {
 
 const RELEASE_WORKFLOW: &str = ".github/workflows/release.yml";
 
-/// R2's six targets, each with the artifact suffix its family carries.
+/// The six published targets, each with the artifact suffix its family carries.
 const PUBLISHED_TARGETS: [&str; 6] = [
     "aarch64-apple-darwin",
     "x86_64-apple-darwin",
@@ -482,7 +482,7 @@ const PUBLISHED_TARGETS: [&str; 6] = [
     "aarch64-pc-windows-msvc",
 ];
 
-/// Every target R2 publishes builds, tests, and is attested. A target that is
+/// Every published target builds, tests, and is attested. A target that is
 /// silently absent ships an installer that resolves a URL returning 404.
 #[test]
 fn release_workflow_covers_every_published_target() {
@@ -494,7 +494,7 @@ fn release_workflow_covers_every_published_target() {
             "missing from the build matrix".to_string()
         });
         failures.check(target, wf.contains(&format!("Attest {target}")), || {
-            "has no attestation step, so R4 would ship it unattested".to_string()
+            "has no attestation step, so the release would ship it unattested".to_string()
         });
     }
     failures.assert_empty("published targets");
@@ -589,7 +589,7 @@ fn write_permissions_are_confined_to_the_publishing_job() {
     failures.assert_empty("elevated permissions");
 }
 
-/// R36. Until U17's dogfood gate passes, a stable tag must not be able to
+/// Until the dogfood gate passes, a stable tag must not be able to
 /// publish. The guard is a step rather than a convention so promoting a
 /// verification tag by accident fails loudly instead of shipping.
 #[test]
@@ -597,16 +597,16 @@ fn stable_releases_are_gated_until_parity() {
     let wf = read_repo_file(RELEASE_WORKFLOW);
     assert!(
         wf.contains("name: Parity gate"),
-        "the R36 parity gate step is gone — stable tags can now publish"
+        "the parity gate step is gone — stable tags can now publish"
     );
     assert!(
         wf.contains("--prerelease"),
-        "nothing marks verification tags as prereleases, so R5's resolution would pick them up"
+        "nothing marks verification tags as prereleases, so the installer would pick them up"
     );
 }
 
 // ---------------------------------------------------------------------------
-// git-refresh (R1, R31, R34 / U5)
+// git-refresh
 // ---------------------------------------------------------------------------
 //
 // The pilot component. Its observable is the exact set of paths deleted, so
@@ -707,7 +707,7 @@ fn no_payload_can_produce_a_path_outside_the_temp_root() {
 }
 
 /// Only the two performance caches. The tasks feed and the notification latch
-/// are data stores under R28 — deleting them here would drop subagent rows and
+/// are data stores, not caches — deleting them here would drop subagent rows and
 /// re-fire the context alert on every edit.
 #[test]
 fn only_the_git_and_output_caches_are_invalidated() {
@@ -849,7 +849,7 @@ fn missing_cache_files_are_a_no_op() {
     );
 }
 
-/// AE-style equivalence against the captured fixture (R31): the set of paths
+/// AE-style equivalence against the captured fixture: the set of paths
 /// the Rust port deletes must equal the set the script deleted, for the same
 /// payload. This is the check the whole harness exists to make possible.
 #[test]
@@ -881,7 +881,7 @@ fn deleted_paths_match_the_captured_fixtures() {
         // Every platform that has been captured must agree with the port. A
         // fixture recorded on a platform this test is not running on is still
         // asserted: the deleted-path set is platform-independent, which is
-        // exactly the claim R20 will later have to make about rendered output.
+        // exactly the claim a resolved divergence has to make about rendered output.
         for platform in ["macos", "linux", "windows"] {
             let expected_path = dir.join("expected").join(format!("{platform}.txt"));
             let Ok(expected_raw) = std::fs::read_to_string(&expected_path) else {
@@ -926,7 +926,7 @@ fn deleted_paths_match_the_captured_fixtures() {
 }
 
 // ---------------------------------------------------------------------------
-// subagent tasks feed (R1, R28, R31, R34 / U6)
+// subagent tasks feed
 // ---------------------------------------------------------------------------
 //
 // The handler's observable is the exact bytes it writes to the tasks feed, and
@@ -948,11 +948,11 @@ struct ProjectionCase {
     want: Option<&'static str>,
 }
 
-/// Every state of the tasks-feed contract, resolved to one answer each (R32).
+/// Every state of the tasks-feed contract, resolved to one answer each.
 ///
 /// Two of these record a resolution rather than a port: the shell handlers
 /// disagree, and a single behaviour had to be chosen. Both are stored here as
-/// literals rather than captured from a script run, which is the mechanism R20
+/// literals rather than captured from a script run, which is the mechanism a resolved divergence
 /// prescribes for exactly this situation.
 #[test]
 fn the_projection_resolves_every_tasks_feed_state() {
@@ -1164,7 +1164,7 @@ fn the_subagent_handler_prints_nothing_while_still_teeing() {
     failures.assert_empty("subagent stdout contract");
 }
 
-/// R31 equivalence against the captured fixtures: the bytes the port writes to
+/// Equivalence against the captured fixtures: the bytes the port writes to
 /// the feed must equal the bytes each platform's script wrote, for the same
 /// payload and the same supplied state.
 #[test]
@@ -1255,10 +1255,10 @@ fn feed_bytes_match_the_captured_fixtures() {
 }
 
 // ---------------------------------------------------------------------------
-// notify (R1, R15, R23, R25, R31, R44 / U7)
+// notify
 // ---------------------------------------------------------------------------
 //
-// R31's observable here is the command and arguments notify invokes, so every
+// The observable here is the command and arguments notify invokes, so every
 // case asserts the plan rather than the effect: nothing is spawned, no toast
 // appears on the developer's desktop, and the assertions are the same on every
 // host because `plan` takes the platform as a parameter.
@@ -1267,13 +1267,13 @@ use claude_statusline::cmd::notify::{self, Action, Env, Platform};
 use claude_statusline::config::NotifyConfig;
 
 /// Fixtures whose captured bytes are a record of what the scripts do, not a
-/// target for the port (R20).
+/// target for the port.
 ///
 /// `muted-sound-for-event` is the only one. Both bash scripts read the config
 /// flag as `jq -r '.[$e].sound // true'`, and jq's `//` yields its right-hand
 /// side when the left is `false` as well as when it is null — so `false // true`
 /// is `true`, and `"sound": false` has never muted anything on macOS or Linux.
-/// R44 makes the flags gate delivery, so the port mutes correctly and
+/// The flags gate delivery, so the port mutes correctly and
 /// deliberately breaks the current behaviour of both bash platforms. Windows
 /// already behaved correctly. `muting_is_honoured_on_every_platform` is the
 /// literal that replaces the capture.
@@ -1522,7 +1522,7 @@ fn every_event_invokes_what_the_scripts_invoked() {
                 "paplay\t/usr/share/sounds/freedesktop/stereo/bell.oga",
             ],
         },
-        // AE14. Every metacharacter that would matter to a shell is delivered
+        // Every metacharacter that would matter to a shell is delivered
         // literally, because argv is a list and no shell ever sees it.
         NotifyCase {
             name: "metacharacters-are-delivered-literally",
@@ -1578,7 +1578,7 @@ fn every_event_invokes_what_the_scripts_invoked() {
     failures.assert_empty("notify invocations");
 }
 
-/// AE15, and the resolved divergence. `sound: false` must actually mute, on
+/// The resolved divergence. `sound: false` must actually mute, on
 /// every platform — which is a deliberate break from what both bash scripts do
 /// today. See `DIVERGENT_FIXTURES`.
 #[test]
@@ -1697,7 +1697,7 @@ fn the_icon_is_attached_only_when_it_exists() {
     );
 }
 
-/// KTD11 and AE14, asserted as an invariant rather than by inspecting escapes.
+/// Asserted as an invariant rather than by inspecting escapes.
 ///
 /// The permission message is `tool_input.command` — whatever the model was
 /// about to run — so it is attacker-influenceable. On Windows it crosses into a
@@ -1753,7 +1753,7 @@ fn the_windows_toast_never_carries_the_message_in_its_argv() {
         for arg in args {
             assert!(
                 !arg.contains(fragment),
-                "an argument carries the message, which is exactly what KTD11 forbids: {arg:?}"
+                "an argument carries the message, which is exactly what this forbids: {arg:?}"
             );
         }
     }
@@ -1777,7 +1777,7 @@ fn the_windows_toast_never_carries_the_message_in_its_argv() {
     );
 }
 
-/// R44's thresholds, which the status line reads to decide whether to fire at
+/// The configured thresholds, which the status line reads to decide whether to fire at
 /// all. A non-integer must fall back rather than disable the alert.
 #[test]
 fn thresholds_default_when_absent_or_unusable() {
@@ -1837,7 +1837,7 @@ fn thresholds_default_when_absent_or_unusable() {
     failures.assert_empty("notify thresholds");
 }
 
-/// R31 equivalence against the captured fixtures, for the cases where the
+/// Equivalence against the captured fixtures, for the cases where the
 /// scripts and the port are supposed to agree.
 #[test]
 fn notify_invocations_match_the_captured_fixtures() {
@@ -1911,7 +1911,7 @@ fn notify_invocations_match_the_captured_fixtures() {
 }
 
 // ---------------------------------------------------------------------------
-// Installer contract (R7, R8, R10, R17 / U4)
+// Installer contract
 // ---------------------------------------------------------------------------
 //
 // These rules are invisible until they are violated, and each one has already
@@ -1932,7 +1932,7 @@ fn code_lines(body: &str, comment: char) -> impl Iterator<Item = (usize, &str)> 
         .filter(move |(_, l)| !l.is_empty() && !l.starts_with(comment))
 }
 
-/// R17. `irm | iex` and `curl | bash` both run these in the user's live shell,
+/// `irm | iex` and `curl | bash` both run these in the user's live shell,
 /// where `exit` terminates their session and closes the window. CLAUDE.md's
 /// idiom is `return 1 2>/dev/null || exit 1`: `return` succeeds when sourced,
 /// and the `exit` fallback only ever runs in a subshell.
@@ -1986,7 +1986,7 @@ fn fetched_powershell_installers_are_bomless_ascii() {
     failures.assert_empty("installer encoding");
 }
 
-/// R10. Staging in a shared world-writable temp reopens exactly the window the
+/// Staging in a shared world-writable temp reopens exactly the window the
 /// staging rules exist to close: another user swapping the file between the
 /// checksum passing and the binary being placed.
 #[test]
@@ -2017,7 +2017,7 @@ fn downloads_are_staged_in_the_destination_directory() {
     failures.assert_empty("staging location");
 }
 
-/// R7 and R8's fail directions, which are deliberately different from each
+/// The checksum and attestation fail directions, which are deliberately different from each
 /// other and from the runtime guard. The checksum is the fail-closed gate; the
 /// attestation is opportunistic but still fails closed when it actually runs.
 #[test]
@@ -2050,7 +2050,7 @@ fn verification_is_pinned_and_fails_closed() {
     failures.assert_empty("verification pinning");
 }
 
-/// R5, R36, U17. Three ways to choose a release, and the default has to stay
+/// Three ways to choose a release, and the default has to stay
 /// the conservative one.
 ///
 /// `/releases/latest` excludes prereleases, which is what keeps a
@@ -2069,19 +2069,19 @@ fn release_resolution_defaults_to_stable_and_opts_in_to_prereleases() {
                 .to_string()
         });
         failures.check(rel, body.contains("--pre"), || {
-            "offers no way to opt into the prerelease channel (U17)".to_string()
+            "offers no way to opt into the prerelease channel".to_string()
         });
         failures.check(rel, body.contains("releases.atom"), || {
             "resolves prereleases some way other than the atom feed".to_string()
         });
         failures.check(rel, body.contains("CLAUDE_STATUSLINE_VERSION"), || {
-            "offers no pinned-version override (R5)".to_string()
+            "offers no pinned-version override".to_string()
         });
 
         // The API would need a token for anything useful and burns a rate limit
         // shared by everyone behind one IP. Both are why the atom feed is used.
         failures.check(rel, !body.contains("api.github.com"), || {
-            "resolves through the GitHub API, which R5 rules out".to_string()
+            "resolves through the GitHub API, which is ruled out".to_string()
         });
     }
     failures.assert_empty("release resolution");
@@ -2103,7 +2103,7 @@ fn published_raw_paths(body: &str) -> Vec<String> {
     out
 }
 
-/// R6. Every raw URL README hands a user has to resolve to a file that exists.
+/// Every raw URL README hands a user has to resolve to a file that exists.
 ///
 /// This is the only place the published paths are asserted at all, and the
 /// failure it guards is silent: `curl -fsSL <404> | bash` prints nothing
@@ -2128,7 +2128,7 @@ fn every_url_the_readme_publishes_resolves_to_a_file() {
     failures.assert_empty("published README URLs");
 }
 
-/// R11, F2. Everything irreversible an installer does has to happen after the
+/// Everything irreversible an installer does has to happen after the
 /// self-check. A binary can pass its checksum, launch, and still render
 /// wrongly, and the silent-degradation contract guarantees that failure reaches
 /// the user as an absent status line and nothing else — so deleting the scripts
@@ -2180,9 +2180,9 @@ fn the_self_check_gates_every_destructive_step() {
     failures.assert_empty("self-check gating");
 }
 
-/// R16, AE7. An upgrade from a script installation has to leave nothing
+/// An upgrade from a script installation has to leave nothing
 /// orphaned — but `notify-config.json` is the user's configuration, not ours:
-/// its schema is unchanged and the binary reads it as-is (R44), so removing it
+/// its schema is unchanged and the binary reads it as-is, so removing it
 /// would silently reset everyone's notification preferences.
 #[test]
 fn a_script_installation_is_removed_but_its_config_is_kept() {
@@ -2229,7 +2229,7 @@ fn a_script_installation_is_removed_but_its_config_is_kept() {
 }
 
 // ---------------------------------------------------------------------------
-// settings.json merge (R14, R15 / U4)
+// settings.json merge
 // ---------------------------------------------------------------------------
 //
 // This is the user's file. Everything below is really one property stated four
@@ -2270,7 +2270,7 @@ fn all_quoted() -> settings::ApplySpec {
     }
 }
 
-/// R15's idempotent re-run. A second install must not append a second copy of
+/// An idempotent re-run. A second install must not append a second copy of
 /// every hook — the shape that turns a re-run into four notification sounds.
 #[test]
 fn applying_twice_leaves_one_entry_each() {
@@ -2334,7 +2334,7 @@ fn remove_restores_the_pre_install_file() {
     );
 }
 
-/// R14's Windows quoting, driven the way an installer drives it: with the
+/// Windows quoting, driven the way an installer drives it: with the
 /// **bare** path.
 ///
 /// Quoting is the binary's job precisely because the caller is a shell and
@@ -2507,7 +2507,7 @@ fn commands(value: &serde_json::Value, out: &mut Vec<String>) {
     }
 }
 
-/// R16, AE7. The upgrade's whole point: after it, no entry points at a file the
+/// The upgrade's whole point: after it, no entry points at a file the
 /// same run deleted. Rewriting rather than appending is what distinguishes this
 /// from a fresh install over the top — the latter leaves both entries, and
 /// Claude Code then runs a script that is gone.
@@ -2573,7 +2573,7 @@ fn a_script_installation_is_rewritten_not_left_beside_ours() {
     failures.assert_empty("script-install migration");
 }
 
-/// R16. A script installation is this tool's own previous entry, not a
+/// A script installation is this tool's own previous entry, not a
 /// stranger's. Prompting "existing config found, overwrite?" for it asks the
 /// user to approve replacing us with us — and a declined prompt leaves
 /// `settings.json` pointing at a script the same run is about to delete.
@@ -2642,7 +2642,7 @@ fn unparseable_settings_is_an_error_not_a_fresh_start() {
 }
 
 /// The whole file is rewritten on every apply, so key order is a property of
-/// the writer. Re-sorting the user's keys would make U4's own verification —
+/// the writer. Re-sorting the user's keys would make the installer's own verification —
 /// "settings.json diffs show only intended entries" — impossible to perform.
 #[test]
 fn existing_key_order_is_preserved() {
@@ -2673,13 +2673,13 @@ fn existing_key_order_is_preserved() {
 }
 
 // ---------------------------------------------------------------------------
-// Fixture and harness contract (R29, R30, R31, R33 / U3)
+// Fixture and harness contract
 // ---------------------------------------------------------------------------
 //
 // Fixtures are the only thing the ported components will be checked against, so
 // a fixture that cannot be regenerated is not evidence — it is an unfalsifiable
-// claim. These cases assert that every captured fixture carries what R30 and
-// R33 require, and that the case table the harness drives stays consistent with
+// claim. These cases assert that every captured fixture carries what it needs to be
+// regenerated, and that the case table the harness drives stays consistent with
 // the state matrix it references.
 
 /// Minimal object reader. Pulling in a YAML or full JSON dependency for four
@@ -2717,7 +2717,7 @@ fn fixture_case_files() -> Vec<PathBuf> {
     found
 }
 
-/// R30 and R33. A fixture missing any of these cannot be regenerated: without
+/// A fixture missing any of these cannot be regenerated: without
 /// the source commit there is no way to re-run the scripts that produced it,
 /// and without the pinned clock and config input the re-run is a different
 /// experiment.
@@ -2756,8 +2756,8 @@ fn every_fixture_records_what_it_takes_to_regenerate_it() {
         }
     }
 
-    // Fixtures land with their component's port (R37), so this is empty until
-    // U5. Reporting the count keeps that visible rather than letting a vacuous
+    // Fixtures land with their component's port, so this is empty until
+    // Reporting the count keeps that visible rather than letting a vacuous
     // pass read as coverage.
     println!("checked {} fixture(s)", files.len());
     failures.assert_empty("fixture metadata");
@@ -2828,7 +2828,7 @@ fn the_git_state_matrix_covers_every_documented_state() {
     failures.assert_empty("§4 git-state coverage");
 }
 
-/// KTD10 names the shims the harness intercepts through. Both drivers install
+/// The shims the harness intercepts through. Both drivers install
 /// them by name, so a renamed or deleted shim body turns every notification
 /// fixture into a silent empty capture.
 #[test]
@@ -2843,7 +2843,7 @@ fn the_harness_ships_every_shim_it_installs() {
     let ps = read_repo_file("tests/harness/capture.ps1");
     for name in ["afplay", "paplay", "terminal-notifier", "notify-send"] {
         failures.check(name, sh.contains(name), || {
-            "named by KTD10 but not installed by capture.sh".to_string()
+            "named here but not installed by capture.sh".to_string()
         });
     }
     failures.check("powershell.cmd", ps.contains("powershell.cmd"), || {
@@ -2873,7 +2873,7 @@ fn debug_log_does_not_evaluate_its_message_when_disabled() {
 }
 
 // ---------------------------------------------------------------------------
-// Payload (R21, R24, KTD14 / AE6, AE13 / U8)
+// Payload
 // ---------------------------------------------------------------------------
 
 /// Reads a pinned payload from `tests/harness/payloads/`, resolving the two
@@ -3001,8 +3001,8 @@ fn minimal_payload_falls_back_without_failing() {
     failures.assert_empty("minimal-payload fallback");
 }
 
-/// AE6. One field carrying the wrong JSON type costs exactly its own row. The
-/// whole reason the payload is read as a generic value (KTD14): a derived model
+/// One field carrying the wrong JSON type costs exactly its own row. The
+/// whole reason the payload is read as a generic value: a derived model
 /// would reject the document and blank the entire status line.
 #[test]
 fn one_wrong_typed_field_degrades_only_its_own_row() {
@@ -3026,7 +3026,7 @@ fn one_wrong_typed_field_degrades_only_its_own_row() {
             format!("collateral damage: want {want:?}, got {got:?}")
         });
     }
-    failures.assert_empty("AE6 single-row degradation");
+    failures.assert_empty("single-row degradation");
 }
 
 /// The scripts read the payload as 23 newline-separated rows, so a field whose
@@ -3069,7 +3069,7 @@ fn a_newline_inside_a_value_does_not_shift_later_fields() {
 }
 
 /// Astral-plane characters survive the round trip. The token-extraction
-/// incident behind this fixture is U9's, but the payload has to carry the
+/// incident behind this fixture is the transcript scan's, but the payload has to carry the
 /// characters intact before the transcript scan can mishandle them.
 #[test]
 fn astral_plane_characters_survive_the_round_trip() {
@@ -3109,7 +3109,7 @@ fn hostile_and_overlong_paths_read_without_error() {
     assert_eq!(p.cwd(), overlong);
 }
 
-/// AE13. The render sink strips anything that could move the cursor, colour the
+/// The render sink strips anything that could move the cursor, colour the
 /// line, or forge a column separator.
 #[test]
 fn display_scrub_removes_escape_and_control_bytes() {
@@ -3139,7 +3139,7 @@ fn display_scrub_removes_escape_and_control_bytes() {
     failures.assert_empty("display scrub");
 }
 
-/// R21's fatal cases: the two inputs that make the scripts print
+/// The fatal cases: the two inputs that make the scripts print
 /// `[statusline: bad JSON]` instead of a status line.
 #[test]
 fn parse_rejects_exactly_what_the_scripts_reject() {
@@ -3306,7 +3306,7 @@ fn legacy_field_spellings_fall_back_in_the_scripts_order() {
 }
 
 // ---------------------------------------------------------------------------
-// Transcript scan (R19, R26, R27 / U9)
+// Transcript scan
 // ---------------------------------------------------------------------------
 
 fn transcript_input(name: &str) -> Vec<u8> {
@@ -3819,7 +3819,7 @@ fn an_empty_transcript_scans_to_zero_without_voting() {
 }
 
 // ---------------------------------------------------------------------------
-// Git status (R19, R20, R27, KTD13 / U10)
+// Git status
 // ---------------------------------------------------------------------------
 
 struct PorcelainCase {
@@ -3829,7 +3829,7 @@ struct PorcelainCase {
 }
 
 /// The ten git states of `docs/performance.md` §4, as the porcelain text each
-/// one produces. Parsing is pure over text (KTD13), so every state is reachable
+/// one produces. Parsing is pure over text, so every state is reachable
 /// here without building the repository that emits it — including the ones a
 /// fixture capture cannot easily stage.
 #[test]
@@ -3867,7 +3867,7 @@ fn porcelain_v2_parses_every_documented_state() {
         PorcelainCase {
             // git collapses a wholly untracked directory into one entry. A
             // reimplementation getting this wrong reads as an untracked count
-            // that jumps with directory size — one of the reasons U10 shells
+            // that jumps with directory size — one of the reasons the port shells
             // out rather than reimplementing.
             name: "collapsed-untracked-dir",
             lines: &[
@@ -4151,7 +4151,7 @@ fn the_git_cache_record_round_trips_and_fails_safe() {
     failures.assert_empty("git cache record");
 }
 
-/// The TTL, exercised through the injected clock (R26) rather than by sleeping.
+/// The TTL, exercised through the injected clock rather than by sleeping.
 /// Its expiry is a staleness bound: `.git/index` mtime does not move when an
 /// untracked file appears or when `git fetch` rewrites `packed-refs`.
 #[test]
@@ -4234,7 +4234,7 @@ fn an_absent_workspace_directory_falls_back_to_the_process_directory() {
 }
 
 // ---------------------------------------------------------------------------
-// Subagent rows and window resolution (R19, R26, R28 / U11)
+// Subagent rows and window resolution
 // ---------------------------------------------------------------------------
 
 /// Removes any per-task state left by an earlier run, so a linger assertion
@@ -4749,7 +4749,7 @@ fn feed_freshness_is_measured_through_the_injected_clock() {
 }
 
 // ---------------------------------------------------------------------------
-// U12 -- render, thresholds, notification spawn
+// Render, thresholds, notification spawn
 // ---------------------------------------------------------------------------
 
 /// Drops SGR escapes so an assertion can talk about what the user sees.
@@ -4936,7 +4936,7 @@ fn a_cwd_under_home_collapses_to_a_tilde_and_others_to_two_segments() {
         ("/home/dev/src/thing", Some("/home/dev"), "~/src/thing"),
         ("/var/repo/work", Some("/home/dev"), ".../repo/work"),
         ("/tmp", Some("/home/dev"), "/tmp"),
-        // Both separators resolve through one implementation (R25).
+        // Both separators resolve through one implementation.
         ("C:\\Users\\dev\\src", Some("C:\\Users\\dev"), "~/src"),
         ("D:\\a\\b\\c", None, ".../b/c"),
     ];
@@ -4945,13 +4945,13 @@ fn a_cwd_under_home_collapses_to_a_tilde_and_others_to_two_segments() {
     }
 }
 
-/// R20. The two `format_cwd` shapes where the port and `windows/statusline.ps1`
+/// The two `format_cwd` shapes where the port and `windows/statusline.ps1`
 /// disagree, both resolved to the port's behaviour and recorded in the plan's
 /// Scope Boundaries.
 ///
 /// Neither is reachable from a pinned fixture — Claude Code supplies native
 /// backslash paths in canonical casing on Windows — so each is asserted against
-/// a literal here, which is what R20 asks for. `breaks` is carried in the table
+/// a literal here, which is what a recorded divergence needs. `breaks` is carried in the table
 /// rather than in prose because a resolution that stops naming the behaviour it
 /// broke is a resolution nobody can re-evaluate later.
 #[test]
@@ -5003,7 +5003,7 @@ fn resolved_cwd_divergences_keep_the_ports_behaviour() {
 
 #[test]
 fn a_subagent_row_scrubs_its_untrusted_fields_at_the_sink() {
-    // AE13: the escape arrives through the row, which is what every source
+    // the escape arrives through the row, which is what every source
     // path -- live feed, read-back cache, transcript fallback -- funnels into.
     let row = Row {
         used: 18_000,
@@ -5046,7 +5046,7 @@ fn a_long_subagent_title_is_ellipsised_by_characters() {
     assert!(body.ends_with("✓ done"), "{body:?}");
 }
 
-/// AE15. The whole point of the latch is one notification per crossing, so the
+/// The whole point of the latch is one notification per crossing, so the
 /// re-arm and the window rollover matter as much as the fire.
 #[test]
 fn context_and_rate_alerts_fire_once_per_crossing() {
@@ -5106,7 +5106,7 @@ fn a_rate_window_rollover_rearms_the_rate_latch() {
 
 #[test]
 fn an_unreadable_latch_suppresses_rather_than_spams() {
-    // R23: a state file that exists but cannot be read reads as
+    // a state file that exists but cannot be read reads as
     // already-notified. Treated as "never notified" it would re-fire on every
     // refresh for as long as the collision lasted.
     let decision = decide(LatchState::Unusable, 99, 70, 99, 80, "1767225600");
@@ -5142,7 +5142,7 @@ fn the_latch_serialises_with_the_field_names_the_scripts_wrote() {
 
 #[test]
 fn degraded_input_renders_the_notice_and_touches_no_state() {
-    // AE3. The bad-JSON path must not write the token record or the latch: a
+    // The bad-JSON path must not write the token record or the latch: a
     // tick that could not be understood overwriting the last good one is how a
     // single malformed refresh would erase a session's deltas.
     let dir = scratch_dir("degraded-render");
@@ -5218,7 +5218,7 @@ fn the_box_pads_every_row_to_one_width() {
 }
 
 // ---------------------------------------------------------------------------
-// U13 -- statusline fixture replay (R19, R20, R32)
+// Statusline fixture replay
 // ---------------------------------------------------------------------------
 
 /// The cases whose three captures do not agree, and the platform whose
@@ -5370,7 +5370,7 @@ fn substitute(text: &str, home: &Path, tmp: &Path, work: &Path, session: &str) -
         .replace("{SESSION}", session)
 }
 
-/// R19 and R32: every captured statusline case, replayed against the port.
+/// Every captured statusline case, replayed against the port.
 ///
 /// This is the parity gate. The unit tests above check the renderer's pieces;
 /// only this compares whole rendered bytes against what the scripts actually
@@ -5444,7 +5444,7 @@ fn rendered_output_matches_the_captured_fixtures() {
         // The scripts read the real wall clock, so the harness materialised an
         // mtime and recorded it as an offset from the pinned clock. Here the
         // offset is applied to the clock instead, which is the whole reason
-        // KTD6's Clock covers filesystem timestamps as well as `now`.
+        // The Clock covers filesystem timestamps as well as `now`.
         let mut clock = TestClock::at(pinned_now);
         let defaults = &cases_table["defaults"]["inputs_by_component"]["statusline"];
         let staged = defaults
@@ -5563,14 +5563,14 @@ fn first_difference(expected: &str, got: &str) -> String {
     "line contents agree; the difference is the trailing newline".to_string()
 }
 
-/// KTD15. The self-check's expectation is compiled in from a fixture the case
+/// The self-check's expectation is compiled in from a fixture the case
 /// table also asserts, so the two cannot drift.
 ///
 /// This test is the joint. `rendered_output_matches_the_captured_fixtures`
 /// proves the renderer reproduces the `self-check` case; this proves the bytes
 /// the *binary* carries are that same case's. Without it the `include_str!`
 /// could be repointed at a stale or hand-edited file and everything would still
-/// pass — which is exactly the failure KTD15 names: a self-check that drifts
+/// pass — which is exactly the failure this guards against: a self-check that drifts
 /// from the renderer starts refusing every install.
 #[test]
 fn the_self_check_expectation_is_the_captured_fixture() {
@@ -5631,7 +5631,7 @@ fn the_self_check_renders_the_box_rather_than_echoing_a_literal() {
 /// The rescan skip, and precisely what it costs.
 ///
 /// An unchanged transcript is not read at all: everything the tokens and model
-/// rows render is already in the record. R38's statusline pair measured the
+/// rows render is already in the record. The statusline measurements found the
 /// unconditional rescan at ~50 ms on 8 MB — invisible next to PowerShell's
 /// ~124 ms interpreter floor, four times bash's entire tick.
 ///

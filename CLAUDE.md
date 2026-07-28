@@ -7,7 +7,7 @@ Cross-platform custom status line for Claude Code, shipped as one Rust binary. C
 ```
 src/                 the crate: one multi-call binary, one subcommand per former runtime script
 install/             install.sh + uninstall.sh (macOS and Linux), install.ps1 + uninstall.ps1 (Windows)
-tests/equivalence.rs the single integration test file; a table of named cases (R29)
+tests/equivalence.rs the single integration test file; a table of named cases
 tests/fixtures/      golden captures, one directory per case
 tests/harness/       fixture capture and paired measurement drivers
 docs/solutions/      documented fixes and practices, by category, with YAML frontmatter (module, tags, problem_type) -- relevant when debugging or implementing in an area one of them covers

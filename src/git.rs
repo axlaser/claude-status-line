@@ -1,6 +1,6 @@
 //! The git row: branch, working-tree counts, upstream divergence, and stashes.
 //!
-//! Git is invoked as a subprocess (KTD13). The alternative — a pure-Rust
+//! Git is invoked as a subprocess. The alternative — a pure-Rust
 //! implementation — would mean reimplementing git's *configuration* surface,
 //! not just its data: `core.autocrlf` normalisation applied before
 //! `--shortstat` counts lines, `.gitattributes` binary and textconv rules,
@@ -15,7 +15,7 @@
 //! unit-tests without a repository, and it is the seam a later `gix`
 //! evaluation would be measured against rather than replacing.
 //!
-//! The 5-second TTL is ported (R27) because subprocess cost is real — 73.9 ms
+//! The 5-second TTL is ported because subprocess cost is real — 73.9 ms
 //! for the pair on the maintainer's Windows machine. Its expiry is also a
 //! correctness device, not only a cost dodge: the cache is keyed on
 //! `.git/index` mtime, and that key is incomplete. Creating an untracked file
@@ -171,8 +171,8 @@ fn count_before(text: &str, label: &str) -> u64 {
 /// sentinel; it is a closure so the extra subprocess is not paid by a branch
 /// that merely *is* named `(detached)` in a test.
 ///
-/// Unborn HEAD renders **no git segment, on every platform** — settled at U12
-/// and recorded in the plan's Resolved divergences (R20). It breaks Windows,
+/// Unborn HEAD renders **no git segment, on every platform**. This is a
+/// resolved divergence, not an accident — it breaks Windows,
 /// which substitutes the literal `HEAD`.
 ///
 /// The deciding argument is coherence rather than majority. A bare `git init`
@@ -206,7 +206,7 @@ pub fn resolve_branch(p: &Porcelain, detached_hash: impl FnOnce() -> Option<Stri
 /// file-modifying tool call.
 /// `temp` is passed rather than read from the environment so a fixture replay
 /// can stage a clean root per case. Ambient reads would make the whole render
-/// path untestable in-process, which is what R30 asks for.
+/// path untestable in-process, and every render input has to be pinnable.
 pub fn cache_path(temp: &Path, session_id: &str) -> Option<PathBuf> {
     let safe = session::sanitize_session_id(session_id);
     if safe.is_empty() {
@@ -294,7 +294,7 @@ fn read_fresh_cache(clock: &dyn Clock, path: &Path, index_mtime: i64) -> Option<
     }
     // Age, not "now minus the recorded mtime": the record ages from when it was
     // written, and both halves of the comparison go through the injected clock
-    // (R26) so a fixture can reach both sides of the boundary without sleeping.
+    // so a fixture can reach both sides of the boundary without sleeping.
     match clock.age_secs(path) {
         Some(age) if age < TTL_SECS => Some(status),
         _ => None,

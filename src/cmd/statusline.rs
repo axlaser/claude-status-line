@@ -1,4 +1,4 @@
-//! The status line itself: gather, render, alert (R19, R21, R26, R28).
+//! The status line itself: gather, render, alert.
 //!
 //! This is the only place the four data sources meet. Everything it calls is
 //! either a pure function or a guarded read, and the order is the one the
@@ -6,7 +6,7 @@
 //! their windows against it, and the alerts fire after the render is already a
 //! string, so a slow notification cannot delay the output.
 //!
-//! There is no output cache (R27). The scripts kept one because a fresh
+//! There is no output cache. The scripts kept one because a fresh
 //! interpreter cost more than the work; the binary recomputes every tick.
 
 use std::path::{Path, PathBuf};
@@ -25,8 +25,8 @@ use crate::transcript::{self, Scan, TokenRecord};
 ///
 /// Passed rather than read from the environment at each use site. The scripts
 /// had no choice — a shell reads `$HOME` wherever it stands — but ambient reads
-/// make the render path untestable in-process, and R30 requires a case to pin
-/// every render input, which these are. `from_env` is the production
+/// make the render path untestable in-process, and a case has to pin every
+/// render input, which these are. `from_env` is the production
 /// construction and the only place the variables are consulted.
 pub struct Roots {
     pub home: Option<PathBuf>,
@@ -111,7 +111,7 @@ fn git_status(
 /// This tick's totals, and the record that carries the per-bucket deltas.
 ///
 /// The totals always come from this tick's scan; only the deltas come from the
-/// stored record (R28). That is what lets the head checksum the scripts needed
+/// stored record. That is what lets the head checksum the scripts needed
 /// go away: they cached the totals, so a same-size rewrite was invisible.
 fn transcript_state(
     clock: &dyn Clock,
@@ -142,15 +142,15 @@ fn transcript_state(
     // it byte for byte at the cost of the whole file.
     //
     // This is the one place the port keeps a *computation* cache, and it is
-    // here on measured grounds rather than by symmetry with the scripts. R38's
-    // statusline pair found the unconditional rescan costing ~50 ms on an 8 MB
+    // here on measured grounds rather than by symmetry with the scripts. The
+    // paired measurements found the unconditional rescan costing ~50 ms on an 8 MB
     // transcript, which is invisible next to PowerShell's ~124 ms interpreter
     // floor but is four times bash's entire tick — so dropping the scripts'
-    // incremental parser (R27) was right on Windows and a regression on Linux.
+    // incremental parser was right on Windows and a regression on Linux.
     // A static transcript is what a session looks like between messages, which
     // is most ticks.
     //
-    // What U12 gave up to always scan was noticing a same-size rewrite. That
+    // What always scanning gave up was noticing a same-size rewrite. That
     // trade is reversed here deliberately: transcripts are append-only JSONL,
     // a rewrite landing on the byte-identical length is close to unreachable,
     // and the mtime has to match as well. The scripts' version of this bug came
@@ -277,7 +277,7 @@ fn fire_alerts(roots: &Roots, payload: &Payload, session_id: &str, rendered: &st
     );
 
     for alert in &decision.alerts {
-        // R44: the per-event flags gate delivery. A muted event still latches,
+        // the per-event flags gate delivery. A muted event still latches,
         // so unmuting mid-window does not immediately fire for a crossing the
         // user already lived through.
         let event = config.event(alert.event);

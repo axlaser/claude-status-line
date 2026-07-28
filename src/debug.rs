@@ -1,4 +1,4 @@
-//! `STATUSLINE_DEBUG` logging (R45).
+//! `STATUSLINE_DEBUG` logging.
 //!
 //! `CLAUDE.md`'s Silent Degradation rule has two halves — never write to
 //! stderr, and log errors via the debug log. Shipping only the silencing half

@@ -1,4 +1,4 @@
-//! Edge-triggered alerts and the per-session notification latch (R23, R28, R44).
+//! Edge-triggered alerts and the per-session notification latch.
 //!
 //! The status line fires two alerts: context usage crossing its threshold, and
 //! a rate-limit window crossing its own. Both are *edge* triggered — the point
@@ -187,7 +187,8 @@ pub fn spawn(alert: &Alert) {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
 
-    // The notification-delivery carve-out in R25. Without this a console window
+    // Notification delivery is one of the three places platform-specific code
+    // is allowed to live. Without this a console window
     // flashes on every crossing when the parent has no console to inherit; the
     // scripts never hit it because PowerShell was already the console.
     #[cfg(windows)]

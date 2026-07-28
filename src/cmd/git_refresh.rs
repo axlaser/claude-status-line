@@ -1,6 +1,6 @@
 //! `git-refresh` — the PostToolUse hook that invalidates the git cache.
 //!
-//! The pilot component (R34). It is the smallest of the four, which makes it
+//! The pilot component. It is the smallest of the four, which makes it
 //! the one that proves the pipeline — capture, port, fixture, delete — before
 //! anything harder is attempted.
 //!
@@ -20,8 +20,8 @@ pub const INVALIDATING_TOOLS: [&str; 5] = ["Edit", "Write", "MultiEdit", "Bash",
 
 /// The two caches a file-modifying tool invalidates.
 ///
-/// The tasks feed and the notification latch are deliberately absent: R28 makes
-/// them data stores rather than performance caches, and deleting them here
+/// The tasks feed and the notification latch are deliberately absent: they are
+/// data stores rather than performance caches, and deleting them here
 /// would drop subagent rows and re-fire alerts on every edit.
 pub fn cache_paths(temp: &Path, safe_id: &str) -> Vec<PathBuf> {
     vec![

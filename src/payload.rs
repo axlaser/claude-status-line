@@ -1,7 +1,7 @@
 //! The stdin payload: one tolerant reader over the JSON contract Claude Code
 //! pipes in on every refresh.
 //!
-//! The whole module exists to be *un*typed (KTD14). A `#[derive(Deserialize)]`
+//! The whole module exists to be *un*typed. A `#[derive(Deserialize)]`
 //! model would reject the entire document the day Claude Code changes one
 //! field's type, and under the silent-degradation contract that renders as a
 //! blank status line with no explanation. The scripts never had that failure
@@ -16,7 +16,7 @@
 //! state. The accessors here are the contract now; `CLAUDE.md` documents the
 //! fields.
 //!
-//! Nothing here scrubs (R24). [`sanitize_display`] lives in this module because
+//! Nothing here scrubs. [`sanitize_display`] lives in this module because
 //! it is the counterpart of that same block, but it is applied at
 //! the render sink, not at ingest: scrubbing on the way in would silently
 //! corrupt values that never reach the screen, notably `transcript_path`, which
@@ -74,7 +74,7 @@ impl Payload {
     /// as `""` already behaved exactly as a missing one.
     ///
     /// Wrong-typed values read as absent, which is a divergence from both
-    /// scripts and the point of AE6. jq renders an object to its compact JSON
+    /// scripts, and the reason one bad field costs only its own row. jq renders an object to its compact JSON
     /// text and PowerShell renders it `@{a=1}`, so a payload with
     /// `model.display_name: {"a": 1}` puts `{"a":1}` in the model row on
     /// macOS and `@{a=1}` on Windows. There is no byte-exact behaviour to
@@ -95,7 +95,7 @@ impl Payload {
     /// A JSON `false` reads as absent, matching jq's `//` operator, which
     /// returns its right-hand side for `false` as well as `null`. That is the
     /// same operator whose behaviour meant `notify`'s mute flags never worked
-    /// (U7) — here it is being reproduced rather than fixed, because for a
+    /// — here it is being reproduced rather than fixed, because for a
     /// numeric field "false" has no sensible reading.
     pub fn number(&self, path: &[&str]) -> Option<f64> {
         match self.at(path)? {
@@ -150,7 +150,7 @@ impl Payload {
     /// `J_GIT_CWD`. The parity block extracts `workspace.current_dir` a second
     /// time for the git row and does **not** give it the `cwd` fallback, so the
     /// git segment and the path segment can resolve differently. Kept separate
-    /// rather than aliased to [`Payload::cwd`] for that reason. U10 supplies
+    /// rather than aliased to [`Payload::cwd`] for that reason. The caller supplies
     /// the process working directory when this is empty.
     pub fn git_cwd(&self) -> &str {
         self.text(&["workspace", "current_dir"])
@@ -181,7 +181,7 @@ impl Payload {
         self.uint(&["context_window", "total_input_tokens"])
     }
 
-    /// `J_EFFORT_LEVEL`. A display field, so it is scrubbed at render (AE13).
+    /// `J_EFFORT_LEVEL`. A display field, so it is scrubbed at render.
     pub fn effort_level(&self) -> &str {
         self.text(&["effort", "level"])
     }
@@ -252,7 +252,7 @@ impl Payload {
     }
 }
 
-/// The render sink's scrub for untrusted display fields (R24, AE13).
+/// The render sink's scrub for untrusted display fields.
 ///
 /// Ports the scripts' `sa_sanitize_title`: control
 /// bytes and DEL become spaces, `|` becomes a space so a value cannot forge a

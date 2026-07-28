@@ -5,8 +5,9 @@
 //!
 //! The whole unit is split into a pure [`plan`] and an impure executor
 //! (`crate::platform::notify`). Everything interesting — which helper runs,
-//! with which arguments, in which order — is decided by `plan`, so R31's
-//! observable ("the command and arguments notify invokes") can be asserted
+//! with which arguments, in which order — is decided by `plan`, so the
+//! observable this component is tested on — the command and arguments it
+//! invokes — can be asserted
 //! from a table without spawning anything or raising a toast on the developer's
 //! desktop.
 //!
@@ -70,7 +71,7 @@ pub enum Action {
 
 /// Everything about the machine that changes what gets invoked.
 ///
-/// Injected rather than probed so a case can pin it (R30). Which helpers exist
+/// Injected rather than probed so a case can pin it. Which helpers exist
 /// and which sound files are present are as much an input to this component as
 /// the payload is — a fixture captured on a runner that had `paplay` is not
 /// reproducible on a host that does not, and probing at assert time would make
@@ -135,7 +136,7 @@ const DETAIL_LIMIT: usize = 80;
 /// **This body is a compile-time constant and must stay one.** The message is
 /// attacker-influenceable — on a permission event it is `tool_input.command`,
 /// which is whatever the model was about to run — so it crosses the interpreter
-/// boundary on **stdin**, as data, and never as script text (KTD11, AE14).
+/// boundary on **stdin**, as data, and never as script text.
 /// `notify_argv_never_carries_the_message` asserts exactly that.
 ///
 /// It contains no double quotes, so the Windows command-line encoding that
@@ -147,7 +148,7 @@ const DETAIL_LIMIT: usize = 80;
 /// escaped quotes, backslashes — all arrived byte-identical, with exit 0 and
 /// empty stderr. That covers every step where the text could be evaluated or
 /// mangled. It does **not** cover BurntToast rendering the string, which is a
-/// visual fact and belongs to U17's live-session confirmation.
+/// visual fact, and only a live session on Windows can confirm it.
 pub const WINDOWS_TOAST_SCRIPT: &str = concat!(
     "$ErrorActionPreference='SilentlyContinue';",
     "$p=[Console]::In.ReadToEnd()|ConvertFrom-Json;",
@@ -411,14 +412,14 @@ fn unix_visual(platform: Platform, msg: &str, env: &Env) -> Option<Action> {
 
 /// The Windows toast, as a `powershell.exe` invocation.
 ///
-/// Three things here are load-bearing (KTD11):
+/// Three things here are load-bearing:
 ///
 /// - The interpreter is addressed by **absolute path** under `%SystemRoot%`,
 ///   never by `PATH` or the current directory. A `powershell.exe` dropped in
 ///   the working directory must never be what raises the notification.
 /// - `-NoProfile`, so a user profile cannot change what the script means.
 /// - The message travels on **stdin as JSON**, never inside the `-Command`
-///   body. This is what makes AE14 hold by construction rather than by
+///   body. This is what keeps a hostile message harmless by construction rather than by
 ///   escaping: no quoting rule has to be right, because the text is never
 ///   parsed as code.
 ///
