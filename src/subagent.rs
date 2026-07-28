@@ -272,15 +272,20 @@ pub fn parse_feed(raw: &str) -> Option<Vec<FeedTask>> {
             _ => 0,
         };
 
+        // Scrubbed here, where the scripts scrubbed. These three land in the
+        // `|`-separated task record, so a `|` in any of them shifts every later
+        // field on read-back; `display` is already scrubbed above for the same
+        // reason. The sink also scrubs, which still covers records an older
+        // binary wrote, but by then the field boundaries are already lost.
         let candidate = FeedTask {
             id: text("id"),
             display,
             status: text("status"),
-            model: text("model"),
+            model: sanitize_display(&text("model")),
             window,
             tokens,
-            start: text("startTime"),
-            effort: text("effort"),
+            start: sanitize_display(&text("startTime")),
+            effort: sanitize_display(&text("effort")),
         };
         // A row with no identity at all carries nothing to render.
         if candidate.id.is_empty()
@@ -395,7 +400,12 @@ pub fn rows_from_feed(
                 start: task.start.clone(),
                 effort: task.effort.clone(),
             };
-            let _ = state::write_guarded(path, record.to_line().as_bytes());
+            // Only when it changed. The token record and the learned map both
+            // already skip an unchanged write; this store rewrote every visible
+            // task's file on every tick, which is most ticks of a long task.
+            if previous.as_ref() != Some(&record) {
+                let _ = state::write_guarded(path, record.to_line().as_bytes());
+            }
         }
 
         if let Some(stamp) = done_at {

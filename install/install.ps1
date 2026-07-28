@@ -399,42 +399,56 @@ Write-Host ""
 # caught. Everything destructive below is gated on it, and the sidecar stays
 # where it is until it passes.
 Step "Verifying the binary renders"
-& $binPath self-check 2>&1 | Out-Null
+# The rendered output is captured, not discarded. It is the only evidence of
+# what went wrong, this is a per-target failure CI cannot reproduce, and the
+# binary that produced it is about to be moved out of the way.
+$checkLog = Join-Path $binDir "$stagePrefix$PID.self-check.txt"
+& $binPath self-check 2>&1 | Set-Content -Path $checkLog -Encoding utf8
 if ($LASTEXITCODE -ne 0) {
     Err "The installed binary failed its self-check"
     Info "It downloaded and verified but does not render correctly, so it was"
-    Info "not activated. Your previous installation is untouched."
-    Remove-Item $binPath -Force -ErrorAction SilentlyContinue
-    if (Test-Path $sidecarPath) { Move-Item -Path $sidecarPath -Destination $binPath -Force -ErrorAction SilentlyContinue }
+    Info "not activated."
+    # Renamed aside, not deleted. Windows refuses to delete a file that is still
+    # held open, and -ErrorAction SilentlyContinue swallowed exactly that -- the
+    # failed binary stayed active while the script reported it gone. Renaming is
+    # the operation Windows permits, and it is what this script already uses to
+    # place the binary in the first place.
+    $failedBin = Join-Path $binDir "$stagePrefix$PID.failed"
+    try {
+        Move-Item -Path $binPath -Destination $failedBin -Force -ErrorAction Stop
+    } catch {
+        $failedBin = $null
+    }
+    $hadPrevious = Test-Path $sidecarPath
+    if ($hadPrevious) {
+        Move-Item -Path $sidecarPath -Destination $binPath -Force -ErrorAction SilentlyContinue
+        if (Test-Path $binPath) {
+            Info "Your previous installation is untouched."
+        } else {
+            Err "Could not restore the previous binary"
+            Info "It is still at $sidecarPath -- move it back to $binPath by hand."
+        }
+    }
+    Info "What it rendered: $checkLog"
+    if ($failedBin) { Info "The binary it rendered with: $failedBin" }
+    Info "Please attach both when reporting this."
     Remove-Stage
     return
 }
+Remove-Item $checkLog -Force -ErrorAction SilentlyContinue
 # Tolerated failure by design: the old binary may still be running, and the next
 # run sweeps whatever is left.
 if (Test-Path $sidecarPath) { Remove-Item $sidecarPath -Force -ErrorAction SilentlyContinue }
 Ok "Renders correctly"
 Write-Host ""
 
-# --- Migrate from a script installation ---
-# Only now, with a binary that has proved it renders. notify-config.json is
-# deliberately not in this list: it is the user's configuration, its schema is
-# unchanged, and the binary reads it as-is.
+# --- Note the superseded scripts ---
+# Found here, deleted only once settings.json actually points at the binary.
+# Deleting them first meant a failed 'settings apply' left a migrating user with
+# neither the script integration nor a configured binary, and nothing here backs
+# them up -- the binary has a sidecar, these do not.
 $legacyScripts = @('statusline.ps1', 'notify.ps1', 'git-refresh.ps1', 'subagent-statusline.ps1')
 $legacyFound = @($legacyScripts | Where-Object { Test-Path (Join-Path $claudeDir $_) })
-if ($legacyFound.Count -gt 0) {
-    Step "Removing the superseded scripts"
-    foreach ($name in $legacyFound) {
-        $path = Join-Path $claudeDir $name
-        try {
-            Remove-Item $path -Force -ErrorAction Stop
-            Ok $name
-        } catch {
-            Warn "Could not remove $path"
-        }
-    }
-    Info "Your notification settings were kept."
-    Write-Host ""
-}
 
 # --- Configure settings.json ---
 # The bare path is passed deliberately. The stored command has to be
@@ -534,6 +548,26 @@ if ($LASTEXITCODE -ne 0) {
     return
 }
 Ok "Updated $settingsPath"
+
+# --- Migrate from a script installation ---
+# Only now: the binary has proved it renders and settings.json points at it, so
+# the scripts are genuinely superseded rather than merely replaced on disk.
+# notify-config.json is deliberately not in this list: it is the user's
+# configuration, its schema is unchanged, and the binary reads it as-is.
+if ($legacyFound.Count -gt 0) {
+    Write-Host ""
+    Step "Removing the superseded scripts"
+    foreach ($name in $legacyFound) {
+        $path = Join-Path $claudeDir $name
+        try {
+            Remove-Item $path -Force -ErrorAction Stop
+            Ok $name
+        } catch {
+            Warn "Could not remove $path"
+        }
+    }
+    Info "Your notification settings were kept."
+}
 
 Write-Host ""
 Write-Host "  ${GRAY}-----------------------------------------${RESET}"

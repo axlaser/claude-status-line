@@ -332,6 +332,17 @@ fn read_from_git(cwd: &Path) -> GitStatus {
     out
 }
 
+/// How long one `git` invocation may take before it is killed.
+///
+/// Two seconds is well past any healthy status read on a local repo, and short
+/// enough that a stalled one degrades to a missing git row within a tick or two
+/// instead of blocking forever. It is deliberately under the 5s cache TTL, so a
+/// timing-out repo still refreshes on the same cadence a healthy one does.
+const GIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// How often the deadline is checked while the child runs.
+const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(5);
+
 /// Runs git and returns its trimmed stdout, or `None` for any failure.
 ///
 /// `--no-optional-locks` keeps a status read from writing the index, which
@@ -357,17 +368,58 @@ fn run_git(cwd: &Path, args: &[&str]) -> Option<String> {
         command.creation_flags(CREATE_NO_WINDOW);
     }
 
-    let output = match command.output() {
-        Ok(o) => o,
+    // Deliberately not `output()`. It blocks until the child exits, with no
+    // bound, on the render path — and this process is respawned every couple of
+    // seconds, so a repo on a stalled network mount left one blocked process per
+    // tick, accumulating without limit. The 5s cache TTL bounds how *often* git
+    // runs, never how long it may block.
+    command.stdout(Stdio::piped());
+    let mut child = match command.spawn() {
+        Ok(c) => c,
         Err(e) => {
             debug::log(move || format!("git: cannot run: {e}"));
             return None;
         }
     };
-    if !output.status.success() {
+
+    // Drained on a helper thread: a child that fills the pipe blocks on write,
+    // so waiting for exit without reading would deadlock on a large status.
+    let mut pipe = child.stdout.take();
+    let reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(p) = pipe.as_mut() {
+            use std::io::Read;
+            let _ = p.read_to_end(&mut buf);
+        }
+        buf
+    });
+
+    let deadline = std::time::Instant::now() + GIT_TIMEOUT;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(s)) => break Some(s),
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    debug::log(|| "git: killed at the deadline".to_string());
+                    break None;
+                }
+                std::thread::sleep(POLL_INTERVAL);
+            }
+            Err(e) => {
+                debug::log(move || format!("git: wait failed: {e}"));
+                break None;
+            }
+        }
+    };
+
+    // Joined either way: killing the child closes the pipe, which ends the read.
+    let stdout = reader.join().unwrap_or_default();
+    if !status?.success() {
         return None;
     }
-    let text = String::from_utf8_lossy(&output.stdout)
+    let text = String::from_utf8_lossy(&stdout)
         .trim_end_matches(['\n', '\r'])
         .to_string();
     Some(text)

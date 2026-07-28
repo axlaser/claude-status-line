@@ -161,6 +161,14 @@ observed fresh/stale outcome, not only the rendered bytes — see
   paths in canonical casing on Windows, confirmed against a live session — which is why four
   rounds of fixture captures never produced either. Asserted as literals by
   `resolved_cwd_divergences_keep_the_ports_behaviour`.
+- *2026-07-28:* `"sound": false` and `"visual": false` in `notify-config.json` now genuinely
+  mute an event on macOS and Linux. The bash handlers read the flag with
+  `jq -r '.[$e].sound // true'`, and jq's `//` yields its right-hand side when the left is
+  `false` as well as when it is null — so `false // true` was `true` and muting never worked
+  on those two platforms. Windows honoured it. The port gates delivery on the flags, so
+  intended behaviour wins over reproducing the bug, and an existing config that carried a
+  `false` the user believed was already in effect starts behaving as written. See
+  `src/config.rs:83`.
 
 ## 5. PR checklist for hot-path changes
 

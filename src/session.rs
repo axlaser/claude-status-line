@@ -21,9 +21,17 @@ use std::path::PathBuf;
 /// arrives from the payload and lands in a filename, so a separator or a `..`
 /// surviving here would let a component write or delete outside the temp
 /// directory.
+/// Session ids longer than this are truncated. Nothing Claude Code emits comes
+/// near it — a UUID is 36 characters — but the id lands in a filename, and a
+/// name the filesystem refuses makes *every* state write for that session fail.
+/// That is the whole per-session cache gone, silently, for as long as the
+/// session lasts.
+const MAX_SESSION_ID: usize = 128;
+
 pub fn sanitize_session_id(raw: &str) -> String {
     raw.chars()
         .filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
+        .take(MAX_SESSION_ID)
         .collect()
 }
 

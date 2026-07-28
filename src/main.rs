@@ -29,7 +29,30 @@ fn main() {
     platform::redirect_stderr_to_null();
 
     // Layer 2: silence the default hook's multi-line panic message.
-    std::panic::set_hook(Box::new(|_| {}));
+    //
+    // Silent to the terminal always; silent to the debug log only when logging
+    // is off. README and the release notes both tell users a `panic caught`
+    // line is always worth reporting, and the catch below can only name the
+    // subcommand — the message and location live in the `PanicHookInfo` the
+    // hook receives and nowhere else. Writing them to the log costs the
+    // contract nothing: the log is a file, not fd 2.
+    if debug::is_enabled() {
+        std::panic::set_hook(Box::new(|info| {
+            let location = info
+                .location()
+                .map(|l| format!("{}:{}", l.file(), l.line()))
+                .unwrap_or_else(|| "unknown location".to_string());
+            let message = info
+                .payload()
+                .downcast_ref::<&str>()
+                .map(|s| (*s).to_string())
+                .or_else(|| info.payload().downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "unknown panic".to_string());
+            debug::log(move || format!("panic at {location}: {message}"));
+        }));
+    } else {
+        std::panic::set_hook(Box::new(|_| {}));
+    }
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     let sub = args.first().map(String::as_str).unwrap_or("statusline");

@@ -63,15 +63,23 @@ discard_stage() {
 # "untouched" has to be restored rather than merely not disturbed.
 restore_previous() {
     if [[ -n ${BACKUP:-} && -e $BACKUP ]]; then
-        mv -f "$BACKUP" "$BIN_PATH" 2>/dev/null
+        if ! mv -f "$BACKUP" "$BIN_PATH" 2>/dev/null; then
+            # Callers announce "your previous installation is untouched". When
+            # the move back fails that sentence is false and the only copy is
+            # sitting at $BACKUP, so say so instead of returning quietly.
+            err "Could not restore the previous binary"
+            info "It is still at $BACKUP -- move it back to $BIN_PATH by hand."
+            BACKUP=""
+            return 1
+        fi
     fi
     BACKUP=""
     return 0
 }
 
-# The scripts a pre-binary installation left in ~/.claude. Removed only
-# after the self-check passes: until then they are still the working
-# installation.
+# The scripts a pre-binary installation left in ~/.claude. Removed only after
+# the self-check passes *and* settings.json points at the binary: until both
+# hold they are still the working installation.
 LEGACY_SCRIPTS=(statusline.sh notify.sh git-refresh.sh subagent-statusline.sh)
 
 # --- Options ---
@@ -386,39 +394,39 @@ echo ""
 # an absent status line and nothing else, so this is the only place it can be
 # caught. Everything destructive below is gated on it.
 step "Verifying the binary renders"
-if ! "$BIN_PATH" self-check >/dev/null 2>&1; then
+# The rendered output is captured, not discarded. It is the only evidence of
+# what went wrong, this is a per-target failure CI cannot reproduce, and the
+# binary that produced it is about to be moved out of the way.
+_CHECK_LOG="$BIN_DIR/${STAGE_PREFIX}$$.self-check.txt"
+if ! "$BIN_PATH" self-check >"$_CHECK_LOG" 2>&1; then
     err "The installed binary failed its self-check"
     info "It downloaded and verified but does not render correctly, so it was"
-    info "not activated. Your previous installation is untouched."
-    rm -f "$BIN_PATH"
-    restore_previous
+    info "not activated."
+    _FAILED_BIN="$BIN_DIR/${STAGE_PREFIX}$$.failed"
+    mv -f "$BIN_PATH" "$_FAILED_BIN" 2>/dev/null || { rm -f "$BIN_PATH"; _FAILED_BIN=""; }
+    if restore_previous; then
+        info "Your previous installation is untouched."
+    fi
+    info "What it rendered: $_CHECK_LOG"
+    [[ -n $_FAILED_BIN ]] && info "The binary it rendered with: $_FAILED_BIN"
+    info "Please attach both when reporting this."
     return 1 2>/dev/null || exit 1
 fi
+rm -f "$_CHECK_LOG" 2>/dev/null
 [[ -n $BACKUP ]] && rm -f "$BACKUP"
 BACKUP=""
 ok "Renders correctly"
 echo ""
 
-# --- Migrate from a script installation ---
-# Only now, with a binary that has proved it renders. notify-config.json is
-# deliberately not in this list: it is the user's configuration, its schema is
-# unchanged, and the binary reads it as-is.
+# --- Note the superseded scripts ---
+# Found here, deleted only once settings.json actually points at the binary.
+# Deleting them first meant a failed `settings apply` left a migrating user with
+# neither the script integration nor a configured binary, and nothing here backs
+# them up -- the binary has a sidecar, these do not.
 _legacy_found=()
 for _script in "${LEGACY_SCRIPTS[@]}"; do
     [[ -e "$CLAUDE_DIR/$_script" ]] && _legacy_found+=("$_script")
 done
-if (( ${#_legacy_found[@]} > 0 )); then
-    step "Removing the superseded scripts"
-    for _script in "${_legacy_found[@]}"; do
-        if rm -f "$CLAUDE_DIR/$_script"; then
-            ok "$_script"
-        else
-            warn "Could not remove $CLAUDE_DIR/$_script"
-        fi
-    done
-    info "Your notification settings were kept."
-    echo ""
-fi
 
 # --- Configure settings.json ---
 # The merge runs through the binary just placed. It is the only JSON
@@ -514,6 +522,24 @@ if ! _apply_err=$("$BIN_PATH" settings apply --binary "$BIN_PATH" "${_apply_flag
     return 1 2>/dev/null || exit 1
 fi
 ok "Updated $SETTINGS_PATH"
+
+# --- Migrate from a script installation ---
+# Only now: the binary has proved it renders *and* settings.json points at it,
+# so the scripts are genuinely superseded rather than merely replaced on disk.
+# notify-config.json is deliberately not in this list: it is the user's
+# configuration, its schema is unchanged, and the binary reads it as-is.
+if (( ${#_legacy_found[@]} > 0 )); then
+    echo ""
+    step "Removing the superseded scripts"
+    for _script in "${_legacy_found[@]}"; do
+        if rm -f "$CLAUDE_DIR/$_script"; then
+            ok "$_script"
+        else
+            warn "Could not remove $CLAUDE_DIR/$_script"
+        fi
+    done
+    info "Your notification settings were kept."
+fi
 
 # --- Done ---
 echo ""

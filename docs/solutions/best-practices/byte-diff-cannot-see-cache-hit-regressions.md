@@ -1,16 +1,18 @@
 ---
 title: Byte-identical output diffing cannot see cache-hit-rate regressions
 date: 2026-07-26
+updated: 2026-07-28
 category: best-practices
-module: statusline caching
+module: state guards and freshness bounds
 problem_type: best_practice
 component: testing_framework
 severity: high
 applies_when:
-  - "A change touches a trust-checked cache read (Test-TrustedFile / sl_trusted_file call sites)"
-  - "A change touches output-cache key construction or any of its file-probe inputs"
-  - "A benchmark claims to measure the cache-hit path"
-tags: [equivalence-testing, output-cache, trust-check, hit-rate, verification]
+  - "A change touches a trust-checked state read (state::read_trusted / write_guarded call sites)"
+  - "A change touches the transcript (mtime, size) rescan skip, RECORD_VERSION, or the git cache TTL"
+  - "A change touches tasks-feed freshness or the subagent done-linger stamp"
+  - "A benchmark claims to measure a cache-hit or skip path"
+tags: [equivalence-testing, state-guards, trust-check, hit-rate, verification]
 ---
 
 # Byte-identical output diffing cannot see cache-hit-rate regressions
@@ -27,39 +29,68 @@ ran for nine days undetected. In both cases every rendered byte was correct — 
 *hit rate* was wrong, because a distrusted or invalidated cache just causes a silent
 full re-render that produces identical output.
 
+Both incidents predate the Rust port, and the output cache they centred on is gone —
+deleted deliberately along with the interpreter startup cost it existed to hide. The
+blind spot is not gone. Every surviving skip in the binary has the same shape: it
+degrades to a correct-but-slower recompute, so no byte diff can see it fail.
+
 ## Guidance
 
-When a change touches a trust-checked cache read, cache-key construction, or any
-cache-key input, verify the observed hit/miss *outcome*, not just output bytes:
+When a change touches a trust-checked state read, a freshness or staleness bound, or any
+input those decisions key on, verify the observed *outcome*, not just output bytes:
 
-- A true output-cache hit exits before the cache write, so the cache file's mtime is
-  unchanged after the tick. Assert `oc mtime before == after` on a warm run.
-- With `STATUSLINE_DEBUG=1`, the log carries an explicit `output cache HIT` line (and,
-  post-deferral, the absence of `json parse: OK` on a hit). Assert the expected
-  hit/miss/parse pattern per tick, not just the rendered bytes.
-- For benchmarks, never label a cell "hit" without one of the checks above — a
+- **The transcript rescan skip.** A true skip never re-reads the file. Under
+  `STATUSLINE_DEBUG=1` the log carries `transcript: unchanged, scan skipped`. Assert that
+  line appears on the second of two identical ticks — not merely that both ticks render
+  the same bytes, which they will either way.
+- **The git 5s TTL.** A hit reuses `statusline-git-<session>.txt` without rewriting it,
+  so its mtime is unchanged across a tick inside the window. Assert
+  `mtime before == mtime after`.
+- **Guarded state writes.** `state::write_guarded` returns `Written` / `SkippedHostile` /
+  `Failed`, and any non-`Written` outcome degrades silently — the record never lands, so
+  the *next* tick recomputes from scratch, forever. `WriteOutcome` is `#[must_use]` and
+  every call site logs a non-`Written` result; assert the outcome or the log line, never
+  the rendered row.
+- **Feed freshness and the done-linger.** Both decide whether a row appears at all, from
+  a timestamp. A broken bound renders plausibly right until the boundary. Assert the
+  fresh/stale and linger/expired outcomes *at* the boundary, in both directions.
+- **For benchmarks**, never label a cell "hit" without one of the checks above — a
   prime-then-measure pattern can silently measure misses.
 
 ## Why This Matters
 
-The cache tiers are designed to degrade invisibly: every failure mode (distrusted file,
-invalid record, churned key input) falls back to a full re-render with identical output.
-That is correct behavior for users and a trap for verification — the whole class of
-"cache silently dead" regressions passes any byte-diff matrix. The Get-Acl incident cost
-nine days; the benchmark incident produced plausible-looking numbers that misattributed
-~90 ms of savings before the hit-detection check exposed them.
+These tiers are designed to degrade invisibly: every failure mode (distrusted file,
+invalid record, churned key input, unwritable temp dir) falls back to a full recompute
+with identical output. That is correct behavior for users and a trap for verification —
+the whole class of "skip silently dead" regressions passes any byte-diff matrix. The
+Get-Acl incident cost nine days; the benchmark incident produced plausible-looking
+numbers that misattributed ~90 ms of savings before the hit-detection check exposed them.
 
 ## When to Apply
 
-- Any diff touching `Test-TrustedFile`, `Test-WriteOk`, `sl_trusted_file`, `sl_write_ok`,
-  or their call sites
-- Any diff touching output-cache key construction or its probe inputs (transcript mtime,
-  git index mtime, feed freshness/content, learned-map mtime)
+- Any diff touching `state::read_trusted`, `state::write_guarded`, `state::is_hostile`,
+  `platform::trusted_owners`, `platform::file_owner`, or their call sites
+- Any diff touching the transcript `(mtime, size)` skip, `TokenRecord` / `RECORD_VERSION`,
+  or the git cache TTL and the `git-refresh` hook that invalidates it
+- Any diff touching tasks-feed freshness or the subagent done-linger stamp
 - Any benchmark report that separates hit-path from miss-path numbers
 
 ## Examples
 
-The harness pattern that caught the false-hit benchmark (PowerShell):
+Assert the skip actually happened. This form is portable — it reads the debug log rather
+than a platform-specific `stat` dialect:
+
+```bash
+STATUSLINE_DEBUG=1 claude-statusline statusline < payload.json > /dev/null
+STATUSLINE_DEBUG=1 claude-statusline statusline < payload.json > /dev/null
+grep -c 'transcript: unchanged, scan skipped' ~/.claude/statusline-debug.log
+# Expect 1 (the second tick skipped). 0 means every tick re-reads the whole
+# transcript while rendering identically -- the regression a byte diff cannot see.
+```
+
+The original harness pattern that caught the false-hit benchmark, kept for the record.
+It probed the output cache, which no longer exists; the equivalent today is the git
+cache file above.
 
 ```powershell
 $m1 = (Get-Item $ocFile).LastWriteTimeUtc.Ticks

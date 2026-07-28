@@ -39,13 +39,15 @@ There is no output cache. The display recomputes per tick -- the caches in the s
 
 Claude Code pipes a JSON object to stdin on each refresh. Key top-level fields:
 
-`session_id`, `workspace.current_dir`, `cwd`, `model.display_name`, `context_window.context_window_size`, `context_window.used_percentage`, `context_window.total_input_tokens`, `effort.level`, `cost.total_cost_usd`, `transcript_path`, `rate_limits.five_hour.*`, `rate_limits.seven_day.*`, `agent.name`, `context_window.current_usage.*`
+`session_id`, `workspace.current_dir`, `cwd`, `model.display_name`, `model.id`, `context_window.context_window_size`, `context_window.used_percentage`, `context_window.total_input_tokens`, `effort.level`, `cost.total_cost_usd`, `cost.total_duration_ms`, `transcript_path`, `rate_limits.five_hour.*`, `rate_limits.seven_day.*`, `agent.name`, `context_window.current_usage.*`
+
+Legacy spellings the accessors still accept as fallbacks: top-level `total_cost_usd`, and `total_duration_ms` / `duration_ms` for the duration.
 
 See the accessors on `Payload` in `src/payload.rs` for the full field list. The payload is deserialized to a generic JSON value and read through tolerant per-field helpers: a typed model would fail the whole document on one field's type change, blanking the status line where per-field extraction degrades one row.
 
 ### Subagent Tasks Feed
 
-Second input contract beside the stdin JSON: Claude Code's `subagentStatusLine` feature pipes `{session_id, tasks: [...]}` (per-task model, context window size, status, token count, description) to `claude-statusline subagent` on each refresh tick. The handler prints nothing and tees the payload to `statusline-tasks-<session-id>.json` in the OS temp dir (`$TMPDIR`, `%TEMP%` on Windows); the status line reads it when fresh. Per-task `model` / `contextWindowSize` require Claude Code >= v2.1.205 -- without feed data, the status line falls back to parsing subagent transcripts, resolving context windows via the learned map (`~/.claude/statusline-model-windows.json`, written from each main session's model -> window pair), then a seed table, then a 200K default.
+Second input contract beside the stdin JSON: Claude Code's `subagentStatusLine` feature pipes `{session_id, tasks: [...]}` (per-task model, context window size, status, token count, description) to `claude-statusline subagent` on each refresh tick. The handler prints nothing and tees the payload to `statusline-tasks-<session-id>.json` in the OS temp dir (`$TMPDIR`, `%TEMP%` on Windows); the status line reads it when fresh. Per-task `model` / `contextWindowSize` require Claude Code >= v2.1.205 -- without feed data, the status line falls back to parsing subagent transcripts and resolving the context window through five tiers, in order: this session's own model, then the learned map (`~/.claude/statusline-model-windows.json`, written from each main session's model -> window pair), then a seed table, then a `[1m]` / `-1m` marker in the model id, then a 200K default. `Windows::resolve` in `src/subagent.rs` is the authority; keep this list in step with its doc comment.
 
 ### Dependencies
 
