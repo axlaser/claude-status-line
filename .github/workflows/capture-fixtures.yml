@@ -1,0 +1,161 @@
+name: capture-fixtures
+
+# U3. Runs the fixture-capture harness against the current scripts on macOS and
+# Linux and uploads the result for review (R33, KTD9).
+#
+# Windows capture is deliberately absent. KTD9 puts it on the maintainer's
+# machine: the Windows script tree is the one with no hosted equivalent of a
+# real developer environment, and a hosted image would capture fixtures nobody
+# runs against.
+#
+# Fixtures are uploaded, never committed by this workflow. Each component's
+# fixtures land in the same commit as its Rust replacement and its script
+# deletion (R37), which is a decision a person makes — not something a
+# scheduled job gets to do on their behalf.
+
+on:
+  # Pushing a `capture-<component>` tag runs a capture; the tag is deleted
+  # afterwards. `capture-<component>@<commit>` captures against a historical
+  # tree, which is how R33's "regenerate any fixture" survives a component
+  # whose scripts the branch tip has already deleted.
+  #
+  # This exists because `workflow_dispatch` is only offered for workflows that
+  # are already on the default branch, and this one does not get there until the
+  # migration merges at full parity — so during the migration there is otherwise
+  # no way to ask CI for a capture from the feature branch.
+  #
+  # `capture-*` cannot collide with the release workflow, which triggers only on
+  # `v<major>.<minor>.<patch>[-suffix]` and `verify-*`.
+  push:
+    tags:
+      - "capture-*"
+
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: "Commit to capture from (blank = the branch tip). Regenerates that commit's fixtures per R33."
+        required: false
+        type: string
+      component:
+        description: "Limit to one component"
+        required: false
+        type: choice
+        default: all
+        options: [all, git-refresh, subagent, notify, statusline]
+      verify:
+        description: "Capture twice and require byte-identical output instead of uploading"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  capture:
+    name: capture on ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux
+            runner: ubuntu-24.04
+          - platform: macos
+            runner: macos-15
+
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          # The harness resolves a historical commit through `git worktree add`,
+          # which needs the objects for it.
+          fetch-depth: 0
+
+      # KTD9. macOS ships bash 3.2 as /bin/bash and always will — it predates
+      # `mapfile` and the rest of the dialect the harness is written in. The
+      # driver re-execs into whichever of these it finds; this step guarantees
+      # one exists.
+      - name: Select a bash 4+
+        if: matrix.platform == 'macos'
+        run: |
+          brew list bash >/dev/null 2>&1 || brew install bash
+          "$(brew --prefix)/bin/bash" --version | head -1
+
+      - name: Check the harness dependencies
+        run: |
+          jq --version
+          git --version
+
+      - name: Capture
+        env:
+          IN_COMMIT: ${{ inputs.commit }}
+          IN_COMPONENT: ${{ inputs.component }}
+          IN_VERIFY: ${{ inputs.verify }}
+        run: |
+          args=()
+
+          # A tag-triggered run carries no inputs, so the tag name is the
+          # request: `capture-git-refresh` captures that component, and any
+          # other `capture-*` tag captures everything.
+          #
+          # An optional `@<commit>` suffix picks the tree whose scripts run --
+          # `capture-git-refresh@7ac72b8`. R33 requires any fixture to be
+          # regenerable against a historical commit, and on this branch the tag
+          # is the only trigger available (workflow_dispatch is offered only for
+          # workflows already on the default branch), so without this the
+          # requirement has no way to be met for a component whose scripts the
+          # branch tip has already deleted.
+          component="$IN_COMPONENT"
+          commit="$IN_COMMIT"
+          if [ "$GITHUB_EVENT_NAME" = "push" ]; then
+            request="${GITHUB_REF_NAME#capture-}"
+            case "$request" in
+              *@*)
+                [ -n "$commit" ] || commit="${request#*@}"
+                request="${request%@*}"
+                ;;
+            esac
+            if [ -z "$component" ]; then
+              case "$request" in
+                git-refresh|subagent|notify|statusline) component="$request" ;;
+                *) component="all" ;;
+              esac
+            fi
+          fi
+
+          [ -n "$commit" ] && args+=(--at "$commit")
+          if [ -n "$component" ] && [ "$component" != "all" ]; then
+            args+=(--component "$component")
+          fi
+          if [ "$IN_VERIFY" = "true" ]; then
+            args+=(--verify)
+          else
+            args+=(--out "$GITHUB_WORKSPACE/captured")
+          fi
+
+          echo "capturing: ${args[*]:-<everything>}"
+          bash tests/harness/capture.sh "${args[@]}"
+
+      # A capture that produced nothing is a green run that shipped no fixture,
+      # which is the same failure the harness's own guards exist to prevent.
+      - name: Confirm something was captured
+        if: inputs.verify != true && inputs.verify != 'true'
+        run: |
+          count=$(find captured -name case.json | wc -l)
+          echo "captured $count fixture(s)"
+          if [ "$count" -eq 0 ]; then
+            echo "::error::the harness reported success but wrote no fixtures"
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: inputs.verify != true && inputs.verify != 'true'
+        with:
+          name: fixtures-${{ matrix.platform }}
+          path: captured
+          if-no-files-found: error
+          retention-days: 14

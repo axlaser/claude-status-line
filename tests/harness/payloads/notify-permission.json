@@ -1,0 +1,7 @@
+{
+  "tool_name": "Bash",
+  "session_id": "fixture-session-0001",
+  "tool_input": {
+    "command": "git status --porcelain"
+  }
+}

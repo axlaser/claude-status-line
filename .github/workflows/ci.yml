@@ -1,0 +1,62 @@
+name: ci
+
+# The gates every commit has to pass, on every platform the tool ships to.
+#
+# This exists because for a while nothing ran them off a tag: `release.yml` is
+# thorough but only fires on a tag push, so a branch could accumulate commits
+# that had never been compiled anywhere but the maintainer's machine. The first
+# sign of a break would then be a failed release run with the tag already
+# pushed, which is the worst place to learn it.
+#
+# Three native runners rather than the release matrix's six targets: this
+# answers "does the code work on this OS", and the release workflow answers
+# "does every published artifact build and pass its table".
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: never
+
+jobs:
+  gates:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-2025]
+
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Toolchain
+        run: |
+          rustup component add clippy rustfmt
+          rustc --version
+          cargo --version
+
+      # Formatting first: it is the cheapest failure and needs no build.
+      - name: Format
+        run: cargo fmt --check
+
+      - name: Lint
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      - name: Test
+        run: cargo test --locked
+
+      # The installer's gate, run here too so a renderer that drifts from its
+      # compiled-in fixture fails on a branch rather than at install time.
+      - name: Self-check
+        run: cargo run --locked --quiet -- self-check

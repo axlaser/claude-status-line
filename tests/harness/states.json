@@ -1,0 +1,178 @@
+{
+  "schema": 1,
+  "_comment": [
+    "The docs/performance.md §4 git-state matrix, as data rather than as two",
+    "setup scripts. Both capture drivers interpret this file, so a state added",
+    "here reaches macOS, Linux, and Windows at once — the duplication this",
+    "migration exists to delete does not get to reappear in the harness.",
+    "",
+    "Ops: [\"git\", ...args] runs git in the work tree; [\"write\", path, text]",
+    "and [\"mkdir\", path] are relative to it; [\"remote-track\"] creates a bare",
+    "remote, adds it as origin and pushes the current branch with -u;",
+    "[\"remote-only\"] adds the remote without pushing, leaving no upstream."
+  ],
+
+  "_determinism": [
+    "Commit hashes are rendered output: the detached-HEAD state shows a short",
+    "hash, so a fixture is only reproducible if the hash is. Identity, both",
+    "dates, the branch name, and the line-ending config are all pinned below,",
+    "and every git invocation must carry them or a second run drifts.",
+    "",
+    "The dates are in git's RAW format -- `<unix seconds> <offset>` -- and must",
+    "stay that way. An ISO-8601 string here is silently coerced to a [DateTime]",
+    "by PowerShell's ConvertFrom-Json and then stringified in the *local*",
+    "timezone, so git records the capturing machine's offset in the commit",
+    "object. The recorded instant stays right and the hash still changes, which",
+    "made the Windows detached-HEAD fixture reproducible only on a machine in",
+    "the same timezone as the one that captured it. The raw format is never",
+    "mistaken for a date by either driver."
+  ],
+  "git_env": {
+    "GIT_AUTHOR_NAME": "statusline fixtures",
+    "GIT_AUTHOR_EMAIL": "fixtures@localhost",
+    "GIT_COMMITTER_NAME": "statusline fixtures",
+    "GIT_COMMITTER_EMAIL": "fixtures@localhost",
+    "GIT_AUTHOR_DATE": "1767225600 +0000",
+    "GIT_COMMITTER_DATE": "1767225600 +0000"
+  },
+  "git_config": [
+    "core.autocrlf=false",
+    "core.eol=lf",
+    "core.symlinks=false",
+    "init.defaultBranch=main",
+    "commit.gpgsign=false",
+    "tag.gpgsign=false",
+    "gc.auto=0",
+    "advice.detachedHead=false",
+    "protocol.file.allow=always"
+  ],
+
+  "git_states": [
+    {
+      "name": "unborn-head",
+      "why": "Fresh clone or bare `git init`. porcelain v2 emits `# branch.oid (initial)`, but no `.git/index` exists yet and both scripts guard the whole git block on that file — so every platform renders no git segment here, and it does NOT reach the `(initial)` handling the platforms disagree about. That is `unborn-head-staged`. Keep both: this one pins the guard, that one pins the divergence.",
+      "steps": [
+        ["git", "init", "-b", "main"]
+      ]
+    },
+    {
+      "name": "unborn-head-staged",
+      "why": "The state that actually reaches `# branch.oid (initial)`: `git add` creates `.git/index`, so the outer guard passes and each script's unborn-HEAD branch is executed. This is R20's divergence case — bash blanks the branch and renders no git segment, Windows substitutes the literal `HEAD`. Without an index the divergence is unreachable, which is why `unborn-head` alone made the U13 scenario pass vacuously.",
+      "steps": [
+        ["git", "init", "-b", "main"],
+        ["write", "README.md", "staged, never committed\n"],
+        ["git", "add", "-A"]
+      ]
+    },
+    {
+      "name": "clean",
+      "why": "The baseline every other state is built from.",
+      "steps": [
+        ["git", "init", "-b", "main"],
+        ["write", "README.md", "fixture repo\n"],
+        ["git", "add", "-A"],
+        ["git", "commit", "-m", "initial"]
+      ]
+    },
+    {
+      "name": "untracked-only",
+      "why": "Untracked files with no modifications — the count must not be folded into the dirty count.",
+      "steps": [
+        ["git", "init", "-b", "main"],
+        ["write", "README.md", "fixture repo\n"],
+        ["git", "add", "-A"],
+        ["git", "commit", "-m", "initial"],
+        ["write", "scratch.txt", "untracked\n"]
+      ]
+    },
+    {
+      "name": "dirty",
+      "why": "A modified tracked file, no untracked files.",
+      "steps": [
+        ["git", "init", "-b", "main"],
+        ["write", "README.md", "fixture repo\n"],
+        ["git", "add", "-A"],
+        ["git", "commit", "-m", "initial"],
+        ["write", "README.md", "fixture repo, edited\n"]
+      ]
+    },
+    {
+      "name": "stash-present",
+      "why": "porcelain v2 emits a `# stash` line only when the count is non-zero.",
+      "steps": [
+        ["git", "init", "-b", "main"],
+        ["write", "README.md", "fixture repo\n"],
+        ["git", "add", "-A"],
+        ["git", "commit", "-m", "initial"],
+        ["write", "README.md", "fixture repo, edited\n"],
+        ["git", "stash", "push", "-m", "fixture-stash"]
+      ]
+    },
+    {
+      "name": "stash-cleared",
+      "why": "The zero case for the state above. `# stash` is omitted entirely rather than reported as 0, which is the shape that broke the parser once already.",
+      "steps": [
+        ["git", "init", "-b", "main"],
+        ["write", "README.md", "fixture repo\n"],
+        ["git", "add", "-A"],
+        ["git", "commit", "-m", "initial"],
+        ["write", "README.md", "fixture repo, edited\n"],
+        ["git", "stash", "push", "-m", "fixture-stash"],
+        ["git", "stash", "drop"]
+      ]
+    },
+    {
+      "name": "ahead-of-upstream",
+      "why": "`# branch.ab +1 -0`. Requires a real upstream, so the harness builds a bare remote inside the isolated root.",
+      "steps": [
+        ["git", "init", "-b", "main"],
+        ["write", "README.md", "fixture repo\n"],
+        ["git", "add", "-A"],
+        ["git", "commit", "-m", "initial"],
+        ["remote-track"],
+        ["write", "second.txt", "ahead by one\n"],
+        ["git", "add", "-A"],
+        ["git", "commit", "-m", "second"]
+      ]
+    },
+    {
+      "name": "no-upstream",
+      "why": "A remote exists but the branch tracks nothing, so porcelain v2 omits `# branch.ab` altogether.",
+      "steps": [
+        ["git", "init", "-b", "main"],
+        ["write", "README.md", "fixture repo\n"],
+        ["git", "add", "-A"],
+        ["git", "commit", "-m", "initial"],
+        ["remote-only"]
+      ]
+    },
+    {
+      "name": "detached-head",
+      "why": "porcelain v2 reports the branch as `(detached)`. A branch literally named `(detached)` is indistinguishable from this — an accepted divergence in §4 — so this case pins what real detached HEAD renders.",
+      "steps": [
+        ["git", "init", "-b", "main"],
+        ["write", "README.md", "fixture repo\n"],
+        ["git", "add", "-A"],
+        ["git", "commit", "-m", "initial"],
+        ["write", "second.txt", "second commit\n"],
+        ["git", "add", "-A"],
+        ["git", "commit", "-m", "second"],
+        ["git", "checkout", "--detach", "HEAD~1"]
+      ]
+    },
+    {
+      "name": "collapsed-untracked-dir",
+      "why": "porcelain reports an untracked directory as one collapsed `dir/` entry rather than one line per file, so a naive line count under-reports.",
+      "steps": [
+        ["git", "init", "-b", "main"],
+        ["write", "README.md", "fixture repo\n"],
+        ["git", "add", "-A"],
+        ["git", "commit", "-m", "initial"],
+        ["mkdir", "untracked-dir"],
+        ["write", "untracked-dir/a.txt", "a\n"],
+        ["write", "untracked-dir/b.txt", "b\n"],
+        ["write", "untracked-dir/c.txt", "c\n"]
+      ]
+    }
+  ]
+}

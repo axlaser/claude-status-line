@@ -1,0 +1,188 @@
+name: measure
+
+# U6, U13. Produces R38's paired script-vs-binary medians for macOS and Linux.
+#
+# R38 requires both halves of a pair to come from a single hosted runner within
+# one job, with the runs interleaved. Two jobs, or two workflow runs, would hand
+# back numbers taken on different machines under different load and present them
+# as a comparison — which is the mistake docs/performance.md §3 exists to
+# prevent. So each platform is one job that builds the binary and measures both
+# variants itself.
+#
+# Windows pairs are deliberately absent, for the same reason KTD9 keeps Windows
+# capture off CI: the numbers that matter there are the maintainer's machine,
+# not a hosted image nobody runs the status line on.
+#
+# Results are uploaded, never committed by this workflow. The numbers land in
+# docs/performance.md in the same commit as the component's port and script
+# deletion (R37, R38), which is a decision a person makes.
+
+on:
+  # Pushing a `measure-<component>` tag runs a measurement; the tag is deleted
+  # afterwards. `workflow_dispatch` is only offered for workflows already on the
+  # default branch, which this one does not reach until the migration merges at
+  # full parity — so during the migration the tag is the only way to ask CI for
+  # a measurement from the feature branch.
+  #
+  # `measure-*` cannot collide with the release workflow, which triggers only on
+  # `v<major>.<minor>.<patch>[-suffix]` and `verify-*`, nor with `capture-*`.
+  push:
+    tags:
+      - "measure-*"
+
+  workflow_dispatch:
+    inputs:
+      component:
+        description: "Component to measure"
+        required: false
+        type: choice
+        default: subagent
+        options: [subagent, statusline]
+      runs:
+        description: "Interleaved pairs per platform (>= 7)"
+        required: false
+        type: string
+        default: "11"
+      transcript_bytes:
+        description: "statusline only: generated transcript size in bytes (default 8388608)"
+        required: false
+        type: string
+      cold_cache:
+        description: "Clear every per-tick cache before each probe, so both variants do full work"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  measure:
+    name: measure on ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux
+            runner: ubuntu-24.04
+          - platform: macos
+            runner: macos-15
+
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      # macOS ships bash 3.2 as /bin/bash and always will. The driver needs
+      # bash 5 for EPOCHREALTIME, which is the only timestamp source that costs
+      # no fork — an external timer would add its own process-creation cost to
+      # the exact thing being measured.
+      - name: Select a bash 5+
+        if: matrix.platform == 'macos'
+        run: |
+          brew list bash >/dev/null 2>&1 || brew install bash
+          "$(brew --prefix)/bin/bash" --version | head -1
+
+      - name: Check the script variant's dependencies
+        run: |
+          jq --version
+          git --version
+
+      - name: Build the binary
+        run: |
+          rustc --version
+          cargo --version
+          cargo build --release --locked
+
+      # R43 / KTD5. An arm64 macOS binary needs a signature to execute, and the
+      # measured artifact should be the one that ships rather than a variant of
+      # it. Signing costs nothing per tick — it is a property of the file — but
+      # measuring an unsigned binary would measure something users never run.
+      - name: Ad-hoc code sign
+        if: matrix.platform == 'macos'
+        run: |
+          codesign --sign - --force --timestamp=none target/release/claude-statusline
+          codesign --verify --strict target/release/claude-statusline
+
+      - name: Measure
+        env:
+          IN_COMPONENT: ${{ inputs.component }}
+          IN_RUNS: ${{ inputs.runs }}
+          IN_TRANSCRIPT_BYTES: ${{ inputs.transcript_bytes }}
+          IN_COLD_CACHE: ${{ inputs.cold_cache }}
+          # R38 requires the runner label and image version beside the numbers,
+          # so a runner-measured figure is never later held against a bare-metal
+          # baseline (R41).
+          MEASURE_RUNNER: ${{ matrix.runner }}
+        run: |
+          component="$IN_COMPONENT"
+          cold="$IN_COLD_CACHE"
+
+          # A tag-triggered run carries no inputs, so the tag name is the
+          # request: `measure-subagent` measures that component, and an
+          # optional `@cold` suffix asks for the cache-miss state --
+          # `measure-statusline@cold`. Same shape as the capture workflow's
+          # `capture-<component>@<commit>`.
+          if [ "$GITHUB_EVENT_NAME" = "push" ]; then
+            request="${GITHUB_REF_NAME#measure-}"
+            case "$request" in
+              *@cold) cold=true; request="${request%@cold}" ;;
+            esac
+            if [ -z "$component" ]; then
+              case "$request" in
+                subagent|statusline) component="$request" ;;
+                *) component="subagent" ;;
+              esac
+            fi
+          fi
+          [ -n "$component" ] || component=subagent
+
+          runs="${IN_RUNS:-11}"
+
+          export MEASURE_IMAGE="${ImageOS:-unknown} ${ImageVersion:-unknown}"
+          echo "measuring $component, $runs pairs, on $MEASURE_RUNNER ($MEASURE_IMAGE)"
+
+          mkdir -p measured
+          # R38 requires the statusline pair to cover the large-transcript
+          # state. The driver generates the transcript to a target size, so the
+          # number is reproducible on any runner rather than tied to the files
+          # that happen to sit on one machine.
+          extra=""
+          if [ "$component" = statusline ]; then
+            extra="--transcript-bytes ${IN_TRANSCRIPT_BYTES:-8388608}"
+          fi
+          # The warm-cache pair reads as the script's best case against the
+          # binary's only case: its output cache is keyed on a 5-second bucket
+          # and a whole run finishes inside one, so most script probes render
+          # nothing. --cold-cache is the state where both actually work.
+          if [ "$cold" = true ]; then
+            extra="$extra --cold-cache"
+          fi
+          echo "cold cache: ${cold:-false}"
+          # shellcheck disable=SC2086
+          bash tests/harness/measure.sh \
+            --component "$component" \
+            --runs "$runs" \
+            $extra \
+            --json "measured/${{ matrix.platform }}.json"
+
+      # A green run that produced no numbers is the same failure the harness's
+      # own guards exist to prevent: it looks like evidence and is not.
+      - name: Confirm something was measured
+        run: |
+          file="measured/${{ matrix.platform }}.json"
+          if [ ! -s "$file" ]; then
+            echo "::error::the driver reported success but wrote no measurement"
+            exit 1
+          fi
+          cat "$file"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: measured-${{ matrix.platform }}
+          path: measured
+          if-no-files-found: error
+          retention-days: 14

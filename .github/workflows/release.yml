@@ -1,0 +1,411 @@
+name: release
+
+# U2. Tagged pushes produce six native artifacts, one `checksums.txt`, and one
+# Sigstore bundle per artifact (R2, R4).
+#
+# R2 left artifact packaging open. Decision: publish raw binaries, not archives.
+# The installers are POSIX sh and PowerShell with no unpacking dependency, and a
+# raw artifact lets R7's checksum gate hash exactly the bytes it places.
+#
+# Every target builds and tests on its own native runner (KTD2). The one
+# exception is `x86_64-apple-darwin`: GitHub withdrew free macOS x86 runners, so
+# it is cross-built on the arm64 runner and its tests run under Rosetta 2, with
+# the job failing rather than skipping when Rosetta is unavailable (R36).
+#
+# No C toolchain is installed anywhere in this workflow, and none may be added.
+# The musl legs link self-contained because every dependency is pure Rust or
+# FFI declarations only (KTD8, KTD13); adding a libgit2-backed crate would drag
+# `musl-tools` back in and invalidate this matrix.
+
+on:
+  push:
+    tags:
+      # Stable releases. Blocked by the parity gate below until U17 passes.
+      - "v[0-9]+.[0-9]+.[0-9]+"
+      # Pipeline-verification tags (R36). Published as prereleases so the
+      # installer's `releases/latest` resolution (R5) skips them, and deleted
+      # once the pipeline is verified.
+      - "v[0-9]+.[0-9]+.[0-9]+-*"
+      - "verify-*"
+
+# Read-only at workflow scope. The elevated grants live on the single attesting
+# and publishing job below.
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_TERM_COLOR: never
+
+jobs:
+  # Runs before anything is built, because the failure it catches is silent: a
+  # tag and a Cargo.toml that disagree publish happily, and the mismatch only
+  # surfaces later when someone asks the artifact what version it is. Cheap to
+  # check, expensive to discover after six targets have built.
+  version:
+    name: tag matches Cargo.toml
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: The tag and the crate version agree
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          # `verify-*` tags are pipeline checks and claim no version, so there
+          # is nothing for them to disagree with. The digit matters: `verify-x`
+          # also begins with a v, and a bare `v*` guard would strip it to
+          # "erify" and fail every verification tag.
+          case "$tag" in
+            v[0-9]*) ;;
+            *) echo "::notice::$tag claims no version; skipping the check." ; exit 0 ;;
+          esac
+          # v1.2.3 and v1.2.3-rc.1 both claim crate version 1.2.3.
+          claimed="${tag#v}"
+          claimed="${claimed%%-*}"
+          actual=$(grep -m1 -E '^version[[:space:]]*=' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')
+          echo "tag claims $claimed; Cargo.toml declares $actual"
+          if [ "$claimed" != "$actual" ]; then
+            echo "::error::Tag $tag claims version $claimed but Cargo.toml declares $actual. Bump Cargo.toml or retag."
+            exit 1
+          fi
+
+      # Resolved here rather than in the publishing job on purpose. That job
+      # holds the signing and release grants and deliberately has no checkout;
+      # handing it the notes as an artifact keeps it that way.
+      - name: Resolve the release notes
+        run: |
+          notes="docs/releases/${GITHUB_REF_NAME}.md"
+          mkdir -p out
+          if [ -f "$notes" ]; then
+            cp "$notes" out/notes.md
+            echo "using $notes ($(wc -l < "$notes") lines)"
+          else
+            # A tag with no notes still publishes — a verification tag has
+            # nothing to announce, and a missing file must not block a release
+            # that is otherwise sound.
+            printf 'Verify before use:\n\n    sha256sum --check --ignore-missing checksums.txt\n    gh attestation verify claude-statusline-<target> --repo %s\n' \
+              "${GITHUB_REPOSITORY}" > out/notes.md
+            echo "::notice::No notes at $notes; publishing the verification boilerplate."
+          fi
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-notes
+          path: out/notes.md
+          if-no-files-found: error
+          retention-days: 7
+
+  build:
+    name: build ${{ matrix.target }}
+    needs: version
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            runner: macos-15
+            family: darwin
+            ext: ""
+          - target: x86_64-apple-darwin
+            runner: macos-15
+            family: darwin
+            ext: ""
+            rosetta: true
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-24.04
+            family: linux
+            ext: ""
+            alpine: alpine:3.21
+          - target: aarch64-unknown-linux-musl
+            # Pinned to the explicit arm label, never an alias.
+            runner: ubuntu-24.04-arm
+            family: linux
+            ext: ""
+            alpine: alpine:3.21
+          - target: x86_64-pc-windows-msvc
+            runner: windows-2025
+            family: windows
+            ext: ".exe"
+          - target: aarch64-pc-windows-msvc
+            # Pinned to the explicit arm label, never an alias.
+            runner: windows-11-arm
+            family: windows
+            ext: ".exe"
+
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      # Rosetta has to exist before `cargo test --target x86_64-apple-darwin`
+      # tries to execute an x86 test binary on the arm64 runner. R36 requires a
+      # failure here rather than a skipped case table.
+      - name: Require Rosetta 2
+        if: matrix.rosetta
+        run: |
+          softwareupdate --install-rosetta --agree-to-license
+          if ! arch -x86_64 /usr/bin/true; then
+            echo "::error::R36: Rosetta 2 is unavailable, so the x86_64-apple-darwin case table cannot run."
+            exit 1
+          fi
+          echo "Rosetta 2 verified: an x86_64 process executes on $(uname -m)."
+
+      - name: Install the target
+        run: |
+          rustup target add "${{ matrix.target }}"
+          rustc --version
+          cargo --version
+
+      - name: Build
+        run: cargo build --release --locked --target "${{ matrix.target }}"
+
+      - name: Test on the target
+        run: cargo test --release --locked --target "${{ matrix.target }}"
+
+      # R43 / KTD5. Apple Silicon SIGKILLs an unsigned arm64 binary and recent
+      # macOS rejects the bare linker signature too. Under the silent-degradation
+      # contract that surfaces as a status line that is simply absent, with
+      # nothing on stderr and no way for the user to tell why — so signing is a
+      # correctness gate here, not packaging polish.
+      #
+      # Signing runs after the test step on purpose: cargo relinking the bin for
+      # the integration test would drop a signature applied before it, and the
+      # smoke step below then exercises the exact bytes that ship.
+      - name: Ad-hoc code sign
+        if: matrix.family == 'darwin'
+        run: |
+          bin="target/${{ matrix.target }}/release/claude-statusline"
+          codesign --sign - --force --timestamp=none "$bin"
+          codesign --verify --strict --verbose=2 "$bin"
+
+      - name: Smoke the artifact
+        run: |
+          bin="target/${{ matrix.target }}/release/claude-statusline${{ matrix.ext }}"
+          "$bin" self-check
+          printf '' | "$bin" > /dev/null
+
+      # AE9. A dynamically linked artifact would still pass every step above on
+      # the build host and fail only on the user's older distribution.
+      - name: Verify static linking
+        if: matrix.family == 'linux'
+        run: |
+          bin="target/${{ matrix.target }}/release/claude-statusline"
+          desc=$(file "$bin")
+          echo "$desc"
+          # The two musl targets describe themselves differently and both are
+          # static: aarch64 links non-PIE and reads "statically linked", x86_64
+          # links a static PIE and reads "static-pie linked". Matching only the
+          # first spelling fails the x86_64 leg on a binary that is correct.
+          case "$desc" in
+            *"statically linked"*|*"static-pie linked"*) ;;
+            *)
+              echo "::error::AE9: ${{ matrix.target }} is not statically linked."
+              exit 1
+              ;;
+          esac
+          # Asserted separately rather than trusted as the complement of the
+          # above: only a dynamic binary carries an interpreter, and that is the
+          # thing that actually breaks on an older loader.
+          case "$desc" in
+            *"dynamically linked"*|*"interpreter"*)
+              echo "::error::AE9: ${{ matrix.target }} carries a dynamic loader dependency."
+              exit 1
+              ;;
+          esac
+
+      - name: Run on Alpine
+        if: matrix.family == 'linux'
+        run: |
+          docker run --rm \
+            -v "$PWD/target/${{ matrix.target }}/release:/artifact:ro" \
+            "${{ matrix.alpine }}" /artifact/claude-statusline self-check
+
+      - name: Stage the artifact
+        run: |
+          mkdir -p dist
+          cp "target/${{ matrix.target }}/release/claude-statusline${{ matrix.ext }}" \
+             "dist/claude-statusline-${{ matrix.target }}${{ matrix.ext }}"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: binary-${{ matrix.target }}
+          path: dist/claude-statusline-${{ matrix.target }}${{ matrix.ext }}
+          if-no-files-found: error
+          retention-days: 7
+
+  # Aggregation runs read-only and separately from publishing, so the job
+  # holding the signing and release grants does as little as possible.
+  checksums:
+    name: aggregate checksums
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: binary-*
+          merge-multiple: true
+          path: dist
+
+      - name: Emit checksums.txt
+        run: |
+          cd dist
+          count=$(find . -maxdepth 1 -type f -name 'claude-statusline-*' | wc -l)
+          if [ "$count" -ne 6 ]; then
+            echo "::error::R2: expected 6 artifacts, found $count."
+            ls -la
+            exit 1
+          fi
+          # LC_ALL=C so the file order does not drift with the runner locale.
+          find . -maxdepth 1 -type f -name 'claude-statusline-*' -printf '%f\n' \
+            | LC_ALL=C sort \
+            | xargs sha256sum > checksums.txt
+          cat checksums.txt
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: checksums
+          path: dist/checksums.txt
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: attest and publish
+    needs: checksums
+    runs-on: ubuntu-24.04
+    permissions:
+      # The only job with anything beyond read. `id-token` mints the OIDC token
+      # for the Sigstore certificate, `attestations` persists the attestation,
+      # `artifact-metadata` creates the storage record, `contents` publishes.
+      contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: binary-*
+          merge-multiple: true
+          path: dist
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: checksums
+          path: dist
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: release-notes
+          path: notes
+
+      - name: Classify the tag
+        id: tag
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          # Anything that is not exactly vMAJOR.MINOR.PATCH is a prerelease.
+          # Failing toward "prerelease" keeps an unexpected tag shape out of the
+          # installer's resolution rather than shipping it to every user.
+          if printf '%s' "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      # R36: no stable release before full parity. U17's dogfood gate and U15's
+      # parity release own lifting this; until then a stable tag is refused so a
+      # verification tag cannot be promoted into a user-facing release by
+      # accident.
+      - name: Parity gate
+        if: steps.tag.outputs.prerelease == 'false'
+        run: |
+          echo "::error::R36: stable releases are blocked until the parity gate (U17) passes. Tag a prerelease instead."
+          exit 1
+
+      # Re-verifying here rather than trusting the aggregation job proves the
+      # recorded checksum matches the bytes this job is about to attest and
+      # publish.
+      - name: Verify checksums against the artifacts
+        run: |
+          cd dist
+          sha256sum --check --strict checksums.txt
+
+      - name: Attest aarch64-apple-darwin
+        id: attest-aarch64-apple-darwin
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4
+        with:
+          subject-path: dist/claude-statusline-aarch64-apple-darwin
+
+      - name: Attest x86_64-apple-darwin
+        id: attest-x86_64-apple-darwin
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4
+        with:
+          subject-path: dist/claude-statusline-x86_64-apple-darwin
+
+      - name: Attest x86_64-unknown-linux-musl
+        id: attest-x86_64-unknown-linux-musl
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4
+        with:
+          subject-path: dist/claude-statusline-x86_64-unknown-linux-musl
+
+      - name: Attest aarch64-unknown-linux-musl
+        id: attest-aarch64-unknown-linux-musl
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4
+        with:
+          subject-path: dist/claude-statusline-aarch64-unknown-linux-musl
+
+      - name: Attest x86_64-pc-windows-msvc
+        id: attest-x86_64-pc-windows-msvc
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4
+        with:
+          subject-path: dist/claude-statusline-x86_64-pc-windows-msvc.exe
+
+      - name: Attest aarch64-pc-windows-msvc
+        id: attest-aarch64-pc-windows-msvc
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4
+        with:
+          subject-path: dist/claude-statusline-aarch64-pc-windows-msvc.exe
+
+      # R4 / KTD3. The bundle ships as a release asset so verification does not
+      # need an authenticated GitHub CLI: the attestation API serves its bundle
+      # Snappy-compressed, which a shell installer cannot decode.
+      - name: Collect the Sigstore bundles
+        run: |
+          cp "${{ steps.attest-aarch64-apple-darwin.outputs.bundle-path }}"       dist/claude-statusline-aarch64-apple-darwin.sigstore.json
+          cp "${{ steps.attest-x86_64-apple-darwin.outputs.bundle-path }}"        dist/claude-statusline-x86_64-apple-darwin.sigstore.json
+          cp "${{ steps.attest-x86_64-unknown-linux-musl.outputs.bundle-path }}"  dist/claude-statusline-x86_64-unknown-linux-musl.sigstore.json
+          cp "${{ steps.attest-aarch64-unknown-linux-musl.outputs.bundle-path }}" dist/claude-statusline-aarch64-unknown-linux-musl.sigstore.json
+          cp "${{ steps.attest-x86_64-pc-windows-msvc.outputs.bundle-path }}"     dist/claude-statusline-x86_64-pc-windows-msvc.exe.sigstore.json
+          cp "${{ steps.attest-aarch64-pc-windows-msvc.outputs.bundle-path }}"    dist/claude-statusline-aarch64-pc-windows-msvc.exe.sigstore.json
+          bundles=$(find dist -maxdepth 1 -type f -name '*.sigstore.json' | wc -l)
+          if [ "$bundles" -ne 6 ]; then
+            echo "::error::R4: expected 6 Sigstore bundles, found $bundles."
+            exit 1
+          fi
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          flags=()
+          if [ "${{ steps.tag.outputs.prerelease }}" = "true" ]; then
+            flags+=(--prerelease)
+          fi
+          # --repo is required, not decorative: this job downloads artifacts and
+          # never checks out the repository, so gh has no git remote to infer
+          # from and fails with "not a git repository". Adding a checkout just to
+          # give it that context would widen the surface of the one job holding
+          # the signing and release permissions.
+          gh release create "$TAG" \
+            --repo "${{ github.repository }}" \
+            --title "$TAG" \
+            --notes-file notes/notes.md \
+            "${flags[@]}" \
+            dist/claude-statusline-* \
+            dist/checksums.txt

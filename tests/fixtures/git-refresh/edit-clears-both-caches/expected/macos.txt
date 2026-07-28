@@ -1,0 +1,2 @@
+statusline-git-fixture-session-0001.txt
+statusline-oc-fixture-session-0001.txt

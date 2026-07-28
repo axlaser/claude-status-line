@@ -1,0 +1,4 @@
+{"type":"user","message":{"role":"user","content":"port git-refresh to rust"}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Reading the three scripts."}],"usage":{"input_tokens":1200,"cache_creation_input_tokens":800,"cache_read_input_tokens":40000,"output_tokens":180}}}
+{"type":"user","message":{"role":"user","content":"now capture the fixtures"}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Capturing across the ten git states."}],"usage":{"input_tokens":1500,"cache_creation_input_tokens":600,"cache_read_input_tokens":42000,"output_tokens":220}}}

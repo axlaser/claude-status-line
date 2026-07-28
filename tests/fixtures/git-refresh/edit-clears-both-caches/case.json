@@ -1,0 +1,44 @@
+{
+  "schema": 1,
+  "case": "edit-clears-both-caches",
+  "component": "git-refresh",
+  "observable": "deleted-paths",
+  "source_commit": "7ac72b837f51ed8c1e93b03e0db5e04a9f01bc61",
+  "clock": 1767225600,
+  "git_state": null,
+  "payload": "payloads/hook-edit.json",
+  "args": [],
+  "notify_config": "configs/default.json",
+  "session_id": "fixture-session-0001",
+  "inputs": [
+    {
+      "target": "{TMP}/statusline-git-{SESSION}.txt",
+      "content": "inputs/git-cache.txt",
+      "mtime_offset": -3
+    },
+    {
+      "target": "{TMP}/statusline-oc-{SESSION}.txt",
+      "content": "inputs/oc-cache.txt",
+      "mtime_offset": -3
+    },
+    {
+      "target": "{TMP}/statusline-tasks-{SESSION}.json",
+      "content": "inputs/tasks-feed.json",
+      "mtime_offset": -2
+    }
+  ],
+  "captured": [
+    {
+      "platform": "linux",
+      "expected": "expected/linux.txt"
+    },
+    {
+      "platform": "macos",
+      "expected": "expected/macos.txt"
+    },
+    {
+      "platform": "windows",
+      "expected": "expected/windows.txt"
+    }
+  ]
+}

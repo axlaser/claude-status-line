@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "case": "permission-event",
+  "component": "notify",
+  "observable": "notify-argv",
+  "source_commit": "4e506a122d74a5c80a381e1df8975fc7e3def1ed",
+  "clock": 1767225600,
+  "git_state": null,
+  "payload": "payloads/notify-permission.json",
+  "args": [
+    "permission"
+  ],
+  "notify_config": "configs/default.json",
+  "session_id": "fixture-session-0001",
+  "inputs": [],
+  "captured": [
+    {
+      "platform": "linux",
+      "expected": "expected/linux.txt"
+    },
+    {
+      "platform": "macos",
+      "expected": "expected/macos.txt"
+    }
+  ]
+}

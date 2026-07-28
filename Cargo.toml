@@ -1,0 +1,46 @@
+[package]
+name = "claude-statusline"
+version = "1.0.0"
+edition = "2021"
+description = "Cross-platform custom status line for Claude Code"
+license = "MIT"
+repository = "https://github.com/axlaser/claude-statusline"
+
+[lib]
+name = "claude_statusline"
+path = "src/lib.rs"
+
+[[bin]]
+name = "claude-statusline"
+path = "src/main.rs"
+
+[dependencies]
+# `preserve_order` keeps settings.json's existing keys in the user's order
+# instead of re-sorting them alphabetically. Without it, installing rewrites the
+# whole file and the diff shows every line rather than only the entries the
+# installer meant to add — which is both alarming to read and useless as
+# verification. jq, which the shell installers used, preserves order too.
+serde_json = { version = "1", features = ["preserve_order"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_System_Threading",
+    "Win32_System_Console",
+    # U7: the notification sound, played in-process as the shipped handler did
+    # through System.Media.SoundPlayer. Spawning a player instead would be a
+    # visible behaviour change and a second process on every notification.
+    "Win32_Media_Audio",
+] }
+
+# KTD7: the top-level catch_unwind is a no-op under `panic = "abort"`, so the
+# release profile must keep unwinding panics. Do not "optimize" this away.
+[profile.release]
+panic = "unwind"
+opt-level = 3

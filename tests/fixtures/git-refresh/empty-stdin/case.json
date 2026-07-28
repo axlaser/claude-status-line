@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "case": "empty-stdin",
+  "component": "git-refresh",
+  "observable": "deleted-paths",
+  "source_commit": "7ac72b837f51ed8c1e93b03e0db5e04a9f01bc61",
+  "clock": 1767225600,
+  "git_state": null,
+  "payload": "payloads/empty.txt",
+  "args": [],
+  "notify_config": "configs/default.json",
+  "session_id": "",
+  "inputs": [],
+  "captured": [
+    {
+      "platform": "linux",
+      "expected": "expected/linux.txt"
+    },
+    {
+      "platform": "macos",
+      "expected": "expected/macos.txt"
+    },
+    {
+      "platform": "windows",
+      "expected": "expected/windows.txt"
+    }
+  ]
+}

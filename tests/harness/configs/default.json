@@ -1,0 +1,8 @@
+{
+  "permission": { "sound": true, "visual": true },
+  "stop": { "sound": true, "visual": true },
+  "rate_limit": { "sound": true, "visual": true, "threshold": 80 },
+  "context_high": { "sound": false, "visual": true, "threshold": 70 },
+  "compaction_start": { "sound": true, "visual": true },
+  "compaction_done": { "sound": true, "visual": true }
+}

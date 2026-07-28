@@ -1,0 +1,1 @@
+stale output-cache record placed by the harness
