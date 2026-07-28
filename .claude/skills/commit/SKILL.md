@@ -20,6 +20,7 @@ Analyze the current repo's full diff, produce a professional commit message, and
 - **Output goes in the chat, not to a file.**
 - **Paste-safe commands.** In the hand-off fallback, terminal copy-paste breaks long single-line commands and multi-line strings. Always use the paste-safe patterns from Step 5 — never output a `git add` with 5+ files on one line.
 - **Sensitive-content check is blocking.** Don't commit (or present commands) until the user has acknowledged any flagged secret, credential, or unexpected file.
+- **Report CI, never push.** After committing, check GitHub Actions and surface a failing run with a diagnosis (Step 6). Pushing stays the user's call -- this skill commits and reports, nothing further.
 
 ## Step 1 -- Gather the diff
 
@@ -190,6 +191,88 @@ EOF
 )"
 ```
 ~~~
+
+## Step 6 -- Check CI
+
+After the commit lands, report where GitHub Actions stands. **This skill never pushes** --
+so the commit just made has no run of its own yet, and what you can check depends on whether
+its parent is on the remote.
+
+**Skip the whole step, silently, when any of these hold.** None of them is a problem worth a
+paragraph:
+
+- No `.github/workflows/*.yml` in the repo
+- No GitHub remote (`git remote get-url origin` fails, or is not a github.com URL)
+- `gh` is missing, or `gh auth status` fails
+
+```bash
+git rev-parse --abbrev-ref HEAD && git status -sb | head -1 && \
+  gh run list --branch "$(git rev-parse --abbrev-ref HEAD)" --limit 3 \
+    --json databaseId,workflowName,status,conclusion,headSha \
+    --jq '.[] | "\(.databaseId)  \(.workflowName)  \(.status)/\(.conclusion // "-")  \(.headSha[0:7])"'
+```
+
+**Then say one of three things:**
+
+1. **The new commit is not pushed** (the usual case). Report the *branch's* latest run and
+   whose commit it was. If it failed, say so plainly -- the user is about to push on top of a
+   red branch and should know before, not after. Offer to watch once they push.
+2. **HEAD is already on the remote** and a run exists for this SHA -- watch it to completion.
+   Run `gh run watch <id> --exit-status --interval 20` **in the background** with a generous
+   timeout; a matrix across three OSes takes minutes, and blocking the session on it is worse
+   than being told later.
+3. **Green.** One line. Do not enumerate passing jobs.
+
+### When a run failed
+
+Diagnose before offering anything. A failure report that only names the job wastes the round
+trip the user then has to spend asking what broke.
+
+```bash
+gh run view <id> --json status,conclusion,jobs \
+  --jq '.jobs[] | "\(.conclusion // .status)  \(.name)"'
+gh run view <id> --log-failed
+```
+
+`--log-failed` prints `job<TAB>step<TAB>timestamp message`, one line per log line, with ANSI
+escapes intact. Strip the prefixes before quoting any of it -- `sed -E 's/^[^\t]*\t[^\t]*\t//;
+s/^[0-9T:.Z-]+ //'` -- and quote the few lines that carry the error, never the whole dump.
+
+The failure itself is on the `##[error]` lines. Do **not** grep for `::error::`: a `run:`
+block's source is echoed into the log before it executes, so that pattern matches the script
+text that *emits* the message as well as the message, and the two read alike at a glance.
+
+```bash
+gh run view <id> --log-failed | sed -E 's/^[^\t]*\t[^\t]*\t//; s/^[0-9T:.Z-]+ //' \
+  | grep -a '##\[error\]'
+```
+
+`##[error]Process completed with exit code 1` is the step's epitaph, not its cause -- the line
+above it usually is. And a failing step's *own* output often is not in `--log-failed` at all
+when the thing that failed ran in an earlier step: use `gh run view <id> --log` filtered to
+the job when the error line alone does not explain itself.
+
+Then report:
+
+- **Which jobs failed**, and which passed. A partial failure across a matrix is a different
+  problem from a total one: one leg red usually means a platform-specific cause, all legs red
+  usually means the change itself.
+- **The verbatim error line**, cited by job and step.
+- **A specific diagnosis**, and the fix you would make.
+
+**Then stop and ask.** Do not edit, amend, or re-commit unprompted. A CI failure is often a
+judgment call -- the workflow can be wrong rather than the code, and a green-by-deletion fix
+is worse than a red run.
+
+**Two traps worth checking before blaming the code:**
+
+- **Did the job test what it claims?** A step that shells out to something exiting 0 on
+  failure passes while the thing it tested failed. Confirm the failing assertion is about the
+  code and not about the harness around it.
+- **Is the failure environmental?** Runner paths, permissions and preinstalled tooling differ
+  from a developer machine in ways that fail honestly. A guard that correctly refuses a
+  runner's world-writable temp directory is the guard working, and the fix belongs in the
+  workflow.
 
 ## Edge cases
 
