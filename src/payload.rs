@@ -90,11 +90,19 @@ impl Payload {
     ///
     /// The scripts interpolated whatever they were handed into a string before
     /// parsing it — `"$resetsAt"` in PowerShell, `jq -r` in bash — so a numeric
-    /// field and a quoted one behaved identically. `as_str` alone drops the
-    /// numeric form, and for `resets_at` that is expensive twice over: the cost
-    /// row loses its burn arrow and countdown, and the rate-limit alert stops
-    /// re-arming, because the latch compares the stored `resets_at` against the
-    /// current one and two empty strings never differ.
+    /// field and a quoted one behaved identically, and *both platforms spelled a
+    /// number the same way*. That is what separates this from [`Payload::text`]'s
+    /// deliberate strictness: the two scripts genuinely disagreed on how to
+    /// render an object, so there was no behaviour to preserve, but for a number
+    /// they agreed exactly.
+    ///
+    /// Used for the two fields where a number is a meaningful value rather than
+    /// malformed input: `resets_at`, which is an epoch instant, and
+    /// `effort.level`, which agent frontmatter is allowed to write as an
+    /// integer. Both were silently dropped before, and neither failure
+    /// announced itself — `resets_at` cost the burn arrow, the countdown, and
+    /// the rate alert's ability to re-arm; `effort.level` cost the whole
+    /// segment.
     pub fn text_or_number(&self, path: &[&str]) -> Cow<'_, str> {
         match self.at(path) {
             Some(Value::String(s)) => Cow::Borrowed(s.as_str()),
@@ -201,8 +209,15 @@ impl Payload {
     }
 
     /// `J_EFFORT_LEVEL`. A display field, so it is scrubbed at render.
-    pub fn effort_level(&self) -> &str {
-        self.text(&["effort", "level"])
+    ///
+    /// Read tolerantly because agent frontmatter may write the level as an
+    /// integer. Both scripts rendered that as `3 effort` in white — bash
+    /// through `jq -r`, PowerShell because `if ($effortLevel)` is truthy for a
+    /// number and its `switch` falls to `default` — and
+    /// [`crate::render::effort_color`]'s catch-all arm exists for exactly those
+    /// values, so dropping them here made that arm unreachable from a payload.
+    pub fn effort_level(&self) -> Cow<'_, str> {
+        self.text_or_number(&["effort", "level"])
     }
 
     /// `J_TOTAL_COST` falling back to the legacy top-level `total_cost_usd`.

@@ -639,7 +639,7 @@ pub fn render(inputs: &Inputs) -> String {
         );
     }
 
-    let effort = sanitize_display(p.effort_level());
+    let effort = sanitize_display(&p.effort_level());
     let idle = inputs.scan.map(|s| s.idle).unwrap_or(true);
     let status_part = if idle {
         format!("{GREEN}●{RESET}  {WHITE}ready{RESET}")

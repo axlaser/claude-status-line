@@ -5095,6 +5095,36 @@ fn a_numeric_resets_at_is_read_the_same_as_a_quoted_one() {
     );
 }
 
+/// The same strictness cost the effort segment. Agent frontmatter may write the
+/// level as an integer, and both scripts rendered it: bash took `jq -r`'s `3`
+/// and fell to its `*)` colour arm, PowerShell found `if ($effortLevel)` truthy
+/// for a number and fell to `default`. Reading it with `as_str` dropped the
+/// whole segment — and made `effort_color`'s catch-all arm, which exists for
+/// precisely these values, unreachable from any payload.
+#[test]
+fn a_numeric_effort_level_renders_like_the_scripts() {
+    let payload_with = |value: &str| {
+        Payload::parse(&format!(r#"{{"effort":{{"level":{value}}}}}"#))
+            .expect("the fixture is a JSON object")
+    };
+
+    assert_eq!(
+        payload_with("3").effort_level(),
+        "3",
+        "a numeric effort level was dropped, taking the segment with it"
+    );
+    assert_eq!(payload_with("\"high\"").effort_level(), "high");
+    assert_eq!(
+        render::effort_color("3"),
+        render::WHITE,
+        "an unrecognised level takes the catch-all colour, as both scripts did"
+    );
+
+    // Unchanged: a wrong-typed value is still absent, because that is where the
+    // two scripts genuinely disagreed and there was no behaviour to preserve.
+    assert_eq!(payload_with("{\"a\":1}").effort_level(), "");
+}
+
 #[test]
 fn elapsed_and_countdown_formats_match_their_scales() {
     assert_eq!(render::format_elapsed(45_000.0), "45s");
