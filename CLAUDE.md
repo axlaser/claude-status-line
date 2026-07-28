@@ -1,28 +1,38 @@
 # CLAUDE.md -- claude-statusline
 
-Cross-platform custom status line for Claude Code. Claude Code pipes JSON to stdin on each refresh; scripts parse, cache, and render ANSI output.
+Cross-platform custom status line for Claude Code, shipped as one Rust binary. Claude Code pipes JSON to stdin on each refresh; the binary parses it and renders ANSI output.
 
 ## Project Structure
 
 ```
-macos/       statusline.sh, install.sh, uninstall.sh, notify.sh, git-refresh.sh, subagent-statusline.sh
-linux/       statusline.sh, install.sh, uninstall.sh, notify.sh, git-refresh.sh, subagent-statusline.sh
-windows/     statusline.ps1, install.ps1, uninstall.ps1, notify.ps1, git-refresh.ps1, subagent-statusline.ps1
-docs/solutions/  documented fixes and practices, by category, with YAML frontmatter (module, tags, problem_type) -- relevant when debugging or implementing in an area one of them covers
+src/                 the crate: one multi-call binary, one subcommand per former runtime script
+install/             install.sh + uninstall.sh (macOS and Linux), install.ps1 + uninstall.ps1 (Windows)
+macos/ linux/ windows/   install/uninstall entry-point shims only -- they delegate to install/
+tests/equivalence.rs the single integration test file; a table of named cases (R29)
+tests/fixtures/      golden captures, one directory per case
+tests/harness/       fixture capture and paired measurement drivers
+docs/solutions/      documented fixes and practices, by category, with YAML frontmatter (module, tags, problem_type) -- relevant when debugging or implementing in an area one of them covers
 docs/performance.md  standing performance rules: cost model, measurement methodology, equivalence matrix, PR checklist -- binding for any hot-path change
 ```
 
-- `notify.*` -- sound notification handler, triggered by hooks on permission requests and task completion
-- `git-refresh.*` -- cache invalidation hook registered as PostToolUse, clears stale git status after file-modifying tools
-- `subagent-statusline.*` -- subagentStatusLine handler, tees Claude Code's per-task feed to a session state file for the status line to read; prints nothing so the default agent panel stays intact
+The `macos/`, `linux/` and `windows/` directories hold **only** `install.*` and `uninstall.*`. They are the exact URLs `README.md` publishes for the one-liner install, so those paths must keep working; each sources or fetches the real body from `install/`. Do not delete them and do not put logic in them.
 
 ## Architecture
 
-- **macOS/Linux**: Bash 4+ scripts using `jq` for JSON parsing
-- **Windows**: PowerShell 5.1+ with native `ConvertFrom-Json`
-- macOS and Linux scripts are kept in sync; Windows is functionally equivalent using PS idioms
-- Output cached by hashing JSON + file modification times; git status cached with 5s TTL
-- **Statusline scripts are deliberately single-file per platform.** Installers fetch each script individually, so a sourced helper file would create a partial-upgrade hazard (new statusline + stale/missing sibling = broken status line). Accept file growth and small in-file repetition (e.g. the done-linger stamp/expire logic at its three per-platform sites) -- do not split `statusline.*` into sourced files or flag its length in reviews
+One binary, `claude-statusline`, dispatching on an argv token rather than `argv[0]`:
+
+- `statusline` (the default with no subcommand) -- reads the payload on stdin, renders the box
+- `notify <event>` -- sound and toast delivery, triggered by hooks on permission requests, task completion, and compaction
+- `git-refresh` -- cache invalidation hook registered as PostToolUse, clears stale git status after file-modifying tools
+- `subagent` -- subagentStatusLine handler, tees Claude Code's per-task feed to a session state file for the status line to read; prints nothing so the default agent panel stays intact
+- `self-check` -- renders a compiled-in fixture and compares it to the compiled-in expectation; the installer's gate against a binary that launches but renders wrongly
+- `settings <apply|remove|has|has-foreign|has-legacy>` -- the installers' `settings.json` editor
+
+The crate is lib+bin so the single test file can reach internal behaviour a binary-only crate cannot expose.
+
+**Two subcommands are deliberately exempt from the exit-0 contract**: `self-check` must be able to fail, or the installer cannot tell a bad build from a good one, and `settings` must be able to fail, or an installer reports success having written nothing. Everything else exits 0 always (see Silent Degradation).
+
+There is no output cache. The display recomputes per tick -- the caches in the scripts existed to dodge an interpreter startup cost the migration removed. Five files survive as **data stores, not performance caches**: the learned model-to-window map, the per-task subagent done-linger stamp, the per-session notification latch, the per-session subagent tasks feed, and the per-session transcript token record. The git status cache keeps its 5s TTL, because `git` is still a subprocess and the TTL doubles as the staleness bound for an invalidation key known to be incomplete.
 
 ### JSON Input Contract
 
@@ -30,17 +40,18 @@ Claude Code pipes a JSON object to stdin on each refresh. Key top-level fields:
 
 `session_id`, `workspace.current_dir`, `cwd`, `model.display_name`, `context_window.context_window_size`, `context_window.used_percentage`, `context_window.total_input_tokens`, `effort.level`, `cost.total_cost_usd`, `transcript_path`, `rate_limits.five_hour.*`, `rate_limits.seven_day.*`, `agent.name`, `context_window.current_usage.*`
 
-See the accessors on `Payload` in `src/payload.rs` for the full field list. (The `# @parity:json-extract` block in `macos/statusline.sh` was the source of truth until U13 deleted the runtime scripts; it is still readable at `9cf8729` if a capture needs regenerating.)
+See the accessors on `Payload` in `src/payload.rs` for the full field list. The payload is deserialized to a generic JSON value and read through tolerant per-field helpers: a typed model would fail the whole document on one field's type change, blanking the status line where per-field extraction degrades one row.
 
 ### Subagent Tasks Feed
 
-Second input contract beside the stdin JSON: Claude Code's `subagentStatusLine` feature pipes `{session_id, tasks: [...]}` (per-task model, context window size, status, token count, description) to `subagent-statusline.*` on each refresh tick. The handler prints nothing and tees the payload to `statusline-tasks-<session-id>.json` in the OS temp dir (`$TMPDIR`, `%TEMP%` on Windows); the status line reads it when fresh. Per-task `model` / `contextWindowSize` require Claude Code >= v2.1.205 -- without feed data, the status line falls back to parsing subagent transcripts, resolving context windows via the learned map (`~/.claude/statusline-model-windows.json`, written from each main session's model -> window pair), then a seed table, then a 200K default.
+Second input contract beside the stdin JSON: Claude Code's `subagentStatusLine` feature pipes `{session_id, tasks: [...]}` (per-task model, context window size, status, token count, description) to `claude-statusline subagent` on each refresh tick. The handler prints nothing and tees the payload to `statusline-tasks-<session-id>.json` in the OS temp dir (`$TMPDIR`, `%TEMP%` on Windows); the status line reads it when fresh. Per-task `model` / `contextWindowSize` require Claude Code >= v2.1.205 -- without feed data, the status line falls back to parsing subagent transcripts, resolving context windows via the learned map (`~/.claude/statusline-model-windows.json`, written from each main session's model -> window pair), then a seed table, then a 200K default.
 
 ### Dependencies
 
-- **macOS/Linux**: `jq`, `git`, Bash 4+ (for `mapfile`)
-- **Windows**: PowerShell 5.1+ (no external dependencies)
-- macOS/Linux installers offer to install `jq` via the detected package manager
+- **Runtime:** none. `git` is required only for the git status row; without it that row is absent. No `jq`, no Bash version floor, no PowerShell version floor.
+- **Build:** a Rust toolchain. Linux targets link statically against musl so one artifact runs on any distribution, including Alpine and older glibc.
+- **Install:** `curl` (macOS/Linux) or `Invoke-WebRequest` (Windows), plus a SHA-256 tool -- `sha256sum`, `shasum`, or `Get-FileHash`. `gh` is optional and enables provenance verification.
+- **Optional, for visual notifications:** `terminal-notifier` on macOS, `libnotify` on Linux, the `BurntToast` module on Windows.
 
 ## Development
 
@@ -50,11 +61,20 @@ Two-tier flow: create feature branches as `dev-<feature>` (e.g. `dev-notificatio
 
 ### Testing
 
-Manual testing required:
+```
+cargo test                          # the whole suite, including the fixture case table
+cargo clippy --all-targets -- -D warnings
+cargo fmt --check
+```
 
-- Set `STATUSLINE_DEBUG=1` to enable debug logging to `~/.claude/statusline-debug.log`
-- Test on all three platforms when possible; at minimum test macOS/Linux changes on one and verify the other by inspection
-- Install locally via `bash macos/install.sh` (or platform equivalent) to test the full flow
+All three are gates on every commit. `cargo test` includes the case table, which stages each case into isolated home and temp roots, pins the clock, renders in-process, and refuses to compare output that leaked a machine-local path.
+
+- **One test file.** `tests/equivalence.rs` drives a table of named cases; a failure names the case and shows the diff. Fixtures live under `tests/fixtures/` as data files, never as additional test files. Do not add a second test file.
+- Set `STATUSLINE_DEBUG=1` to enable debug logging to `~/.claude/statusline-debug.log`, from every subcommand.
+- `claude-statusline self-check` renders the real fixture and exits non-zero on mismatch -- the fastest confirmation that a build is sound.
+- Install locally via `bash install/install.sh` (or `install/install.ps1`) to test the full flow. It requires a published release to fetch from.
+
+Two equivalence tests skip on Windows without Developer Mode (they need symlinks). They print a reason but report as passing, so a green local Windows run is not proof those cases were covered; CI's Unix runners exercise them.
 
 What to verify after changes:
 
@@ -66,13 +86,13 @@ What to verify after changes:
 
 ### File Encoding
 
-Enforced by `.gitattributes` -- do not override:
+Enforced by `.gitattributes` -- do not override. It governs the installers and the harness; Rust sources carry no constraint beyond git's defaults.
 
 - `*.sh` -- LF line endings
 - `*.ps1` -- CRLF line endings with UTF-8 BOM
-- **Exception:** `windows/install.ps1` and `windows/uninstall.ps1` are **BOM-less and ASCII-only**. They run via `irm <url> | iex`, and a BOM survives `irm` as a stray U+FEFF that breaks `iex` on the first token (fixed in `762dcc0`, regressed once by re-applying the BOM rule mechanically -- do not "fix" the missing BOM back). ASCII-only keeps them safe to run from a local clone too.
+- **Exception:** `windows/install.ps1`, `windows/uninstall.ps1`, `install/install.ps1` and `install/uninstall.ps1` are **BOM-less and ASCII-only**. They run via `irm <url> | iex`, and a BOM survives `irm` as a stray U+FEFF that breaks `iex` on the first token (fixed in `762dcc0`, regressed once by re-applying the BOM rule mechanically -- do not "fix" the missing BOM back). ASCII-only keeps them safe to run from a local clone too.
 
-Getting this wrong breaks Windows PowerShell parsing of non-ASCII literals.
+`fetched_powershell_installers_are_bomless_ascii` asserts the exception, so a mechanical re-application fails the suite rather than shipping.
 
 ---
 
@@ -80,19 +100,35 @@ Getting this wrong breaks Windows PowerShell parsing of non-ASCII literals.
 
 These rules apply to every task in this project unless explicitly overridden.
 Bias: caution over speed on non-trivial work.
-Naming: Bash uses `snake_case` functions and `UPPER_CASE` constants; PowerShell uses `PascalCase` functions.
+Naming: Rust conventions throughout the crate (`snake_case` items, `SCREAMING_CASE` constants). The installers keep their dialects' conventions: Bash `snake_case`, PowerShell `PascalCase`.
 
-### Cross-Platform Parity
+### Platform-Specific Code Is Confined
 
-Changes to `macos/` almost always require matching changes in `linux/` and `windows/`.
-macOS and Linux share Bash -- keep them in sync. Windows PowerShell is functionally equivalent; port the same logic using PS idioms.
-Never merge a change that updates one platform without considering the others.
+There is one implementation. Platform-conditional code is confined to three areas and nowhere else:
+
+1. notification delivery,
+2. file-ownership checks,
+3. process-entry stream handling.
+
+Anything else that reaches for `cfg!(windows)` is a design error -- most often a sign that a behaviour should be resolved to one recorded answer instead of branched. Path formatting is the worked example: the port compares the home prefix case-sensitively on every platform rather than matching Windows' case-insensitive comparison, because keeping both would need a branch here (see `docs/performance.md` §4).
 
 ### Silent Degradation
 
-Statusline scripts (`statusline.*`, `notify.*`, `git-refresh.*`, `subagent-statusline.*`) must always `exit 0`, even on error. Never print to stderr.
+Every per-tick subcommand -- `statusline`, `notify`, `git-refresh`, `subagent` -- must exit 0, even on error, and write nothing to stderr. Breaking this contract crashes the Claude Code status line for users.
+
+Enforced at process entry in five layers, all of which must stay:
+
+1. redirect fd 2 to the null device before anything can write to it,
+2. install a no-op panic hook,
+3. wrap each subcommand in `catch_unwind`,
+4. flush stdout **and check the flush result**,
+5. exit 0.
+
+The flush is load-bearing: `std::process::exit` runs no destructors, so a buffered writer dropped unflushed produces an empty status line that satisfies every exit-code and stderr assertion. The release profile keeps `panic = "unwind"` so layer 3 exists in shipped builds. Never use `println!`/`eprintln!` -- they panic on a broken pipe, which is routine when the parent stops reading.
+
 Log errors via the debug log (`STATUSLINE_DEBUG`), not to the user's terminal.
-Breaking this contract crashes the Claude Code status line for users.
+
+`self-check` and `settings` are the two deliberate exemptions; see Architecture.
 
 ### No `exit` in Install/Uninstall Scripts
 
@@ -102,17 +138,23 @@ Install and uninstall scripts must never use `exit`. Windows scripts are invoked
 - **Bash error paths**: Use `return 1 2>/dev/null || exit 1`. `return` succeeds when sourced; `exit` is the fallback for subshell invocation via `curl | bash`.
 - **PowerShell error paths**: Use `return`. This exits the script scope without terminating the session.
 
-This rule applies only to `install.*` and `uninstall.*`. Statusline, notify, git-refresh, and subagent-statusline scripts run as subprocesses where `exit 0` is required (see Silent Degradation above).
+This rule applies to `install.*` and `uninstall.*` only, in both `install/` and the three entry-point directories. `install_scripts_never_exit_the_users_shell` asserts it.
+
+### Installers Gate On the Self-Check
+
+Nothing irreversible happens before `claude-statusline self-check` passes: not removing a prior installation's scripts, not rewriting `settings.json`. A binary can pass its checksum, launch, and still render wrongly, and the silent-degradation contract guarantees that failure reaches the user as an absent status line with no other signal. On a failing check, the installer restores the previous binary and leaves `settings.json` untouched.
 
 ### Performance
 
-The hot cost is process creation, not script logic: every refresh spawns a fresh interpreter (~124 ms PowerShell floor), so every call is a first call and every fork counts. Full rules, cost model, and the mandatory PR checklist live in `docs/performance.md`. The non-negotiables:
+The hot cost is no longer an interpreter. Every refresh still spawns a fresh process, but it is a native binary with no startup floor to amortise, so the remaining costs are real work: subprocess `git`, reading the transcript, and the syscalls around state files. Full rules, cost model, and the mandatory PR checklist live in `docs/performance.md`. The non-negotiables:
 
-- No new subprocess/fork on a per-tick path, and no new work before the output-cache check.
-- Performance changes must keep rendered output byte-identical (verified across the state matrix in `docs/performance.md` §4) and must be measured with fresh-process probes, never warm loops — end-to-end before/after medians only.
-- Debug-log call sites must not evaluate expensive arguments when logging is off (PowerShell evaluates arguments before the callee's guard).
-- Bump `CACHE_VERSION` whenever a cache record format changes.
-- `docs/performance.md` is a living document — whenever work measures a new cost, rules out a hypothesis, accepts a rendered-output divergence, or settles a design question, update it in the same change. Its §6 reference numbers must always describe the current scripts.
+- No new subprocess on a per-tick path. `git` is the only one, and it is bounded by the 5s TTL.
+- Do not reintroduce an output cache. It was deleted deliberately; the cost it hid is gone.
+- Do not read the transcript when `(mtime, size)` are unchanged -- everything the tokens and model rows render is reconstructable from the stored record. This is measured, not assumed: an unconditional scan cost ~50 ms on 8 MB and made the port 4x slower than the script on Linux.
+- Performance changes must keep rendered output byte-identical (verified by the case table) and must be measured with fresh-process probes, never warm loops -- end-to-end before/after medians only.
+- Debug-log call sites must not evaluate expensive arguments when logging is off.
+- Bump `RECORD_VERSION` whenever a stored record format changes.
+- `docs/performance.md` is a living document -- whenever work measures a new cost, rules out a hypothesis, accepts a rendered-output divergence, or settles a design question, update it in the same change. Its §6 reference numbers must always describe the current binary, and every row must carry the host class it was measured on.
 
 ### Repo Skills and Branching
 
@@ -121,5 +163,5 @@ The hot cost is process creation, not script logic: every refresh spawns a fresh
 
 ### Never Commit
 
-- A hardcoded absolute personal path (`/Users/<name>/...`, `C:\Users\<name>\...`) where `$HOME` / `~` / `$env:USERPROFILE` belongs. This tool runs on other people's machines — a baked-in personal path is a shipped bug, not just a privacy leak.
+- A hardcoded absolute personal path (`/Users/<name>/...`, `C:\Users\<name>\...`) where `$HOME` / `~` / `$env:USERPROFILE` belongs. This tool runs on other people's machines — a baked-in personal path is a shipped bug, not just a privacy leak. The case table refuses to compare output that leaked one.
 - `statusline-debug.log` or any other runtime debug/log artifact.

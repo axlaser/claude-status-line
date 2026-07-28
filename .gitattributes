@@ -1,7 +1,12 @@
-# Windows PowerShell scripts: CRLF line endings. The files are committed with a
-# UTF-8 BOM as part of their content — Windows PowerShell 5.1 otherwise decodes
-# BOM-less files as Windows-1252 and corrupts non-ASCII characters inside string
-# literals (which breaks parsing). Do not strip the BOM when editing.
+# Shell and PowerShell now cover exactly two things: the installers, and the
+# fixture/measurement harness. There is no runtime script — the status line,
+# notify, git-refresh and subagent handlers are subcommands of one Rust binary,
+# so nothing here governs what runs on a user's machine per tick.
+#
+# PowerShell files: CRLF line endings, committed with a UTF-8 BOM as part of
+# their content. Windows PowerShell 5.1 otherwise decodes BOM-less files as
+# Windows-1252 and corrupts non-ASCII characters inside string literals, which
+# breaks parsing. Do not strip the BOM when editing.
 #
 # EXCEPTION — every PowerShell file reachable by `irm <url> | iex` must stay
 # BOM-LESS and ASCII-only. irm keeps a BOM as a stray U+FEFF that makes iex fail
@@ -17,8 +22,13 @@
 # shipping.
 *.ps1 text eol=crlf
 
-# Unix shell scripts must keep LF, or shebangs break on Linux/macOS.
+# Unix shell scripts must keep LF, or shebangs break on Linux/macOS. This covers
+# install/*.sh, the macos/ and linux/ entry-point shims, and the harness.
 *.sh  text eol=lf
+
+# Rust sources carry no encoding constraint beyond git's defaults: rustc reads
+# UTF-8 and is indifferent to line endings, and `cargo fmt --check` is what
+# polices their formatting.
 
 *.md   text
 *.json text
@@ -26,9 +36,8 @@
 *.png binary
 
 # --- Fixture harness (U3) -------------------------------------------------
-# U14 owns rewriting the encoding regime for the single-crate layout. These
-# rules are scoped to the paths the harness reads and writes, because getting
-# them wrong corrupts data rather than merely annoying an editor.
+# Scoped to the paths the harness reads and writes, because getting these wrong
+# corrupts data rather than merely annoying an editor.
 #
 # Harness inputs are pinned to LF on every platform. R30 requires a case to pin
 # every input it supplies, and an input whose bytes depend on the checkout is
@@ -45,6 +54,6 @@ tests/harness/shims/record.cmd text eol=crlf
 
 # Golden captures are bytes, not text. Any normalisation here would rewrite the
 # very output the fixture exists to preserve, and the diff would look like the
-# scripts changed.
+# renderer changed.
 tests/fixtures/**/expected/** -text
 tests/fixtures/**/case.json  text eol=lf

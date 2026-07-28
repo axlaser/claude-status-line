@@ -7,8 +7,8 @@
 [![macOS](https://img.shields.io/badge/macOS-000000?style=for-the-badge&logo=apple&logoColor=white)](#macos)
 [![Linux](https://img.shields.io/badge/Linux-FCC624?style=for-the-badge&logo=linux&logoColor=black)](#linux)
 [![Windows](https://img.shields.io/badge/Windows-0078D4?style=for-the-badge&logo=windows&logoColor=white)](#windows)
-[![Bash](https://img.shields.io/badge/Bash-4EAA25?style=for-the-badge&logo=gnubash&logoColor=white)](#macos)
-[![PowerShell](https://img.shields.io/badge/PowerShell-5391FE?style=for-the-badge&logo=powershell&logoColor=white)](#windows)
+[![Rust](https://img.shields.io/badge/Rust-000000?style=for-the-badge&logo=rust&logoColor=white)](#installation)
+[![No runtime dependencies](https://img.shields.io/badge/runtime_deps-none-success?style=for-the-badge)](#installation)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue?style=for-the-badge)](#license)
 
 ---
@@ -81,7 +81,7 @@ Sound alerts and native OS toast notifications fire on permission requests, task
 curl -fsSL https://raw.githubusercontent.com/axlaser/claude-statusline/master/macos/install.sh | bash
 ```
 
-The installer checks for `jq` and offers to install it via Homebrew if missing.
+Downloads a prebuilt, checksum-verified binary. No `jq`, no Bash version floor — nothing to install first.
 
 **Update:**
 
@@ -223,7 +223,7 @@ Nothing here pipes a download into a shell — every step is one you can inspect
 curl -fsSL https://raw.githubusercontent.com/axlaser/claude-statusline/master/linux/install.sh | bash
 ```
 
-The installer detects your package manager (apt, dnf, pacman, zypper, apk) and offers to install `jq` if missing.
+Downloads a prebuilt, checksum-verified binary, statically linked against musl — one artifact runs on any distribution, including Alpine and older glibc. No `jq`, no package manager involved.
 
 **Update:**
 
@@ -366,7 +366,7 @@ Nothing here pipes a download into a shell — every step is one you can inspect
 irm https://raw.githubusercontent.com/axlaser/claude-statusline/master/windows/install.ps1 | iex
 ```
 
-No additional dependencies required — uses built-in PowerShell.
+Downloads a prebuilt, checksum-verified binary. PowerShell is used only to run the installer — the status line itself has no PowerShell dependency and no version floor.
 
 **Update:**
 
@@ -505,12 +505,24 @@ Nothing here pipes a download into `iex` — every step is one you can inspect b
 ```bash
 git clone https://github.com/axlaser/claude-statusline.git
 cd claude-statusline
-bash macos/install.sh      # macOS
-bash linux/install.sh      # Linux
-.\windows\install.ps1      # Windows
+bash install/install.sh      # macOS and Linux
+.\install\install.ps1        # Windows
 ```
 
-To update, `git pull` and re-run the install script. To uninstall, run the uninstall script for your platform.
+These still download the published binary rather than building one — cloning saves you
+piping a URL into a shell, not the download. To update, re-run the installer. To uninstall,
+run `install/uninstall.sh` or `install/uninstall.ps1`.
+
+To build and install from source instead, you need a Rust toolchain:
+
+```bash
+cargo build --release
+cargo test                                     # optional but recommended
+target/release/claude-statusline self-check    # must exit 0
+```
+
+Then place the binary at `~/.claude/bin/claude-statusline` and register it with
+`claude-statusline settings apply --binary <that path> --all`.
 
 ### Without piping to a shell
 
@@ -566,13 +578,13 @@ By default the status line updates after each assistant message. To also refresh
 {
   "statusLine": {
     "type": "command",
-    "command": "~/.claude/statusline.sh",
+    "command": "~/.claude/bin/claude-statusline",
     "refreshInterval": 2
   }
 }
 ```
 
-This refreshes every 2 seconds. On **Windows**, `refreshInterval: 2` is required — PowerShell's startup overhead makes 1-second intervals unreliable. On **macOS/Linux** you can lower it to `1` (the minimum) for faster updates, at the cost of spawning the script twice as often.
+This refreshes every 2 seconds. `1` is the minimum and is fine on every platform — the old advice to keep Windows at `2` was about PowerShell's ~124 ms startup, and there is no interpreter to start any more.
 
 ### Padding
 
@@ -582,7 +594,7 @@ Add horizontal spacing around the status line:
 {
   "statusLine": {
     "type": "command",
-    "command": "~/.claude/statusline.sh",
+    "command": "~/.claude/bin/claude-statusline",
     "padding": 2
   }
 }
@@ -590,12 +602,14 @@ Add horizontal spacing around the status line:
 
 ### Debug Logging
 
-Both scripts write debug logs to help troubleshoot issues:
+Logging is **off unless you ask for it**. Set `STATUSLINE_DEBUG=1` in the environment Claude Code launches with, and every subcommand appends to a single log:
 
 | Platform | Log location |
 |----------|-------------|
 | macOS / Linux | `~/.claude/statusline-debug.log` |
 | Windows | `%USERPROFILE%\.claude\statusline-debug.log` |
+
+One log covers the status line and all three hooks. Most lines carry a component prefix — `git:`, `transcript:`, `subagents:`, `model-windows:`, `notify:`, `git-refresh:`, `subagent-statusline:` — so you can tell which part wrote them; a few process-level entries have none. Unset the variable to stop logging; the file is safe to delete at any time.
 
 ### Notifications
 
@@ -630,9 +644,9 @@ Platform-native sounds — no additional software needed:
 | Linux | notify-send | `sudo apt install libnotify-bin` (or equivalent for your distro) |
 | Windows | [BurntToast](https://github.com/Windos/BurntToast) | `Install-Module -Name BurntToast -Scope CurrentUser` |
 
-The installer offers to install these automatically. If the visual tool is missing, sound notifications still work — visual silently degrades.
+These are optional and you install them yourself — the installer does not fetch them. If the visual tool is missing, sound notifications still work; visual silently degrades rather than failing.
 
-Toast notifications display the Claude icon ([source](https://commons.wikimedia.org/wiki/File:Claude_AI_symbol.svg), public domain). The installer copies it to `~/.claude/claude-icon.png` automatically.
+Toast notifications display the Claude icon ([source](https://commons.wikimedia.org/wiki/File:Claude_AI_symbol.svg), public domain). The installer downloads it to `~/.claude/claude-icon.png` automatically, and the toast simply omits it if the file is absent.
 
 #### Configuration
 
@@ -660,24 +674,14 @@ To enable after initial install, re-run the installer and answer **y** to the no
 <details>
 <summary><strong>Status line not appearing</strong></summary>
 
-- Verify the script path in `settings.json` is correct
-- macOS/Linux: confirm the script is executable (`chmod +x ~/.claude/statusline.sh`)
-- Restart Claude Code after changing settings
-- Check the debug log for errors
+The status line is designed to fail silently — it never writes to stderr and always exits 0, because anything else breaks Claude Code's UI. So an absent status line gives you no error to read, and these are the things to check by hand:
 
-</details>
-
-<details>
-<summary><strong>jq: command not found</strong></summary>
-
-Install jq for your platform:
-```bash
-brew install jq              # macOS (Homebrew)
-sudo apt install jq          # Debian/Ubuntu
-sudo dnf install jq          # Fedora/RHEL
-sudo pacman -S jq            # Arch
-```
-Or download from [jqlang.github.io/jq](https://jqlang.github.io/jq/download/).
+- Confirm the binary runs and renders: `~/.claude/bin/claude-statusline self-check`. Exit 0 means the renderer is sound; non-zero means the build is bad and you should reinstall.
+- Verify the path in `settings.json` matches where the binary actually is. On Windows the stored command must keep its surrounding quotes, or a profile directory containing a space splits the command.
+- macOS/Linux: confirm it is executable (`chmod +x ~/.claude/bin/claude-statusline`).
+- Apple Silicon: an unsigned binary is killed on sight. Released artifacts are ad-hoc signed; if you built your own, run `codesign --sign - --force target/release/claude-statusline`.
+- Restart Claude Code after changing settings.
+- Set `STATUSLINE_DEBUG=1` and check the debug log.
 
 </details>
 
@@ -698,11 +702,10 @@ Rate limit data is only available for Claude.ai Pro and Max subscribers. API use
 <details>
 <summary><strong>Notification sounds not playing</strong></summary>
 
-- Verify the script exists and is executable: `ls -la ~/.claude/notify.sh`
-- Test directly: `~/.claude/notify.sh permission` (should play a sound)
-- Check hooks are configured: `jq '.hooks' ~/.claude/settings.json`
+- Test directly: `~/.claude/bin/claude-statusline notify permission` (should play a sound). On Windows: `& "$env:USERPROFILE\.claude\bin\claude-statusline.exe" notify permission`
+- Check the event is not muted in `~/.claude/notify-config.json` — `"sound": false` genuinely mutes it
+- Confirm the hooks are registered — `settings.json` should carry `claude-statusline notify <event>` entries under `PermissionRequest`, `Stop`, `PreCompact` and `PostCompact`
 - Linux: ensure PulseAudio/PipeWire is running (`paplay` requires it) or ALSA is available (`aplay`)
-- Windows: verify `%USERPROFILE%\.claude\notify.ps1` exists, test with `powershell -File ~\.claude\notify.ps1 permission`
 - Restart Claude Code after installation — hooks are loaded at startup
 
 </details>
@@ -716,16 +719,19 @@ Rate limit data is only available for Claude.ai Pro and Max subscribers. API use
 
 **Windows:** BurntToast requires the Windows notification center. Test with `New-BurntToastNotification -Text "Test", "Hello"`. If notifications are suppressed, check **Settings > System > Notifications** and ensure notifications are enabled for PowerShell.
 
-**All platforms:** Set `STATUSLINE_DEBUG=1` and check `~/.claude/statusline-debug.log` for `notify:` entries to confirm the script is running and whether the visual tool was found.
+**All platforms:** Set `STATUSLINE_DEBUG=1` and check `~/.claude/statusline-debug.log` for `notify:` entries to confirm the hook ran and whether the visual tool was found.
 
 </details>
 
 <details>
-<summary><strong>Script errors in the debug log</strong></summary>
+<summary><strong>Errors in the debug log</strong></summary>
 
-Check `~/.claude/statusline-debug.log` for `READ/PARSE FAILED` or `UNHANDLED` entries. Common causes:
-- Claude Code passed unexpected JSON (check `stdin head:` in the log)
-- Permission issues writing to the temp directory
+Set `STATUSLINE_DEBUG=1` and check `~/.claude/statusline-debug.log`. Common causes:
+- Claude Code passed unexpected JSON — a malformed payload renders `[statusline: bad JSON]` rather than an empty bar
+- Permission issues writing to the temp directory, where the per-session state files live
+- A state file rejected by its guard: symlinks and reparse points are refused deliberately, and a foreign-owned file is not written through
+
+Because of the silent-degradation contract, a panic inside the binary is caught and logged rather than printed — so `panic caught in subcommand` in the log is the signal for a genuine bug worth reporting.
 
 </details>
 
@@ -733,13 +739,15 @@ Check `~/.claude/statusline-debug.log` for `READ/PARSE FAILED` or `UNHANDLED` en
 
 ## How It Works
 
-Claude Code pipes a JSON object to the script's stdin on each update. The JSON contains session data — model info, context window usage, cost, rate limits, transcript path, and more. The script parses this data, optionally reads the conversation transcript for additional metrics (message count, token breakdown, idle/working state), and outputs ANSI-colored text that Claude Code renders as the status bar.
+Claude Code pipes a JSON object to the binary's stdin on each update. The JSON contains session data — model info, context window usage, cost, rate limits, transcript path, and more. The binary parses this data, optionally reads the conversation transcript for additional metrics (message count, token breakdown, idle/working state), and outputs ANSI-colored text that Claude Code renders as the status bar.
 
-Git status is cached for up to 5 seconds and invalidated as soon as `.git/index` changes (or immediately by the git-refresh hook after file-modifying tools), so it stays effectively real-time without re-running git on every refresh. Transcript data is cached by file mtime to keep refresh times fast even in large repositories.
+It is a single multi-call binary: the status line, the notification handler, the git-refresh hook and the subagent feed handler are all subcommands of `claude-statusline`, so an install is one file plus `settings.json` entries pointing at it.
 
-Subagent rows are fed by Claude Code's `subagentStatusLine` feature. The installer registers a small handler (`subagent-statusline.sh` / `.ps1`, installed to `~/.claude/`) that receives the live tasks payload — each subagent's model, context window size, status, token count, and task description — and tees it to a session-scoped state file in the OS temp directory (`statusline-tasks-<session-id>.json`). The handler prints nothing, so Claude Code's own agent panel keeps its default rendering. Per-task `model` and `contextWindowSize` require Claude Code >= v2.1.205; on older versions (or before the feed delivers data), the status line falls back to parsing subagent transcripts. Task titles come from the feed's `description` field, so they require the handler to be up to date as well — with an older installed handler, rows gracefully fall back to showing the agent type.
+Git status is cached for up to 5 seconds and invalidated as soon as `.git/index` changes (or immediately by the git-refresh hook after file-modifying tools), so it stays effectively real-time without re-running git on every refresh. The transcript is read only when its size or modification time has changed — an unchanged transcript re-displays the stored totals without opening the file, which is what keeps refreshes fast in long sessions.
 
-On the transcript fallback path, each subagent's context window is resolved by checking the session's own model first, then a learned map, then a seed table, then a 200K default. A subagent running the same model as the session inherits that session's window directly — matched on the base model id, so a variant spelling like `claude-opus-5[1m]` and a bare `claude-opus-5` count as the same model. That makes a newly released model correct on a subagent's first appearance, with no prior observation. Beyond that, the status line records each main session's model → window pair to `~/.claude/statusline-model-windows.json`, so it learns real, plan-accurate context windows automatically — new models are picked up without any repo update. The seed table covers current documented models (1M for Fable 5, Opus 4.6+, Sonnet 5, and Sonnet 4.6; 200K for Haiku 4.5, Sonnet 4.5, and Opus 4.5). The uninstaller removes the handler registration, the handler script, and the learned map.
+Subagent rows are fed by Claude Code's `subagentStatusLine` feature. The installer registers `claude-statusline subagent` as the handler, which receives the live tasks payload — each subagent's model, context window size, status, token count, and task description — and tees it to a session-scoped state file in the OS temp directory (`statusline-tasks-<session-id>.json`). The handler prints nothing, so Claude Code's own agent panel keeps its default rendering. Per-task `model` and `contextWindowSize` require Claude Code >= v2.1.205; on older versions (or before the feed delivers data), the status line falls back to parsing subagent transcripts. Task titles come from the feed's `description` field, so with an older Claude Code, rows gracefully fall back to showing the agent type.
+
+On the transcript fallback path, each subagent's context window is resolved by checking the session's own model first, then a learned map, then a seed table, then a 200K default. A subagent running the same model as the session inherits that session's window directly — matched on the base model id, so a variant spelling like `claude-opus-5[1m]` and a bare `claude-opus-5` count as the same model. That makes a newly released model correct on a subagent's first appearance, with no prior observation. Beyond that, the status line records each main session's model → window pair to `~/.claude/statusline-model-windows.json`, so it learns real, plan-accurate context windows automatically — new models are picked up without any repo update. The seed table covers current documented models (1M for Fable 5, Opus 4.6+, Sonnet 5, and Sonnet 4.6; 200K for Haiku 4.5, Sonnet 4.5, and Opus 4.5). The uninstaller removes the handler registration, the binary, and the learned map.
 
 ---
 

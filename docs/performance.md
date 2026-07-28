@@ -1,76 +1,73 @@
 # Performance Practices
 
-Standing performance doctrine for the statusline scripts. CLAUDE.md's Performance rules
+Standing performance doctrine for `claude-statusline`. CLAUDE.md's Performance rules
 section binds every hot-path change to this file; this document is the detail behind it.
 
 **This is a living document.** Update it whenever something new is established: a cost is
 measured, a hypothesis is ruled out, a behavioral divergence is accepted, a design
 decision is made, or the reference numbers in §6 change. A claim in this file should
-always reflect the current scripts.
+always reflect the current binary.
+
+**Reading the older entries.** Everything dated before 2026-07-27 describes the three
+per-platform script trees this binary replaced. Those entries are kept because the
+reasoning still teaches — several of them are why the port is shaped the way it is — but
+they are history, not rules. Where one contradicts the current model, the current model
+wins, and §7 marks the entries the migration invalidated.
 
 ## 1. The cost model — what is actually expensive here
 
-Every refresh is a **brand-new process**. That single fact drives everything:
+Every refresh is still a **brand-new process**, but it is a native binary. That changes
+which half of the old model survives.
 
-1. **Process creation dominates.** ~124 ms floor for `powershell.exe` before line 1; every
-   `fork`/`exec` on bash. The script's own logic is usually the minority of the cost.
-2. **Every call is a first call.** Types, providers, and formatting pipelines load fresh each
-   tick. Anything touching the pipeline (`Measure-Object`, `Select-Object`, `Get-ChildItem`,
-   `Write-Host`) pays a load cost that a warm benchmark will never show you.
-3. **Work scales with session length only in the transcript.** The transcript scan is linear
-   (~12.5–17.5 ms/MB); everything else is roughly constant. The incremental parser bounds
-   it: a changed transcript re-parses only appended bytes.
-4. **The output cache hits at idle and misses during work** (its key hashes the raw payload,
-   which changes every tick while Claude works). Treat the cache-miss path as the common
-   case during active use — and keep the pre-cache-check region as thin as possible,
-   because it runs on every tick regardless. (A rendered-value second key tier was
-   designed and measured no-go — see the decision record in §7.)
-5. **Per-item micro-costs do not sum.** The first cmdlet call in a process pays ~80 ms of
-   one-time command-discovery init that every later cmdlet rides; removing N cmdlet calls
-   saves one init plus small marginal costs, not N first-call measurements. The same holds
-   for pipeline/module/assembly loads. Corollary: "the JSON parse costs ~90 ms" really
-   means "the first cmdlet costs ~90 ms" — deferring the parse only pays off when the
-   whole pre-hit region is cmdlet-free. Always attribute a saving with an end-to-end
-   before/after median, never a sum of isolated probes.
+1. **There is no interpreter floor.** The scripts paid ~124 ms for `powershell.exe` before
+   line 1 executed, and the entire caching architecture existed to dodge it. The binary
+   pays process creation and nothing else, which is why the whole warm tick now costs less
+   than the floor used to. Startup is no longer the thing to optimise.
+2. **What remains is real work.** In rough order: subprocess `git` (~74 ms for the pair on
+   the maintainer's Windows machine, bounded by the 5s TTL), reading and scanning the
+   transcript (linear in its size), and the syscalls around the five state files. None of
+   these are startup artefacts; each is doing something.
+3. **Work scales with session length only in the transcript**, and that scan is skipped
+   entirely when `(mtime, size)` are unchanged. The stored record carries the message count
+   and idle flag precisely so an unchanged transcript needs no read at all. This is the
+   single most important cost decision in the port — see §7.
+4. **There is no output cache, and reintroducing one is not a performance idea.** It was
+   deleted because the cost it hid was the interpreter's, and that cost is gone. The
+   pre-cache-check region that the script rules obsessed over does not exist.
+5. **Absolute savings differ by an order of magnitude across platforms, proportions do
+   not.** bash's floor was ~10 ms where PowerShell's was ~124 ms, so the same proportional
+   win is a very different number of milliseconds. A conclusion measured on Windows must
+   not be generalised to Linux without measuring there — R27's incremental-parser
+   conclusion was over-generalised exactly this way and cost a 4x regression (§7).
+6. **Isolated micro-costs still do not sum.** Attribute a saving with an end-to-end
+   before/after median, never a sum of isolated probes. Render-path micro-optimisation in
+   particular measures as zero: the work is dominated by `git` and the transcript.
 
 ## 2. Hard rules (enforced in review)
 
-**All platforms**
-- No new subprocess / fork on any per-tick path. State the process-count delta (hit path and
-  miss path) in the PR description for any hot-path change. Current baselines to stay under
-  (§6): bash 5 execs/hit, 14/miss; git block 2 subprocesses (3 on detached HEAD); Windows
-  hit path zero cmdlets before the cache-hit exit.
-- No new work before the output-cache check. Anything added there is paid on every tick,
-  cache hit or not.
-- Never read a file twice in one refresh when one pass can serve.
-- Cache format changes bump `CACHE_VERSION` and keep the `@parity:cache` markers in sync
-  across all three platforms.
-- Rendered output is sacred: a performance change must be byte-identical on the standard
-  state matrix (§4). If output must change, it is not a performance change — split the PR.
-
-**Windows (PowerShell)**
-- The region before the output-cache hit exit is a **zero-cmdlet zone**, not a style
-  preference: the first cmdlet call in a fresh process pays ~80 ms of one-time
-  command-discovery init, so a single `Get-Item` or `Test-Path` added there re-adds
-  everything the deferred parse saved. Grep the pre-hit region for cmdlet names before
-  merging. Elsewhere on hot paths, prefer .NET calls over pipeline cmdlets:
-  `[IO.File]::ReadAllText`, `[IO.Directory]::GetFiles`, `[Console]::Write`, `$s.Length`,
-  `.StartsWith()`.
-- Debug logging must never evaluate expensive arguments when disabled — PowerShell evaluates
-  arguments *before* the callee's guard. Wrap call sites: `if ($DBG) { Write-Log ... }`.
-- Do not switch to `pwsh` 7 for the spawned process (measured slower to start: 198 vs 124 ms).
-- Do not pre-compile `[regex]` objects (construction dominates; measured slower than `-match`).
-
-**Bash (macOS/Linux)**
-- Helpers return values via `printf -v` out-variables, not `$( )` command substitution —
-  every substitution forks a subshell. The format string is always a fixed literal; data is
-  never the format operand.
-- Prefer builtins over binaries: parameter expansion over `dirname`/`basename`/`cut`,
-  `${EPOCHSECONDS:-$(date +%s)}` over bare `date +%s` (bash-4 fallback required), batched
-  `stat` (mapped back by filename) over per-file calls.
-- awk hot loops: `index()`/`substr()` extraction over whole-line `sub()` chains, and always
-  `LC_ALL=C` for byte-oriented scanning — a UTF-8 locale both breaks byte-offset math and
-  corrupts gawk's regex extraction on astral-plane characters (see §4).
+- **No new subprocess on any per-tick path.** `git` is the only one. State the
+  process-count delta in the PR description for any hot-path change.
+- **Do not reintroduce an output cache**, or any cache whose justification is startup cost.
+  The five surviving state files are data stores and render inputs, not speed
+  optimisations; `docs/performance.md` and CLAUDE.md both name them explicitly so that a
+  future reader can tell the difference.
+- **Do not read the transcript when `(mtime, size)` are unchanged.** The trade is
+  deliberate and measured: it gives up noticing a same-length, same-mtime rewrite, and
+  `an_unchanged_transcript_is_not_rescanned` makes that cost executable rather than
+  described.
+- **Never read a file twice in one refresh when one pass can serve.**
+- **Stored record format changes bump `RECORD_VERSION`.** A field that changes meaning
+  without a bump is read as the old meaning by every installed binary.
+- **Parse stored records strictly.** A field that decides whether work happens — `idle`
+  decides whether the transcript is read at all — must reject the whole record on anything
+  it does not exactly understand, rather than defaulting.
+- **Rendered output is sacred:** a performance change must be byte-identical across the
+  case table (§4). If output must change, it is not a performance change — split the PR.
+- **Debug logging must never evaluate expensive arguments when disabled.** `debug::log`
+  takes a closure for this reason; passing an eagerly-formatted `String` defeats it.
+- **Platform-conditional code stays in its three areas** (notification delivery,
+  ownership checks, stream handling). A `cfg!(windows)` on a hot path is a design smell
+  before it is a performance one.
 
 ## 3. Measurement methodology (how numbers must be produced)
 
@@ -89,41 +86,57 @@ process per tick, so measurements must too.
   cache-key input and "hit" samples silently measure misses. When a benchmark claims to
   measure the hit path, verify hit-ness (cache-file mtime unchanged, or the debug log's
   HIT line); see `docs/solutions/workflow-issues/` and `docs/solutions/best-practices/`.
-- **Bash on Git Bash: process counts are portable, milliseconds are not** (emulated fork is
-  ~20–50× a real one). Report counts, not Git Bash ms, for macOS/Linux claims.
-- **Script-vs-binary pairs go through `tests/harness/measure.sh` / `measure.ps1`**, which
+- **Host class is part of the number** (R41). A hosted-runner figure must never later be
+  held against a bare-metal baseline, so every row in §6 carries the runner label and image
+  version it came from. Rows without one are unusable as baselines.
+- **Measure both the warm and the cold state.** A warm-only pair flatters whichever variant
+  caches more; the script's output cache was keyed on a 5-second bucket, so a whole run
+  finished inside one and most of its probes rendered nothing at all. `measure.sh` and
+  `measure.ps1` take `--cold-cache` / `-ColdCache` for this.
+- **Paired measurements go through `tests/harness/measure.sh` / `measure.ps1`**, which
   implement every rule above and refuse to report a number until each variant has been
   proven to do its work. A probe that silently no-opped reads as a spectacular speed-up:
   that guard is what caught a measurement of an unimplemented subcommand at U6.
-- Do not re-test the ruled-out hypotheses without new evidence: temp-glob scaling with
-  file count (false — flat; the cost is one-time provider load), pre-compiled `[regex]`
-  (slower), ACL-check removal (load-bearing), `pwsh` 7 (slower start), script-size/parse
-  cost (~10 ms, not the problem).
+- **Bash on Git Bash: process counts are portable, milliseconds are not** (emulated fork is
+  ~20–50× a real one). This applied to the scripts; it still applies to anything measured
+  through an MSYS shell.
+- Do not re-test the ruled-out hypotheses without new evidence. Still live: ACL-check
+  removal (load-bearing), render-path micro-optimisation (measures as zero — the cost is
+  `git` and the transcript). Retired with the scripts, kept only as history: temp-glob
+  scaling, pre-compiled `[regex]`, `pwsh` 7 startup, script parse cost.
 
 ## 4. Equivalence verification (required for hot-path refactors)
 
-Before merging, capture full rendered output from the current and changed script and compare
-byte-for-byte across:
+`cargo test` is now the mechanism: `rendered_output_matches_the_captured_fixtures` replays
+every case in the table below against stored golden bytes, on every published target. The
+matrix is what that table exists to cover, and it is still the checklist for a case anyone
+adds:
 
-- **Git states** (scratch repo): fresh/unborn HEAD, clean, untracked-only, dirty,
-  stashes present, ahead-of-upstream, detached HEAD, no upstream, collapsed untracked dir,
-  stash-cleared. Run the matrix **per platform** — platforms differ today on unborn HEAD
-  (Windows renders `HEAD`, bash renders no git segment), so "matches current behaviour" is a
-  per-platform statement.
+- **Git states** (scratch repo): fresh/unborn HEAD, unborn-with-staged-index, clean,
+  untracked-only, dirty, stashes present, ahead-of-upstream, detached HEAD, no upstream,
+  collapsed untracked dir, stash-cleared. The table runs on every published target, so
+  "matches recorded behaviour" is now one statement rather than three — the per-platform
+  qualifier the scripts needed is what R20 retired.
 - **Payload states**: full payload, minimal payload (missing optional fields), empty stdin,
   malformed JSON (all must exit 0, no stderr), plus adversarial variants: Windows-illegal
   path characters, overlong paths, decoy field names inside string values, astral-plane
   characters in string fields.
-- **Transcript states**: absent, empty, large (≥ 4 MB real transcript), plus the incremental
-  parser's edges: truncated/rotated and same-size-rewritten files fall back to a full rescan
-  (size-shrink check + head checksum), torn trailing lines are re-read next tick, and a
-  malformed/corrupt v2 cache record (wrong field count, out-of-range or oversized-digit
-  offset, non-hex checksum) degrades to a full rescan on all three platforms. Multibyte
-  fixtures must include a 4-byte (astral-plane) character, not just CJK.
+- **Transcript states**: absent, empty, large (≥ 4 MB), unchanged since the last tick (the
+  record is re-displayed and the file is never opened), torn trailing line re-read next
+  tick, appended-after-sampling bytes left for the next scan, and a damaged record read as
+  no record at all. Multibyte fixtures must include a 4-byte (astral-plane) character, not
+  just CJK.
+- **Subagent feed states**: fresh feed, stale feed, absent feed falling back to transcript
+  parsing, and the done-linger window both inside and past expiry.
 
-Known parsing traps that this matrix exists to catch: PowerShell `-like '? *'` treats `?` as
-a wildcard (use `.StartsWith('? ')`); porcelain v2 emits `# branch.oid (initial)` on unborn
-HEAD, omits `# branch.ab` when no upstream, omits `# stash` at zero.
+Known parsing traps this matrix exists to catch: porcelain v2 emits `# branch.oid (initial)`
+on unborn HEAD, omits `# branch.ab` when no upstream, and omits `# stash` at zero; a branch
+literally named `(detached)` collides with the detached sentinel.
+
+**Byte-diffing alone cannot see a stale-input regression.** Any change touching a guarded
+read, the tasks-feed freshness window, or the done-linger stamp must also assert the
+observed fresh/stale outcome, not only the rendered bytes — see
+`docs/solutions/best-practices/byte-diff-cannot-see-cache-hit-regressions.md`.
 
 **Accepted divergences** (deliberate, documented — add new entries here when one is accepted):
 
@@ -148,26 +161,30 @@ HEAD, omits `# branch.ab` when no upstream, omits `# stash` at zero.
   rounds of fixture captures never produced either. Asserted as literals by
   `resolved_cwd_divergences_keep_the_ports_behaviour`.
 
-## 5. PR checklist for statusline hot-path changes
+## 5. PR checklist for hot-path changes
 
-- [ ] Process/fork delta stated (hit and miss paths), per platform.
-- [ ] Nothing new runs before the output-cache check (or the addition is justified).
-- [ ] End-to-end before/after medians measured per §3 (fresh process, ≥ 7 runs).
-- [ ] Byte-identical output across the §4 matrix, on every platform touched.
-- [ ] If the change touches a trust-checked cache read or an output-cache key input:
-  observed hit/miss verified (oc-file mtime unchanged on a hit, or the debug log's HIT
-  line) — byte-diffing alone cannot see a hit-rate regression (see
-  `docs/solutions/best-practices/byte-diff-cannot-see-cache-hit-regressions.md`).
-- [ ] Cross-platform parity: all three platforms updated or the divergence justified.
-- [ ] `CACHE_VERSION` bumped if any cache record format changed.
+- [ ] Subprocess delta stated. `git` is the only one that should appear.
+- [ ] End-to-end before/after medians measured per §3 (fresh process, ≥ 7 runs), warm
+  **and** cold, with the host class recorded.
+- [ ] `cargo test` green, including the case table — byte-identical rendered output.
+- [ ] If the change touches a guarded read, the tasks-feed freshness window, or the
+  done-linger stamp: the observed fresh/stale outcome asserted, not just the bytes (§4).
+- [ ] `RECORD_VERSION` bumped if any stored record format changed.
 - [ ] No debug-log call site evaluates expensive arguments when logging is off.
+- [ ] No new `cfg!(windows)` outside R25's three areas.
 - [ ] §6 reference numbers updated if the change moves them.
 
 ## 6. Reference numbers (update when a hot-path change moves them)
 
-End-to-end fresh-process medians, measured 2026-07-26 on the maintainer's machine
-(Windows 11, Windows PowerShell 5.1; bash numbers are MSYS shape-only). These are the
-baselines the §2 rules hold changes against.
+Every row carries its host class (R41). A hosted-runner number and a bare-metal number are
+not comparable, and a row that does not say which it is cannot serve as a baseline.
+
+### Historical — the script trees (2026-07-26)
+
+Kept for provenance and for reading §7's older entries. **These are not baselines for the
+binary**; they describe software that no longer exists in this repository. Measured on the
+maintainer's machine (Windows 11, Windows PowerShell 5.1, *maintainer machine* class; bash
+numbers are MSYS shape-only and were never a milliseconds claim).
 
 | Path | Cost |
 |---|---|
@@ -180,6 +197,16 @@ baselines the §2 rules hold changes against.
 | bash external processes, hit / miss | 5 / 14 |
 | bash forks, six-row subagent render | 39 |
 | Interpreter floor (`powershell.exe -NoProfile`, empty script) | ~124 ms |
+
+### Current — the binary
+
+The pairs below are the live reference. Read the **Binary** column as the baseline a change
+must not regress; the Script column is what it replaced, kept because a delta with only one
+side is not evidence.
+
+The two costs a hot-path change is most likely to move, both *maintainer machine* class:
+subprocess `git` at ~73.9 ms for the status+diff pair (§7), and a full transcript parse at
+46.9 ms against 8.4 MB (§7) — which an unchanged transcript now skips entirely.
 
 ### R38 paired medians — script vs. binary (2026-07-27)
 
