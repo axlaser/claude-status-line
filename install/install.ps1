@@ -300,6 +300,18 @@ Ok "Owned by you, no broad write access"
 Write-Host ""
 
 # --- Sweep leftovers ---
+# A sidecar with no binary at $binPath means the last run's self-check failed
+# AND its restore failed after it -- the path that prints "It is still at ...
+# move it back by hand". The sweep below would delete the only copy the user
+# was just told to go and rescue, and re-running the installer is the first
+# thing anyone does after a failed install. Put it back first. A sidecar left
+# *with* the binary in place is the ordinary case the sweep is for.
+if ((Test-Path $sidecarPath) -and -not (Test-Path $binPath)) {
+    Move-Item -Path $sidecarPath -Destination $binPath -Force -ErrorAction SilentlyContinue
+    if (Test-Path $binPath) {
+        Warn "Restored the binary a failed run left at $sidecarPath"
+    }
+}
 # Every run clears both what an interrupted download staged and what a previous
 # replace renamed aside.
 Get-ChildItem -Path $binDir -Filter "$stagePrefix*" -Force -ErrorAction SilentlyContinue |

@@ -90,7 +90,16 @@ pub fn save(path: &Path, root: &Value) -> Result<(), String> {
 pub const POST_TOOL_MATCHER: &str = "Edit|Write|MultiEdit|Bash|NotebookEdit";
 
 /// Claude Code's refresh cadence for the status line, in seconds.
-pub const REFRESH_INTERVAL: u64 = 2;
+///
+/// Written only when the entry does not already carry one, so a user who tuned
+/// it keeps their value across upgrades.
+///
+/// `2` while the scripts shipped, because PowerShell's ~124 ms startup made a
+/// 1-second cadence expensive on Windows and one value had to serve every
+/// platform. The interpreter is gone, so the floor that justified `2` is gone
+/// with it and the default drops to the minimum the scripts already used on
+/// macOS and Linux.
+pub const REFRESH_INTERVAL: u64 = 1;
 
 /// The four scripts a pre-binary installation left in `~/.claude`.
 ///
@@ -210,6 +219,13 @@ pub fn apply(root: &mut Value, binary: &str, spec: &ApplySpec) {
     // to entries whose contents change on that run anyway. The user's own keys
     // keep their positions, which is what `existing_key_order_is_preserved`
     // guards.
+    // Captured before `remove_legacy` deletes a script installation's entries
+    // outright. A migrating user's own keys live in that same object, and they
+    // should survive the migration for the same reason they survive an
+    // ordinary upgrade.
+    let prior_statusline = root.get(STATUS_LINE).cloned();
+    let prior_subagent = root.get(SUBAGENT_STATUS_LINE).cloned();
+
     remove_legacy(root);
 
     let binary: &str = &if spec.quote && !binary.starts_with('"') {
@@ -219,18 +235,23 @@ pub fn apply(root: &mut Value, binary: &str, spec: &ApplySpec) {
     };
 
     if spec.statusline {
-        root[STATUS_LINE] = json!({
-            "type": "command",
-            "command": binary,
-            "refreshInterval": REFRESH_INTERVAL,
-        });
+        merge_entry(
+            root,
+            STATUS_LINE,
+            prior_statusline,
+            binary,
+            &[("refreshInterval", json!(REFRESH_INTERVAL))],
+        );
     }
 
     if spec.subagent {
-        root[SUBAGENT_STATUS_LINE] = json!({
-            "type": "command",
-            "command": format!("{binary} subagent"),
-        });
+        merge_entry(
+            root,
+            SUBAGENT_STATUS_LINE,
+            prior_subagent,
+            &format!("{binary} subagent"),
+            &[],
+        );
     }
 
     if spec.git_refresh {
@@ -251,6 +272,50 @@ pub fn apply(root: &mut Value, binary: &str, spec: &ApplySpec) {
             set_hook(root, event, matcher, &format!("{binary} notify {arg}"));
         }
     }
+}
+
+/// Writes our entry at `key` over whatever was already there, keeping the
+/// user's own keys.
+///
+/// `type` and `command` belong to this installer and are always rewritten — an
+/// upgrade has to repoint the command at the new binary. `defaults` are written
+/// only when the key is absent. Everything else the user put in that object
+/// survives.
+///
+/// Replacing the whole object, which is what this used to do, silently deleted
+/// a customised `refreshInterval` and any `padding` on every single upgrade —
+/// both of which README documents as things to tune, so the settings most
+/// likely to be there were the ones most likely to be lost. Nothing announced
+/// it, and the next upgrade did it again.
+///
+/// Order is preserved on both paths: `serde_json`'s `preserve_order` map
+/// overwrites an existing key in place and appends a new one, so an entry we
+/// wrote before keeps its shape and a fresh install still emits
+/// `type`, `command`, `refreshInterval`.
+fn merge_entry(
+    root: &mut Value,
+    key: &str,
+    prior: Option<Value>,
+    command: &str,
+    defaults: &[(&str, Value)],
+) {
+    // A prior value that is not an object — a bare string, or the key absent
+    // entirely — carries nothing worth keeping, so it starts empty rather than
+    // trying to interpret it.
+    let mut entry = match prior {
+        Some(Value::Object(map)) => map,
+        _ => Map::new(),
+    };
+
+    entry.insert("type".to_string(), json!("command"));
+    entry.insert("command".to_string(), json!(command));
+    for (name, value) in defaults {
+        entry
+            .entry(name.to_string())
+            .or_insert_with(|| value.clone());
+    }
+
+    root[key] = Value::Object(entry);
 }
 
 /// Removes every entry whose command references `binary`, and prunes the

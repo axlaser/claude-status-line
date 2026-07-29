@@ -3133,6 +3133,61 @@ fn existing_key_order_is_preserved() {
     );
 }
 
+/// An upgrade rewrites `type` and `command` and nothing else in those entries.
+///
+/// The whole-object replacement this replaced reset a tuned `refreshInterval`
+/// to the default and deleted `padding` outright, on every single upgrade,
+/// with nothing said about it — and README documents both as things to tune,
+/// so the settings most likely to be present were the ones most likely to be
+/// lost. The default is only a default: it is written when the key is absent
+/// and never over a value the user chose.
+#[test]
+fn an_upgrade_keeps_the_users_own_status_line_keys() {
+    let mut root = serde_json::json!({
+        "statusLine": {
+            "type": "command",
+            "command": "~/.claude/bin/claude-statusline",
+            "refreshInterval": 7,
+            "padding": 2
+        },
+        "subagentStatusLine": {
+            "type": "command",
+            "command": "~/.claude/bin/claude-statusline subagent",
+            "padding": 3
+        }
+    });
+
+    settings::apply(&mut root, UNIX_BINARY, &all());
+
+    let line = &root["statusLine"];
+    assert_eq!(
+        line["refreshInterval"], 7,
+        "a tuned refreshInterval was reset to the default by an upgrade"
+    );
+    assert_eq!(
+        line["padding"], 2,
+        "the user's padding was deleted by an upgrade"
+    );
+    assert_eq!(
+        line["command"], UNIX_BINARY,
+        "the command must still be repointed at the new binary"
+    );
+    assert_eq!(
+        root["subagentStatusLine"]["padding"], 3,
+        "the subagent entry drops the user's keys too"
+    );
+
+    // A first install still gets the default, which is the other half of the
+    // contract: absent means write it, present means leave it.
+    let mut fresh = serde_json::json!({});
+    settings::apply(&mut fresh, UNIX_BINARY, &all());
+    assert_eq!(
+        fresh["statusLine"]["refreshInterval"],
+        settings::REFRESH_INTERVAL,
+        "a fresh install should carry the default cadence"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Fixture and harness contract
 // ---------------------------------------------------------------------------

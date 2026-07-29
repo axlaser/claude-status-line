@@ -268,6 +268,23 @@ echo ""
 
 # --- Stage the download ---
 step "Downloading"
+# A `.previous` with no binary at $BIN_PATH means the last run's self-check
+# failed AND its restore failed after it -- the path that prints "It is still
+# at ... move it back by hand". The sweep below would delete the only copy the
+# user was just told to go and rescue, and re-running the installer is the
+# first thing anyone does after a failed install. Put it back before sweeping.
+# An interrupted run that left a `.previous` *with* the binary in place is the
+# ordinary case the sweep is for, and is untouched by this.
+if [[ ! -e $BIN_PATH ]]; then
+    for _orphan in "$BIN_DIR/$STAGE_PREFIX"*.previous; do
+        [[ -e $_orphan ]] || continue
+        if mv -f "$_orphan" "$BIN_PATH" 2>/dev/null; then
+            chmod 700 "$BIN_PATH" 2>/dev/null
+            warn "Restored the binary a failed run left at $(basename "$_orphan")"
+        fi
+        break
+    done
+fi
 # Sweep anything a previous interrupted run left behind before adding one.
 rm -f "$BIN_DIR/$STAGE_PREFIX"* 2>/dev/null
 

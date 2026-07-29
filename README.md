@@ -163,7 +163,7 @@ Nothing here pipes a download into a shell — every step is one you can inspect
      "statusLine": {
        "type": "command",
        "command": "~/.claude/bin/claude-statusline",
-       "refreshInterval": 2
+       "refreshInterval": 1
      },
      "subagentStatusLine": {
        "type": "command",
@@ -306,7 +306,7 @@ Nothing here pipes a download into a shell — every step is one you can inspect
      "statusLine": {
        "type": "command",
        "command": "~/.claude/bin/claude-statusline",
-       "refreshInterval": 2
+       "refreshInterval": 1
      },
      "subagentStatusLine": {
        "type": "command",
@@ -446,7 +446,7 @@ Nothing here pipes a download into `iex` — every step is one you can inspect b
      "statusLine": {
        "type": "command",
        "command": "\"C:/Users/YOUR_USERNAME/.claude/bin/claude-statusline.exe\"",
-       "refreshInterval": 2
+       "refreshInterval": 1
      },
      "subagentStatusLine": {
        "type": "command",
@@ -610,19 +610,21 @@ Both installers take `--pre` here too, selecting the prerelease channel — see
 
 ### Refresh Interval
 
-By default the status line updates after each assistant message. To also refresh on a timer (useful for keeping the clock and git status current), add `refreshInterval` to your settings. The installer sets this to `2` on every platform:
+By default the status line updates after each assistant message. To also refresh on a timer (useful for keeping the clock and git status current), add `refreshInterval` to your settings. The installer sets this to `1` on every platform, and leaves it alone if you have already set your own:
 
 ```json
 {
   "statusLine": {
     "type": "command",
     "command": "~/.claude/bin/claude-statusline",
-    "refreshInterval": 2
+    "refreshInterval": 1
   }
 }
 ```
 
-This refreshes every 2 seconds. `1` is the minimum and is fine on every platform — the old advice to keep Windows at `2` was about PowerShell's ~124 ms startup, and there is no interpreter to start any more.
+This refreshes every second, which is the minimum and is fine on every platform — the old advice to keep Windows at `2` was about PowerShell's ~124 ms startup, and there is no interpreter to start any more. Raise it if you would rather the status line moved less.
+
+Whatever you set here survives upgrades: the installer rewrites only `type` and `command`, so `refreshInterval`, `padding`, and anything else you added to the entry are left as you left them.
 
 ### Padding
 
