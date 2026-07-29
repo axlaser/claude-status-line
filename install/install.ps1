@@ -278,11 +278,15 @@ if ($acl.Owner) {
     return
 }
 
-# Write access for Everyone or Users means someone else can replace the binary
-# after it is verified, which would make every check above decorative.
+# Write access for Everyone, Users, or Authenticated Users means someone else
+# can replace the binary after it is verified, which would make every check
+# above decorative. Authenticated Users (S-1-5-11) is the easy one to miss:
+# it is the broad principal ACL tooling grants most readily, and it covers
+# every account that can log on.
 $worldSids = @(
     (New-Object Security.Principal.SecurityIdentifier([Security.Principal.WellKnownSidType]::WorldSid, $null)),
-    (New-Object Security.Principal.SecurityIdentifier([Security.Principal.WellKnownSidType]::BuiltinUsersSid, $null))
+    (New-Object Security.Principal.SecurityIdentifier([Security.Principal.WellKnownSidType]::BuiltinUsersSid, $null)),
+    (New-Object Security.Principal.SecurityIdentifier([Security.Principal.WellKnownSidType]::AuthenticatedUserSid, $null))
 )
 foreach ($ace in $acl.Access) {
     if ($ace.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow) { continue }
@@ -652,11 +656,21 @@ if ($notifyConfigured) {
 }
 
 # --- Notification icon ---
+# The icon is the one download outside the release's SHA256SUMS, and it rides
+# the moving master ref. Pin its hash and discard a mismatch: a missing icon
+# is cosmetic, an unverified file handed to the toast stack is not.
+$iconSha256 = "10497c744e9d5e489b9e9b802b964dab11ab9060d21697181218f6d3b3c648c1"
 if (-not (Test-Path $iconPath)) {
     try {
         Invoke-WebRequest -Uri "https://raw.githubusercontent.com/$repoSlug/master/assets/claude-icon.png" `
             -OutFile $iconPath -UseBasicParsing -ErrorAction Stop
-        Ok "Icon installed"
+        $iconHash = (Get-FileHash -Path $iconPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($iconHash -eq $iconSha256) {
+            Ok "Icon installed"
+        } else {
+            Remove-Item $iconPath -Force -ErrorAction SilentlyContinue
+            Info "Icon skipped - the download did not match its pinned checksum"
+        }
     } catch {}
 }
 

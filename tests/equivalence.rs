@@ -2448,6 +2448,52 @@ fn fetched_powershell_installers_are_bomless_ascii() {
     failures.assert_empty("installer encoding");
 }
 
+/// The icon is the one artifact the installers fetch outside the release's
+/// SHA256SUMS, so each pins its content hash. The pin has to track the asset
+/// and both dialects have to agree — drifting apart silently turns the icon
+/// install into a permanent no-op, and a pin that no longer matches the asset
+/// is indistinguishable from a tampered download.
+#[test]
+fn the_pinned_icon_hash_matches_the_asset_in_both_installers() {
+    use sha2::Digest;
+    let icon = std::fs::read(repo_file("assets/claude-icon.png"))
+        .unwrap_or_else(|e| panic!("could not read assets/claude-icon.png: {e}"));
+    let actual = format!("{:x}", sha2::Sha256::digest(&icon));
+
+    let mut failures = Failures::default();
+    for (rel, marker) in [
+        ("install/install.sh", "ICON_SHA256=\""),
+        ("install/install.ps1", "$iconSha256 = \""),
+    ] {
+        let text = read_repo_file(rel);
+        let pinned = text
+            .split(marker)
+            .nth(1)
+            .and_then(|rest| rest.split('"').next())
+            .unwrap_or_default()
+            .to_string();
+        failures.check(rel, pinned == actual, || {
+            format!("pins {pinned:?} but assets/claude-icon.png hashes to {actual}")
+        });
+    }
+    failures.assert_empty("pinned icon hash");
+}
+
+/// The broad-write gate is only as strong as its principal list, and losing
+/// an entry silently reopens the replace-after-verification hole it closes —
+/// Authenticated Users is the one it originally shipped without.
+#[test]
+fn the_acl_gate_names_all_three_broad_principals() {
+    let ps = read_repo_file("install/install.ps1");
+    let mut failures = Failures::default();
+    for sid in ["WorldSid", "BuiltinUsersSid", "AuthenticatedUserSid"] {
+        failures.check(sid, ps.contains(sid), || {
+            "missing from install.ps1's broad-write ACL check".to_string()
+        });
+    }
+    failures.assert_empty("ACL principal list");
+}
+
 /// Staging in a shared world-writable temp reopens exactly the window the
 /// staging rules exist to close: another user swapping the file between the
 /// checksum passing and the binary being placed.

@@ -22,6 +22,11 @@ path = "src/main.rs"
 # verification. jq, which the shell installers used, preserves order too.
 serde_json = { version = "1", features = ["preserve_order"] }
 
+[dev-dependencies]
+# Test-only: proves the icon hash the installers pin matches the asset in the
+# repo. The shipped binary keeps its zero runtime dependencies.
+sha2 = "0.10"
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 

@@ -550,9 +550,27 @@ else
 fi
 
 # --- Notification icon ---
+# The icon is the one download outside the release's SHA256SUMS, and it rides
+# the moving master ref. Pin its hash and discard a mismatch: a missing icon
+# is cosmetic, an unverified file handed to the toast stack is not.
+ICON_SHA256="10497c744e9d5e489b9e9b802b964dab11ab9060d21697181218f6d3b3c648c1"
 if [[ ! -f $ICON_PATH ]]; then
-    curl -fsSL "https://raw.githubusercontent.com/$REPO_SLUG/master/assets/claude-icon.png" \
-        -o "$ICON_PATH" 2>/dev/null && ok "Icon installed" || true
+    if curl -fsSL "https://raw.githubusercontent.com/$REPO_SLUG/master/assets/claude-icon.png" \
+        -o "$ICON_PATH" 2>/dev/null; then
+        # Same tool fallback as the binary's checksum; the installer has
+        # already aborted by this point if neither exists.
+        if command -v sha256sum &>/dev/null; then
+            _icon_actual=$(sha256sum "$ICON_PATH" 2>/dev/null | awk '{print $1}')
+        else
+            _icon_actual=$(shasum -a 256 "$ICON_PATH" 2>/dev/null | awk '{print $1}')
+        fi
+        if [[ $_icon_actual == "$ICON_SHA256" ]]; then
+            ok "Icon installed"
+        else
+            rm -f "$ICON_PATH"
+            info "Icon skipped — the download did not match its pinned checksum"
+        fi
+    fi
 fi
 
 # --- Apply ---
