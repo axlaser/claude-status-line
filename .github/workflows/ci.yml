@@ -225,6 +225,84 @@ jobs:
           fi
           echo "re-install left settings.json byte-identical"
 
+      # The rollback. CLAUDE.md makes this the installers' central promise --
+      # nothing irreversible before the self-check passes, the previous binary
+      # restored and settings.json untouched when it fails -- and until this
+      # step existed, the failure branch had never once run. The suite's
+      # `the_self_check_gates_every_destructive_step` compares string positions
+      # in the script text, and every other self-check here is handed a binary
+      # that passes, so the whole recovery path was covered by reading alone.
+      # A real defect was found in it (the sweep that deleted the evidence),
+      # which is the argument for executing it rather than reading it.
+      #
+      # STATUSLINE_FORCE_SELFCHECK_MISMATCH makes the freshly-placed binary
+      # render the wrong thing, so the installer meets a genuine failure at
+      # exactly the point being tested. The installer's own exit code is not
+      # the signal: `install.ps1` returns 0 even when it refuses, because
+      # `exit` would close the session of anyone running it through `irm|iex`.
+      # State is the signal.
+      - name: A failing self-check rolls back and touches nothing
+        env:
+          STATUSLINE_FORCE_SELFCHECK_MISMATCH: "1"
+        run: |
+          bin="$PROBE/.claude/bin/${{ matrix.bin }}"
+          settings="$PROBE/.claude/settings.json"
+          bin_before=$(cksum < "$bin")
+          settings_before=$(cksum < "$settings")
+
+          ${{ matrix.run }} --pre < /dev/null || true
+
+          # The previous working installation is back, byte for byte, and still
+          # renders. A restore that put back something else would pass a mere
+          # existence check.
+          test -e "$bin" || {
+            echo "::error::the failing self-check left no binary at all"; exit 1; }
+          if [ "$bin_before" != "$(cksum < "$bin")" ]; then
+            echo "::error::the previous binary was not restored after a failed self-check"
+            exit 1
+          fi
+          "$bin" self-check || {
+            echo "::error::the restored binary does not render"; exit 1; }
+
+          # Untouched means untouched.
+          if [ "$settings_before" != "$(cksum < "$settings")" ]; then
+            echo "::error::settings.json was rewritten despite a failed self-check"
+            exit 1
+          fi
+
+          # The two artifacts the installer tells the user to attach to a bug
+          # report. They are named outside the staged-download prefix on
+          # purpose: that prefix is swept before the next download, and
+          # re-running the installer is the first thing anyone does after a
+          # failed install, so naming them with it destroyed the evidence
+          # before the retry began.
+          for artifact in claude-statusline.self-check.txt claude-statusline.failed; do
+            test -e "$PROBE/.claude/bin/$artifact" || {
+              echo "::error::$artifact is missing after a failed self-check"
+              ls -la "$PROBE/.claude/bin"
+              exit 1
+            }
+          done
+          if ls "$PROBE/.claude/bin/.claude-statusline.stage."* >/dev/null 2>&1; then
+            echo "::error::the failed run left staged files behind"
+            ls -la "$PROBE/.claude/bin"
+            exit 1
+          fi
+          echo "rolled back, settings.json untouched, evidence kept"
+
+      # The evidence is kept for a retry that fails again, not forever: once a
+      # run succeeds the user has a working install and nothing left to report.
+      - name: A passing self-check clears the evidence
+        run: |
+          ${{ matrix.run }} --pre < /dev/null
+          for artifact in claude-statusline.self-check.txt claude-statusline.failed; do
+            test ! -e "$PROBE/.claude/bin/$artifact" || {
+              echo "::error::$artifact survived a successful install"
+              exit 1
+            }
+          done
+          echo "a successful install cleared the evidence"
+
       - name: Uninstall removes the binary and every entry
         run: |
           ${{ matrix.undo }} < /dev/null

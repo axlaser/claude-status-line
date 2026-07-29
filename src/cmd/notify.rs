@@ -268,10 +268,32 @@ fn strip_cwd(platform: Platform, detail: &str, cwd: &Path) -> String {
         Platform::Windows => detail.to_lowercase().starts_with(&prefix.to_lowercase()),
         _ => detail.starts_with(&prefix),
     };
-    if matches {
-        detail[prefix.len()..].to_string()
-    } else {
-        detail.to_string()
+    if !matches {
+        return detail.to_string();
+    }
+    match platform {
+        // Case folding can change a char's UTF-8 length — U+212A KELVIN SIGN
+        // lowercases to a one-byte ASCII `k` — so the region of `detail` that
+        // matched is not necessarily `prefix.len()` bytes long. Slicing at
+        // `prefix.len()` can land mid-char and panic, which the entry-point
+        // `catch_unwind` swallows into a dropped notification. Walk `detail`
+        // accumulating folded widths to find where the match actually ends.
+        Platform::Windows => {
+            let want = prefix.to_lowercase().len();
+            let mut folded = 0usize;
+            let mut end = 0usize;
+            for (offset, ch) in detail.char_indices() {
+                if folded >= want {
+                    break;
+                }
+                folded += ch.to_lowercase().map(char::len_utf8).sum::<usize>();
+                end = offset + ch.len_utf8();
+            }
+            detail[end..].to_string()
+        }
+        // The other platforms compare and slice the same bytes, so the
+        // prefix length is the matched length by construction.
+        _ => detail[prefix.len()..].to_string(),
     }
 }
 

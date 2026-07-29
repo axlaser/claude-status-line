@@ -483,7 +483,14 @@ Step "Verifying the binary renders"
 # The rendered output is captured, not discarded. It is the only evidence of
 # what went wrong, this is a per-target failure CI cannot reproduce, and the
 # binary that produced it is about to be moved out of the way.
-$checkLog = Join-Path $binDir "$stagePrefix$PID.self-check.txt"
+#
+# Deliberately outside $stagePrefix, unlike the staging files. The sweep above
+# deletes the whole prefix before the download, and re-running the installer is
+# the first thing anyone does after a failed install -- so naming these two with
+# the prefix destroyed the pair the user had just been told to attach to a bug
+# report, before the retry had even started. They are removed on the success
+# path below instead.
+$checkLog = Join-Path $binDir "claude-statusline.self-check.txt"
 $check = Invoke-Binary $binPath @('self-check')
 Set-Content -Path $checkLog -Value $check.Output -Encoding utf8
 if (-not $check.Ran -or $check.Code -ne 0) {
@@ -509,7 +516,7 @@ if (-not $check.Ran -or $check.Code -ne 0) {
     # failed binary stayed active while the script reported it gone. Renaming is
     # the operation Windows permits, and it is what this script already uses to
     # place the binary in the first place.
-    $failedBin = Join-Path $binDir "$stagePrefix$PID.failed"
+    $failedBin = Join-Path $binDir "claude-statusline.failed"
     try {
         Move-Item -Path $binPath -Destination $failedBin -Force -ErrorAction Stop
     } catch {
@@ -518,7 +525,12 @@ if (-not $check.Ran -or $check.Code -ne 0) {
     $hadPrevious = Test-Path $sidecarPath
     if ($hadPrevious) {
         Move-Item -Path $sidecarPath -Destination $binPath -Force -ErrorAction SilentlyContinue
-        if (Test-Path $binPath) {
+        # The sidecar being gone is what proves the restore happened. Testing
+        # $binPath instead read as success when the rename-aside above had also
+        # failed: the failed binary was still sitting at $binPath, so the check
+        # passed and the script announced an untouched previous installation
+        # that had in fact never been put back.
+        if (-not (Test-Path $sidecarPath)) {
             Info "Your previous installation is untouched."
         } else {
             Err "Could not restore the previous binary"
@@ -531,7 +543,11 @@ if (-not $check.Ran -or $check.Code -ne 0) {
     Remove-Stage
     return
 }
+# The check passed, so this run's log and any failed binary an earlier run left
+# behind are both stale: the user has a working install and nothing left to
+# report. This is the only place they are removed -- see the naming note above.
 Remove-Item $checkLog -Force -ErrorAction SilentlyContinue
+Remove-Item (Join-Path $binDir "claude-statusline.failed") -Force -ErrorAction SilentlyContinue
 # Tolerated failure by design: the old binary may still be running, and the next
 # run sweeps whatever is left.
 if (Test-Path $sidecarPath) { Remove-Item $sidecarPath -Force -ErrorAction SilentlyContinue }

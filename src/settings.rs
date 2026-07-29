@@ -263,13 +263,20 @@ pub fn apply(root: &mut Value, binary: &str, spec: &ApplySpec) {
             root,
             "PostToolUse",
             Some(POST_TOOL_MATCHER),
+            binary,
             &format!("{binary} git-refresh"),
         );
     }
 
     if spec.notify {
         for (event, matcher, arg) in NOTIFY_HOOKS {
-            set_hook(root, event, matcher, &format!("{binary} notify {arg}"));
+            set_hook(
+                root,
+                event,
+                matcher,
+                binary,
+                &format!("{binary} notify {arg}"),
+            );
         }
     }
 }
@@ -513,7 +520,16 @@ fn hook_present(root: &Value, event: &str, binary: &str) -> bool {
 
 /// Replaces our entry for `event` while preserving every entry that is not
 /// ours, so a user's own hook on the same event survives an install.
-fn set_hook(root: &mut Value, event: &str, matcher: Option<&str>, command: &str) {
+///
+/// `binary` is passed in rather than recovered from `command`, and the
+/// difference is load-bearing. Recovering it meant splitting the composed
+/// command on its first space, which is only the binary when the path has no
+/// space in it. `quote_for_this_platform` quotes on Windows alone, so a Unix
+/// `$HOME` containing a space yielded a truncated key -- `/Users/John` out of
+/// `/Users/John Smith/.claude/bin/...` -- and `references` matches on
+/// substring, so the retain below deleted every unrelated hook of the user's
+/// that merely mentioned their home directory.
+fn set_hook(root: &mut Value, event: &str, matcher: Option<&str>, binary: &str, command: &str) {
     let hooks = root
         .as_object_mut()
         .expect("root is an object by this point")
@@ -535,7 +551,7 @@ fn set_hook(root: &mut Value, event: &str, matcher: Option<&str>, command: &str)
     let list = entries.as_array_mut().expect("entries is an array");
     // Drop any previous entry of ours for this event before appending, or a
     // re-run accumulates duplicates, and a re-run has to be idempotent.
-    list.retain(|e| !entry_references(e, command_binary(command)));
+    list.retain(|e| !entry_references(e, binary));
 
     let mut entry = Map::new();
     if let Some(m) = matcher {
@@ -546,14 +562,4 @@ fn set_hook(root: &mut Value, event: &str, matcher: Option<&str>, command: &str)
         json!([{ "type": "command", "command": command, "async": true }]),
     );
     list.push(Value::Object(entry));
-}
-
-/// The binary reference inside a composed command, i.e. everything before the
-/// subcommand. Quoted Windows paths keep their quotes here and are stripped by
-/// `references`.
-fn command_binary(command: &str) -> &str {
-    if let Some(rest) = command.strip_prefix('"') {
-        return rest.split('"').next().unwrap_or(command);
-    }
-    command.split(' ').next().unwrap_or(command)
 }

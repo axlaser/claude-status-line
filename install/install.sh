@@ -429,12 +429,19 @@ step "Verifying the binary renders"
 # The rendered output is captured, not discarded. It is the only evidence of
 # what went wrong, this is a per-target failure CI cannot reproduce, and the
 # binary that produced it is about to be moved out of the way.
-_CHECK_LOG="$BIN_DIR/${STAGE_PREFIX}$$.self-check.txt"
+#
+# Deliberately *outside* $STAGE_PREFIX, unlike everything else this script
+# writes into $BIN_DIR. The sweep above deletes the whole prefix before the
+# download, and re-running the installer is the first thing anyone does after a
+# failed install -- so naming these two with the prefix destroyed the pair the
+# user had just been told to attach to a bug report, before the retry had even
+# started. They are removed on the success path below instead.
+_CHECK_LOG="$BIN_DIR/claude-statusline.self-check.txt"
 if ! "$BIN_PATH" self-check >"$_CHECK_LOG" 2>&1; then
     err "The installed binary failed its self-check"
     info "It downloaded and verified but does not render correctly, so it was"
     info "not activated."
-    _FAILED_BIN="$BIN_DIR/${STAGE_PREFIX}$$.failed"
+    _FAILED_BIN="$BIN_DIR/claude-statusline.failed"
     mv -f "$BIN_PATH" "$_FAILED_BIN" 2>/dev/null || { rm -f "$BIN_PATH"; _FAILED_BIN=""; }
     if restore_previous; then
         info "Your previous installation is untouched."
@@ -444,7 +451,10 @@ if ! "$BIN_PATH" self-check >"$_CHECK_LOG" 2>&1; then
     info "Please attach both when reporting this."
     return 1 2>/dev/null || exit 1
 fi
-rm -f "$_CHECK_LOG" 2>/dev/null
+# The check passed, so this run's log and any failed binary an earlier run left
+# behind are both stale: the user has a working install and nothing left to
+# report. This is the only place they are removed -- see the naming note above.
+rm -f "$_CHECK_LOG" "$BIN_DIR/claude-statusline.failed" 2>/dev/null
 [[ -n $BACKUP ]] && rm -f "$BACKUP"
 BACKUP=""
 ok "Renders correctly"
