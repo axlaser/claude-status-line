@@ -388,6 +388,23 @@ fn run_git(cwd: &Path, args: &[&str]) -> Option<String> {
         command.creation_flags(CREATE_NO_WINDOW);
     }
 
+    let stdout = run_bounded(command, GIT_TIMEOUT)?;
+    let text = String::from_utf8_lossy(&stdout)
+        .trim_end_matches(['\n', '\r'])
+        .to_string();
+    Some(text)
+}
+
+/// Runs a prepared command and returns its raw stdout, bounded end to end:
+/// spawn, poll against `timeout`, kill at the deadline, drain under its own
+/// grace. `None` for any failure, including the deadline.
+///
+/// `run_git` is the only production caller — the debug lines keep their `git:`
+/// prefix so the log stays greppable. The split is what lets the test file
+/// prove the deadline: it hands this a child that sleeps past `timeout` and
+/// asserts the kill fires, which the hardcoded `git` invocation could not
+/// express without racing `PATH` across the shared test binary.
+pub fn run_bounded(mut command: Command, timeout: std::time::Duration) -> Option<Vec<u8>> {
     // Deliberately not `output()`. It blocks until the child exits, with no
     // bound, on the render path — and this process is respawned every couple of
     // seconds, so a repo on a stalled network mount left one blocked process per
@@ -428,7 +445,7 @@ fn run_git(cwd: &Path, args: &[&str]) -> Option<String> {
         let _ = tx.send(buf);
     });
 
-    let deadline = std::time::Instant::now() + GIT_TIMEOUT;
+    let deadline = std::time::Instant::now() + timeout;
     let status = loop {
         match child.try_wait() {
             Ok(Some(s)) => break Some(s),
@@ -463,8 +480,5 @@ fn run_git(cwd: &Path, args: &[&str]) -> Option<String> {
     if !status?.success() {
         return None;
     }
-    let text = String::from_utf8_lossy(&stdout)
-        .trim_end_matches(['\n', '\r'])
-        .to_string();
-    Some(text)
+    Some(stdout)
 }

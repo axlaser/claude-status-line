@@ -242,15 +242,17 @@ jobs:
       # `exit` would close the session of anyone running it through `irm|iex`.
       # State is the signal.
       - name: A failing self-check rolls back and touches nothing
-        env:
-          STATUSLINE_FORCE_SELFCHECK_MISMATCH: "1"
         run: |
           bin="$PROBE/.claude/bin/${{ matrix.bin }}"
           settings="$PROBE/.claude/settings.json"
           bin_before=$(cksum < "$bin")
           settings_before=$(cksum < "$settings")
 
-          ${{ matrix.run }} --pre < /dev/null || true
+          # Scoped to the install alone, and never step-level env: self_check()
+          # honors the variable in whatever binary runs with it set, so a
+          # step-wide value poisons the restored binary's own render assertion
+          # below — the good binary "fails", on every platform at once.
+          STATUSLINE_FORCE_SELFCHECK_MISMATCH=1 ${{ matrix.run }} --pre < /dev/null || true
 
           # The previous working installation is back, byte for byte, and still
           # renders. A restore that put back something else would pass a mere
@@ -316,6 +318,26 @@ jobs:
             exit 1
           fi
           echo "uninstall left no binary and no entries"
+
+      # The failure evidence is deliberately named outside the staged prefix so
+      # a retry keeps it — which also means no sweep but the uninstaller's own
+      # ever removes it, and the two files kept the bin directory alive after
+      # every uninstall that followed a failed install.
+      - name: Uninstall after a failed install takes the evidence with it
+        run: |
+          # Scoped for the same reason as the rollback scenario above.
+          STATUSLINE_FORCE_SELFCHECK_MISMATCH=1 ${{ matrix.run }} --pre < /dev/null || true
+          test -e "$PROBE/.claude/bin/claude-statusline.self-check.txt" || {
+            echo "::error::the scenario did not recreate the failure evidence"; exit 1; }
+
+          ${{ matrix.undo }} < /dev/null
+
+          if [ -d "$PROBE/.claude/bin" ]; then
+            echo "::error::uninstall after a failed install left the bin directory behind"
+            ls -la "$PROBE/.claude/bin"
+            exit 1
+          fi
+          echo "uninstall removed the evidence and the empty directory"
 
       # The stable channel, which every step above leaves untested. `--pre`
       # resolves through the releases atom feed; the stable path resolves

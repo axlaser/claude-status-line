@@ -116,12 +116,26 @@ pub fn write_guarded(path: &Path, bytes: &[u8]) -> WriteOutcome {
     // `rename` replaces the final path without ever following it, so the
     // symlink an attacker can actually exploit is the one planted at this
     // predictable temporary name. Both shell handlers drop a planted temp
-    // target and skip the write if it survives; an unguarded `write` here
-    // would follow it instead.
+    // target and skip the write if it survives; `make_safe` reproduces that,
+    // and turns an undeletable plant into `SkippedHostile`.
     if !make_safe(&tmp) {
         return WriteOutcome::SkippedHostile;
     }
-    if std::fs::write(&tmp, bytes).is_err() {
+    // What `make_safe` cannot close is the window between its check and the
+    // open — a link re-planted in that gap would still be followed by a plain
+    // `write`. `create_new` (O_CREAT|O_EXCL on Unix, CREATE_NEW on Windows)
+    // refuses anything that already exists, links included, so a plant landing
+    // in the gap fails the write instead of redirecting it. The unlink first
+    // is load-bearing the other way: a stale leftover from a crashed run at
+    // this same pid-derived name would otherwise fail every write for the
+    // rest of the session.
+    let _ = std::fs::remove_file(&tmp);
+    let staged = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&tmp)
+        .and_then(|mut f| std::io::Write::write_all(&mut f, bytes));
+    if staged.is_err() {
         let _ = std::fs::remove_file(&tmp);
         return WriteOutcome::Failed;
     }

@@ -111,6 +111,11 @@ if (Test-Path $binPath) {
 Get-ChildItem -Path $binDir -Filter "$stagePrefix*" -Force -ErrorAction SilentlyContinue |
     Remove-Item -Force -ErrorAction SilentlyContinue
 
+# The self-check log and quarantined binary a failed install leaves behind
+# for diagnosis.
+Remove-Item (Join-Path $binDir "claude-statusline.self-check.txt") -Force -ErrorAction SilentlyContinue
+Remove-Item (Join-Path $binDir "claude-statusline.failed") -Force -ErrorAction SilentlyContinue
+
 # Only if it is now empty - the user may keep other tools here.
 if ((Test-Path $binDir) -and -not (Get-ChildItem -Path $binDir -Force -ErrorAction SilentlyContinue)) {
     Remove-Item $binDir -Force -ErrorAction SilentlyContinue

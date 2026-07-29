@@ -370,6 +370,25 @@ fn write_to_a_normal_path_succeeds() {
     assert_eq!(std::fs::read(&target).unwrap(), b"{\"ok\":true}");
 }
 
+/// A crashed run can leave a stale regular file at the pid-derived staging
+/// name. The exclusive create that keeps a re-planted link from being followed
+/// refuses anything that already exists, so the unlink ahead of it is what
+/// keeps that safety from costing every later write in the session.
+#[test]
+fn a_stale_staging_file_does_not_block_the_write() {
+    let dir = scratch_dir("stale-staging");
+    let target = dir.join("statusline-state.json");
+    let stale = dir.join(format!(".statusline-state.json.{}.tmp", std::process::id()));
+    std::fs::write(&stale, b"left by a crashed run").unwrap();
+
+    let outcome = state::write_guarded(&target, b"{\"ok\":true}");
+    assert!(
+        matches!(outcome, WriteOutcome::Written),
+        "a stale staging leftover blocked the write: {outcome:?}"
+    );
+    assert_eq!(std::fs::read(&target).unwrap(), b"{\"ok\":true}");
+}
+
 /// The ownership FFI compiling proves nothing about what it returns. This repo
 /// lost nine days to a trust check that answered "untrusted" for every file
 /// because its dependency was unavailable in the spawned child process — a
@@ -2775,6 +2794,43 @@ fn unrelated_content_and_foreign_hooks_survive() {
     failures.assert_empty("settings merge");
 }
 
+/// The space-in-path shape that once deleted the user's own hooks. Recovering
+/// the binary from the composed command split on the first space, and
+/// `entry_references` matches on substring, so an unquoted Unix `$HOME` with a
+/// space turned the key into `/home/a` — which matched, and removed, every
+/// user hook that merely mentioned a path starting there.
+#[test]
+fn a_space_in_the_unix_path_leaves_foreign_hooks_alone() {
+    const SPACED: &str = "/home/a b/.claude/bin/claude-statusline";
+    let mut root = serde_json::json!({
+        "hooks": {
+            "PostToolUse": [
+                { "matcher": "Bash", "hooks": [{ "type": "command", "command": "/home/a-tools/backup.sh" }] }
+            ]
+        }
+    });
+
+    settings::apply(&mut root, SPACED, &all());
+    let mut twice = root.clone();
+    settings::apply(&mut twice, SPACED, &all());
+    assert_eq!(
+        root, twice,
+        "a second apply with a spaced path changed the file"
+    );
+
+    let post = root["hooks"]["PostToolUse"].as_array().unwrap();
+    assert!(
+        post.iter()
+            .any(|e| e["hooks"][0]["command"] == "/home/a-tools/backup.sh"),
+        "the user's hook sharing the space-split prefix `/home/a` was dropped"
+    );
+    assert_eq!(
+        post.len(),
+        2,
+        "expected the user's hook plus exactly one of ours, got {post:#?}"
+    );
+}
+
 /// Uninstall has to leave no trace it can avoid leaving, which means pruning
 /// the containers our entries were the only occupants of — but not the ones
 /// still holding someone else's hook.
@@ -4668,6 +4724,43 @@ fn the_git_cache_record_round_trips_and_fails_safe() {
     failures.assert_empty("git cache record");
 }
 
+/// The deadline actually kills. A child that outlives its timeout must come
+/// back as `None` within a bound, not whenever it deigns to exit — this loop
+/// is what stands between a repo on a stalled network mount and a status line
+/// blocked forever, and until this test nothing drove a child past the
+/// deadline to prove the kill fires.
+#[test]
+fn a_child_past_its_deadline_is_killed_not_awaited() {
+    #[cfg(unix)]
+    let command = {
+        let mut c = std::process::Command::new("sleep");
+        c.arg("5");
+        c
+    };
+    #[cfg(windows)]
+    let command = {
+        // ~5 seconds; `ping` because it exists on every Windows without
+        // spawning an interpreter.
+        let mut c = std::process::Command::new("ping");
+        c.args(["-n", "6", "127.0.0.1"]);
+        c
+    };
+
+    let started = std::time::Instant::now();
+    let out = git::run_bounded(command, std::time::Duration::from_millis(200));
+    let elapsed = started.elapsed();
+
+    assert!(
+        out.is_none(),
+        "a child killed at the deadline must not report output"
+    );
+    assert!(
+        elapsed < std::time::Duration::from_secs(3),
+        "run_bounded took {elapsed:?} against a 200ms deadline — the kill did not fire \
+         and the call blocked on the child instead"
+    );
+}
+
 /// The TTL, exercised through the injected clock rather than by sleeping.
 /// Its expiry is a staleness bound: `.git/index` mtime does not move when an
 /// untracked file appears or when `git fetch` rewrites `packed-refs`.
@@ -5887,6 +5980,32 @@ fn the_latch_serialises_with_the_field_names_the_scripts_wrote() {
         notify_state::read_latch(&path),
         LatchState::Usable(latch),
         "what the reader recovers is what the writer stored"
+    );
+}
+
+/// The write side owns making the round trip survivable. The scripts escaped
+/// backslashes and quotes but left control bytes raw, so a `resets_at`
+/// carrying one wrote a latch `read_latch` could never parse again — and the
+/// rewrite that would repair the file only happens when the latch is usable,
+/// so that session's notifications stayed dead.
+#[test]
+fn a_control_byte_in_resets_at_still_round_trips() {
+    let latch = Latch {
+        context_high: false,
+        rate_limit: true,
+        rate_resets_at: "17672\u{1}25600".into(),
+    };
+    let json = notify_state::latch_json(&latch);
+
+    let dir = scratch_dir("latch-control-byte");
+    let path = dir.join("statusline-notify-s.json");
+    std::fs::write(&path, &json).expect("failed to write the latch");
+    assert_eq!(
+        notify_state::read_latch(&path),
+        LatchState::Usable(latch),
+        "a control byte in resets_at produced a latch the reader rejects — \
+         and Unusable is permanent, because the repairing rewrite is gated \
+         on usable"
     );
 }
 

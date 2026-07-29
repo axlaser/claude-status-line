@@ -99,13 +99,15 @@ pub fn read_latch(path: &Path) -> LatchState {
 /// Serialised exactly as the scripts write it, field order included.
 pub fn latch_json(latch: &Latch) -> String {
     format!(
-        r#"{{"notified_context_high":{},"notified_rate_limit":{},"last_rate_resets_at":"{}"}}"#,
+        r#"{{"notified_context_high":{},"notified_rate_limit":{},"last_rate_resets_at":{}}}"#,
         latch.context_high,
         latch.rate_limit,
-        latch
-            .rate_resets_at
-            .replace('\\', "\\\\")
-            .replace('"', "\\\"")
+        // serde owns the whole escape. The scripts' backslash-and-quote pair
+        // left control bytes raw, so one such byte in a payload `resets_at`
+        // wrote a latch `read_latch` could never parse again — Unusable, and
+        // the rewrite that would repair the file is gated on usable, so the
+        // session's notifications stayed dead until the file was deleted.
+        serde_json::to_string(&latch.rate_resets_at).unwrap_or_else(|_| "\"\"".to_string())
     )
 }
 

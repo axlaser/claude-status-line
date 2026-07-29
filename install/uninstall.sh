@@ -64,8 +64,11 @@ else
     warn "Binary not found (already removed?)"
 fi
 
-# Anything an interrupted install left staged.
-rm -f "$BIN_DIR/$STAGE_PREFIX"* 2>/dev/null
+# Anything an interrupted install left staged, plus the self-check log and
+# quarantined binary a failed install leaves behind for diagnosis.
+rm -f "$BIN_DIR/$STAGE_PREFIX"* \
+    "$BIN_DIR/claude-statusline.self-check.txt" \
+    "$BIN_DIR/claude-statusline.failed" 2>/dev/null
 
 # Only if we created it and it is now empty -- the user may keep other tools here.
 if [[ -d $BIN_DIR ]] && [[ -z "$(ls -A "$BIN_DIR" 2>/dev/null)" ]]; then

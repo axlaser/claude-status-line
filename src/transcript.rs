@@ -41,7 +41,7 @@ pub struct Scan {
 
 /// The record format's version tag.
 ///
-/// `v3` rather than `v1`: the scripts' 16-field `v2` record lives at a
+/// Not restarted at `v1`: the scripts' 16-field `v2` record lives at a
 /// different path and carries fields this one deliberately drops, and a shared
 /// version number across two incompatible formats is how a stale record gets
 /// read as a fresh one. Bump this whenever the field list changes.
