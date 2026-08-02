@@ -503,10 +503,26 @@ obvious justifications are wrong, and each will be re-proposed otherwise.
 
 **It is not a performance change.** The `disappeared_rows` scan it narrows
 measures flat from 0 to 5000 temp-root entries (§7's populated-temp entry). The
-change costs a little rather than saving anything: one `symlink_metadata` per
-tick at resolution, and one `mkdir`/`open`/`fstat` per guarded write into the
-directory — on Windows a `CreateFileW` plus a handle-based owner lookup instead.
-Do not present it as an optimisation.
+change costs a little rather than saving anything, and the accounting is worth
+stating exactly, because the first version of this entry undercounted it.
+
+Resolution runs `symlink_metadata`, and then — on every tick after the first,
+because the directory exists by then — the full `verify_through_handle` chain:
+an `O_NOFOLLOW | O_DIRECTORY` open plus `fstat` on Unix, a `CreateFileW` plus
+`GetFileInformationByHandle` plus `GetSecurityInfo` on Windows. That runs once
+per process, and three processes resolve per tick.
+
+Creation repeats the same verification **per guarded write**, not once per tick:
+`create_private_dir` sits inside `write_guarded`, and one tick can write the git
+cache, the token record, each per-agent state file, and each per-task done stamp.
+
+On Windows both paths also call `trusted_owners()`, which runs
+`OpenProcessToken` and two `CreateWellKnownSid` calls — and `state_dir_in` has
+already computed the same owner to build the directory name, so that work is
+done at least twice per tick. §2 still lists ACL-check cost as an unretired
+hypothesis, so this is the part to measure first if the tick ever regresses.
+
+Do not present any of this as an optimisation.
 
 **It is not a security improvement.** A hostile directory at the state path
 routes writes back to the flat temp root, because the silent-degradation

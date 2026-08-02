@@ -51,7 +51,7 @@ Second input contract beside the stdin JSON: Claude Code's `subagentStatusLine` 
 
 ### State Directory
 
-Every temp-resident state file is written inside `<temp>/claude-statusline-<owner>/`, where `<temp>` is `$TMPDIR` (`%TEMP%` on Windows) and `<owner>` is the uid on Unix and a digest of the token SID on Windows. Six families live there: `statusline-git-*`, `statusline-tasks-*`, `statusline-notify-*`, `statusline-tokens-*`, `statusline-sa-*-task-*`, and `statusline-sa-*-<agent-base>`. A seventh flat pattern, `statusline-oc-*`, is delete-only — the binary never writes an output cache, and the delete exists to clean up after a script-era install.
+Every temp-resident state file is written inside `<temp>/claude-statusline-<owner>/`, where `<temp>` is `$TMPDIR` (`%TEMP%` on Windows) and `<owner>` is the uid on Unix and a digest of the token SID on Windows. Six families live there: `statusline-git-*`, `statusline-tasks-*`, `statusline-notify-*`, `statusline-tokens-*`, `statusline-sa-*-task-*`, and `statusline-sa-*-<agent-base>`. A seventh pattern, `statusline-oc-*`, is delete-only and now vestigial: the binary never writes an output cache, and the `git-refresh` unlink that cleaned up after a script-era install resolves against the state directory, where such a file can never exist. The live cleanup for it is the flat sweep both uninstallers still perform.
 
 `session::state_dir` is the only resolver, and three call sites use it: `Roots::from_env` and the `git-refresh` and `subagent` dispatch arms. **`temp: &Path` throughout the crate now means this directory, not the OS temp root.** `session::temp_dir` remains the escape hatch for anything that genuinely needs the root.
 
@@ -90,7 +90,7 @@ All three are gates on every commit. `cargo test` includes the case table, which
 - `claude-statusline self-check` renders the real fixture and exits non-zero on mismatch -- the fastest confirmation that a build is sound.
 - Install locally via `bash install/install.sh` (or `install/install.ps1`) to test the full flow. It requires a published release to fetch from.
 
-**A green Windows run does not prove the suite passed.** Six equivalence cases skip on Windows without Developer Mode because they need symlinks; they print a reason and report as passing. Others carry `#[cfg(unix)]` assertions that simply do not compile into a Windows build — the state directory's mode check is one. CI's Unix runners are what exercise both.
+**A green Windows run does not prove the suite passed.** Five equivalence cases skip on Windows without Developer Mode because they need symlinks; they print a reason and report as passing. Others carry `#[cfg(unix)]` assertions that simply do not compile into a Windows build — the state directory's mode check is one. CI's Unix runners are what exercise both.
 
 This is measured, not theoretical. Reintroducing the defect that guarded creation is scoped against — applying the private-directory check to every `write_guarded` parent, so `/tmp` and `~/.claude` are rejected — leaves Windows at **144 passed, 0 failed** while Linux fails **10**. Run the suite on Linux before believing a change to the state directory, the guards, or anything under `src/platform/` is green. `docker run --rm -v "<repo>:/host:ro" rust:latest bash -c 'git config --global --add safe.directory /host && git clone -q /host /src && cd /src && cargo test'` is enough, and does not need a push.
 

@@ -562,8 +562,11 @@ fn the_settings_subcommand_reports_through_its_exit_code() {
 /// Announces a symlink case that could not run, loudly enough to survive
 /// `cargo test`'s output capture.
 ///
-/// These two cases cover the load-bearing half of the state-file trust guard,
-/// and they skip on Windows without Developer Mode. They used to say so with
+/// The five cases that call this cover the load-bearing half of the file- and
+/// directory-level trust guards, and they skip on Windows without Developer
+/// Mode. Keep the count here, in `CLAUDE.md`, and the call sites in step — it
+/// has drifted twice, and it is the number a reader uses to judge how much a
+/// green Windows run proves. They used to say so with
 /// `eprintln!`, which `cargo test` captures and shows only on failure — so a
 /// skipped case printed nothing at all on a green run, and CLAUDE.md's claim
 /// that they "print a reason but report as passing" was true only under
@@ -724,6 +727,79 @@ fn the_state_directory_guard_matches_its_fail_directions() {
     }
 
     failures.assert_empty("state directory guard");
+}
+
+/// The render path writes its state inside the guarded directory, not beside it.
+///
+/// Every other case in this file builds `Roots` with `StateRoot::inherited`,
+/// which exercises the *unguarded* branch — the one that behaves exactly as it
+/// did before the state directory existed. That is deliberate and load-bearing
+/// (`guarded_creation_applies_only_to_the_state_directory` depends on it), but
+/// it leaves the production shape untested: `Roots::from_env` builds a guarded
+/// root, and nothing else here does.
+///
+/// So this is the one case that runs the real render against the real
+/// resolution. Without it a regression that quietly resolved to the flat root
+/// would render byte-identically, pass the whole fixture table, and ship.
+#[test]
+fn the_render_path_writes_inside_the_guarded_state_directory() {
+    let dir = scratch_dir("render-guarded-root");
+    let home = dir.join("home");
+    let tmp = dir.join("tmp");
+    std::fs::create_dir_all(home.join(".claude")).expect("home");
+    std::fs::create_dir_all(&tmp).expect("tmp");
+    let mut failures = Failures::default();
+
+    let resolved = claude_statusline::session::state_dir_in(&tmp);
+    failures.check("guarded", resolved.is_guarded(), || {
+        "a clean temp root did not resolve to a guarded state directory".to_string()
+    });
+
+    let session = "render-guarded-1";
+    let payload = format!(
+        r#"{{"session_id":"{session}","cwd":"{cwd}","workspace":{{"current_dir":"{cwd}"}},"model":{{"display_name":"Opus 5","id":"claude-opus-5"}},"context_window":{{"context_window_size":200000,"used_percentage":91.5}},"rate_limits":{{"five_hour":{{"used_percentage":95}}}}}}"#,
+        cwd = slashed(&dir),
+    );
+
+    let roots = cmd_statusline::Roots {
+        home: Some(home.clone()),
+        temp: resolved.clone(),
+    };
+    let rendered = cmd_statusline::run(&TestClock::at(1_000), &roots, &payload);
+    failures.check("renders", rendered.contains('\u{250f}'), || {
+        "the guarded-root render produced no box".to_string()
+    });
+
+    // The token record and the notify latch are the two state files a payload
+    // with no transcript and a crossed threshold still produces. Both must land
+    // under the state directory.
+    let inside: Vec<String> = std::fs::read_dir(resolved.path())
+        .map(|d| {
+            d.flatten()
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .collect()
+        })
+        .unwrap_or_default();
+    failures.check("wrote-inside", !inside.is_empty(), || {
+        "the render wrote no state inside the guarded directory".to_string()
+    });
+
+    // And nothing may land flat beside it. A resolver that silently fell back
+    // would still satisfy the check above only if it wrote nowhere at all, so
+    // this is the half that catches a partial regression.
+    let stray: Vec<String> = std::fs::read_dir(&tmp)
+        .map(|d| {
+            d.flatten()
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .filter(|n| n.starts_with("statusline-"))
+                .collect()
+        })
+        .unwrap_or_default();
+    failures.check("no-stray", stray.is_empty(), || {
+        format!("state landed flat in the temp root: {stray:?}")
+    });
+
+    failures.assert_empty("guarded-root render path");
 }
 
 /// Resolution answers where state lives and creates nothing doing it.

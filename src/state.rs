@@ -145,14 +145,29 @@ fn write_inner(path: &Path, bytes: &[u8], create_parent_privately: bool) -> Writ
         // directory. One level down from the temp root that turns an unverified
         // adoption into the ordinary case.
         //
-        // Residual TOCTOU, recorded at its true width: between
+        // Residual TOCTOU, recorded at its true width, because an
+        // understatement here is worse than none: between
         // `session::state_dir_in`'s read-only verdict and this creation, every
-        // path built from the root traverses the parent unverified — reads
-        // through `read_trusted`, the orphan scan's `read_dir`, and the
-        // unguarded `remove_file` calls in `cmd::git_refresh` and `subagent`.
-        // On those paths the per-file owner check below is carrying alone. A
-        // plant landing in that window costs one tick: the next tick's verdict
-        // sees the hostile directory and routes to the flat root.
+        // path built from the root traverses the parent unverified. The three
+        // kinds of traversal do not have the same cover.
+        //
+        // Writes are covered twice: `create_private_dir` re-verifies through a
+        // fresh handle, and `make_safe` plus `create_new` refuse a planted final
+        // path. A plant landing in this window costs one tick of writes, because
+        // the next tick's verdict sees the hostile directory and routes to the
+        // flat root.
+        //
+        // Reads keep the per-file owner check in `read_trusted`, which is
+        // carrying alone there.
+        //
+        // The two deletes have **no** per-file check at all — `remove_file` in
+        // `cmd::git_refresh` and in `subagent`'s linger expiry both unlink
+        // directly. Nothing is carrying, and unlike a write, a delete the plant
+        // induced is not undone by the next tick. What bounds it is the name:
+        // every path is `statusline-<sanitized session id>`, which an attacker
+        // cannot choose. Routing those two through a guarded remove would close
+        // it and is a behaviour change, so it needs its own case rather than a
+        // quiet edit here.
         match crate::platform::create_private_dir(parent) {
             crate::platform::DirVerdict::Private => {}
             // Hostile and Failed are different answers and callers branch on

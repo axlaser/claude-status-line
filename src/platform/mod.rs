@@ -73,6 +73,17 @@ pub fn dir_verdict(path: &Path) -> DirVerdict {
 /// opened refusing to follow links, and every question is then asked of the
 /// handle.
 pub fn create_private_dir(path: &Path) -> DirVerdict {
+    // The ancestors first, unguarded and best-effort. `mkdir_private` creates
+    // exactly one level, so a temp root that does not exist would otherwise make
+    // every state write fail for the life of the session — silently, because a
+    // failed write only means the next tick recomputes. `write_guarded` used
+    // `create_dir_all` before the state directory existed, and these ancestors
+    // are the OS temp root, which this binary did not own then and does not own
+    // now. Building them the ordinary way restores that behaviour without
+    // weakening the one level that is ours.
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
     match imp::mkdir_private(path) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}

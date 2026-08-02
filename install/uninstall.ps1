@@ -158,8 +158,24 @@ foreach ($pattern in @('statusline-oc-*.txt', 'statusline-git-*.txt', 'statuslin
 # harness stages claude-statusline-test-* scratch roots in this same directory
 # and the README's manual verification downloads claude-statusline-checksums.txt
 # here; neither belongs to the uninstaller.
+#
+# Two further filters, both matching what the runtime already does with the same
+# directory. The owner check is the Windows form of uninstall.sh's `id -u`
+# scoping: %TEMP% is per-user on a default install, but a redirected or
+# system-wide TEMP puts every user's state directory in one place, and none of
+# the others are this uninstaller's to remove. The reparse-point check is why
+# this is not a bare recursive delete: under Windows PowerShell 5.1 -- the shell
+# the documented irm | iex path runs in -- Remove-Item -Recurse follows a
+# junction and empties its target instead of unlinking it. Any user can plant one
+# with mklink /J. verify_through_handle in src/platform/mod.rs refuses a reparse
+# point at exactly this path, so such a directory is by construction never ours.
+$me = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
 Get-ChildItem -Path $env:TEMP -Directory -Force -ErrorAction SilentlyContinue |
-    Where-Object { $_.Name -match '^claude-statusline-\d+$' } |
+    Where-Object {
+        $_.Name -match '^claude-statusline-\d+$' -and
+        -not ($_.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -and
+        $(try { (Get-Acl $_.FullName -ErrorAction Stop).Owner -eq $me } catch { $false })
+    } |
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 Ok "Cleared temporary session state"
 Write-Host ""

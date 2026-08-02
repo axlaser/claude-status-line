@@ -26,6 +26,17 @@ pub const INVALIDATING_TOOLS: [&str; 5] = ["Edit", "Write", "MultiEdit", "Bash",
 pub fn cache_paths(temp: &Path, safe_id: &str) -> Vec<PathBuf> {
     vec![
         temp.join(format!("statusline-git-{safe_id}.txt")),
+        // Vestigial since state moved into `<temp>/claude-statusline-<owner>/`.
+        // The binary never writes an output cache; this entry existed to clean
+        // up after a script-era install, and a script-era install could only
+        // have written flat in the temp root — which `temp` is no longer. So the
+        // unlink now always misses.
+        //
+        // Kept rather than deleted for two reasons: the git-refresh fixtures
+        // record it as a deleted path, so removing it re-resolves captures for
+        // no behavioural gain, and the flat sweep it stands in for is still
+        // genuinely live in both uninstallers. Retire it there and here
+        // together.
         temp.join(format!("statusline-oc-{safe_id}.txt")),
     ]
 }
