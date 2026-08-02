@@ -90,7 +90,9 @@ All three are gates on every commit. `cargo test` includes the case table, which
 - `claude-statusline self-check` renders the real fixture and exits non-zero on mismatch -- the fastest confirmation that a build is sound.
 - Install locally via `bash install/install.sh` (or `install/install.ps1`) to test the full flow. It requires a published release to fetch from.
 
-Two equivalence tests skip on Windows without Developer Mode (they need symlinks). They print a reason but report as passing, so a green local Windows run is not proof those cases were covered; CI's Unix runners exercise them.
+**A green Windows run does not prove the suite passed.** Six equivalence cases skip on Windows without Developer Mode because they need symlinks; they print a reason and report as passing. Others carry `#[cfg(unix)]` assertions that simply do not compile into a Windows build — the state directory's mode check is one. CI's Unix runners are what exercise both.
+
+This is measured, not theoretical. Reintroducing the defect that guarded creation is scoped against — applying the private-directory check to every `write_guarded` parent, so `/tmp` and `~/.claude` are rejected — leaves Windows at **144 passed, 0 failed** while Linux fails **10**. Run the suite on Linux before believing a change to the state directory, the guards, or anything under `src/platform/` is green. `docker run --rm -v "<repo>:/host:ro" rust:latest bash -c 'git config --global --add safe.directory /host && git clone -q /host /src && cd /src && cargo test'` is enough, and does not need a push.
 
 What to verify after changes:
 
