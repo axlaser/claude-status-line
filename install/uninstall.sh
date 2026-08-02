@@ -102,6 +102,19 @@ _tmpdir="${_tmpdir%/}"
 rm -f "$_tmpdir"/statusline-oc-*.txt "$_tmpdir"/statusline-git-*.txt \
       "$_tmpdir"/statusline-tasks-*.json "$_tmpdir"/statusline-notify-*.json \
       "$_tmpdir"/statusline-sa-*.txt "$_tmpdir"/statusline-tokens-*.txt 2>/dev/null
+# Current installs group the same files under claude-statusline-<uid>. The flat
+# globs above stay: a session upgraded mid-flight leaves its files behind in the
+# old layout, and nothing at runtime ever sweeps them.
+#
+# Scoped to this user's own id rather than a claude-statusline-* glob. The test
+# harness stages claude-statusline-test-* scratch roots in this same directory,
+# the README's manual verification downloads claude-statusline-checksums.txt
+# here, and on a shared /tmp another user's state directory matches the prefix
+# too -- none of which this uninstaller may remove.
+_uid="$(id -u 2>/dev/null || true)"
+if [[ -n $_uid && -d "$_tmpdir/claude-statusline-$_uid" ]]; then
+    rm -rf "$_tmpdir/claude-statusline-$_uid" 2>/dev/null
+fi
 ok "Cleared temporary session state"
 echo ""
 

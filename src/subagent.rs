@@ -339,10 +339,15 @@ fn agent_state_path(temp: &Path, session_id: &str, agent_base: &str) -> Option<P
 /// The per-agent record:
 /// `mtime|stop_reason|input|cache_write|cache_read|model|display|done`.
 ///
-/// Field order is the scripts' verbatim, because this is the same file on disk:
-/// a user upgrading mid-session has these sitting in their temp directory, and
-/// reading one back under a different layout would mean a wrong token count
-/// rather than a miss.
+/// Field order is the scripts' verbatim, because this is the same *format* on
+/// disk: reading one back under a different layout would mean a wrong token
+/// count rather than a miss.
+///
+/// The *location* changed, and that is why the qualifier matters. These now live
+/// under `<temp>/claude-statusline-<owner>/`, so a user upgrading mid-session
+/// leaves the old flat files behind unread rather than reading them wrongly. The
+/// records are reconstructable from the transcripts, so the cost is one re-scan
+/// — see the accepted divergence in `docs/performance.md` §4.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 struct AgentState {
     mtime: i64,
@@ -453,7 +458,7 @@ impl TaskState {
 /// the caller to the fallback tier.
 pub fn rows_from_feed(
     clock: &dyn Clock,
-    temp: &Path,
+    temp: &crate::session::StateRoot,
     session_id: &str,
     feed_json: &str,
     windows: &Windows,
@@ -500,7 +505,7 @@ pub fn rows_from_feed(
             // already skip an unchanged write; this store rewrote every visible
             // task's file on every tick, which is most ticks of a long task.
             if previous.as_ref() != Some(&record) {
-                let outcome = state::write_guarded(path, record.to_line().as_bytes());
+                let outcome = state::write_guarded_under(temp, path, record.to_line().as_bytes());
                 if outcome != state::WriteOutcome::Written {
                     let p = path.display().to_string();
                     debug::log(move || {
@@ -542,7 +547,7 @@ pub fn rows_from_feed(
 /// never sees those.
 fn disappeared_rows(
     clock: &dyn Clock,
-    temp: &Path,
+    temp: &crate::session::StateRoot,
     session_id: &str,
     seen: &[String],
 ) -> Vec<(String, Row)> {
@@ -589,7 +594,7 @@ fn disappeared_rows(
                 // A stamp that never lands re-stamps `now` on every later tick,
                 // so the row lingers indefinitely instead of for
                 // `DONE_LINGER_SECS`. Nothing else can report that.
-                let outcome = state::write_guarded(&path, record.to_line().as_bytes());
+                let outcome = state::write_guarded_under(temp, &path, record.to_line().as_bytes());
                 if outcome != state::WriteOutcome::Written {
                     let p = path.display().to_string();
                     debug::log(move || {
@@ -728,7 +733,7 @@ pub fn agent_display(meta: Option<&str>, agent_base: &str) -> String {
 /// Builds the fallback tier's rows by parsing each agent transcript.
 pub fn rows_from_transcripts(
     clock: &dyn Clock,
-    temp: &Path,
+    temp: &crate::session::StateRoot,
     session_id: &str,
     transcript_path: &str,
     windows: &Windows,
@@ -822,7 +827,7 @@ pub fn rows_from_transcripts(
 
         if dirty {
             if let Some(p) = state_path.as_deref() {
-                let outcome = state::write_guarded(p, record.to_line().as_bytes());
+                let outcome = state::write_guarded_under(temp, p, record.to_line().as_bytes());
                 if outcome != state::WriteOutcome::Written {
                     let path = p.display().to_string();
                     debug::log(move || {

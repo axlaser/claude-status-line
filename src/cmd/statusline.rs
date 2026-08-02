@@ -17,7 +17,7 @@ use crate::git::GitStatus;
 use crate::notify_state::{self, LatchState};
 use crate::payload::Payload;
 use crate::render::{self, Inputs};
-use crate::session::{sanitize_session_id, temp_dir};
+use crate::session::{sanitize_session_id, state_dir, StateRoot};
 use crate::subagent::{self, Row, Windows};
 use crate::transcript::{self, Scan, TokenRecord};
 
@@ -30,14 +30,16 @@ use crate::transcript::{self, Scan, TokenRecord};
 /// construction and the only place the variables are consulted.
 pub struct Roots {
     pub home: Option<PathBuf>,
-    pub temp: PathBuf,
+    /// Where state lives, and whether this binary owns that directory. It
+    /// derefs to `Path`, so every `roots.temp.join(..)` reads as before.
+    pub temp: StateRoot,
 }
 
 impl Roots {
     pub fn from_env() -> Self {
         Self {
             home: crate::home_dir(),
-            temp: temp_dir(),
+            temp: state_dir(),
         }
     }
 
@@ -209,7 +211,8 @@ fn transcript_state(
             // A record that never lands means the next tick re-scans the whole
             // transcript, and the one after that, forever -- the cost the
             // (mtime, size) skip exists to avoid. Nothing else can report it.
-            let outcome = crate::state::write_guarded(p, record.to_line().as_bytes());
+            let outcome =
+                crate::state::write_guarded_under(&roots.temp, p, record.to_line().as_bytes());
             if outcome != crate::state::WriteOutcome::Written {
                 let path = p.display().to_string();
                 crate::debug::log(move || {
@@ -339,7 +342,8 @@ fn fire_alerts(roots: &Roots, payload: &Payload, session_id: &str, rendered: &st
         // A latch that does not persist re-fires the same alert on the next
         // tick, so a failure here is worth a line in the debug log -- it is the
         // only channel that can carry it.
-        let outcome = crate::state::write_guarded(
+        let outcome = crate::state::write_guarded_under(
+            &roots.temp,
             &path,
             notify_state::latch_json(&decision.latch).as_bytes(),
         );

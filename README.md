@@ -530,7 +530,7 @@ To go back to stable, re-run the install command without `--pre`. To pin one
 exact version instead, set `CLAUDE_STATUSLINE_VERSION` to its tag:
 
 ```bash
-CLAUDE_STATUSLINE_VERSION=v1.0.0-rc.1 bash install.sh
+CLAUDE_STATUSLINE_VERSION=v1.0.0 bash install.sh
 ```
 
 ---
@@ -768,7 +768,7 @@ Rate limit data is only available for Claude.ai Pro and Max subscribers. API use
 
 Set `STATUSLINE_DEBUG=1` and check `~/.claude/statusline-debug.log`. Common causes:
 - Claude Code passed unexpected JSON — a malformed payload renders `[statusline: bad JSON]` rather than an empty bar
-- Permission issues writing to the temp directory, where the per-session state files live
+- Permission issues writing to the per-session state files, which live in `claude-statusline-<owner>/` inside the OS temp directory (`$TMPDIR`, or `%TEMP%` on Windows). If that directory exists but is not a plain directory owned by you, the status line falls back to writing directly in the temp root rather than failing — so an unexpected pile of loose `statusline-*` files there is a signal worth checking.
 - A state file rejected by its guard: symlinks and reparse points are refused deliberately, and a foreign-owned file is not written through
 
 Because of the silent-degradation contract, a panic inside the binary is caught and logged rather than printed — so `panic caught in subcommand` in the log is the signal for a genuine bug worth reporting.
@@ -785,7 +785,7 @@ It is a single multi-call binary: the status line, the notification handler, the
 
 Git status is cached for up to 5 seconds and invalidated as soon as `.git/index` changes (or immediately by the git-refresh hook after file-modifying tools), so it stays effectively real-time without re-running git on every refresh. The transcript is read only when its size or modification time has changed — an unchanged transcript re-displays the stored totals without opening the file, which is what keeps refreshes fast in long sessions.
 
-Subagent rows are fed by Claude Code's `subagentStatusLine` feature. The installer registers `claude-statusline subagent` as the handler, which receives the live tasks payload — each subagent's model, context window size, status, token count, and task description — and tees it to a session-scoped state file in the OS temp directory (`statusline-tasks-<session-id>.json`). The handler prints nothing, so Claude Code's own agent panel keeps its default rendering. Per-task `model` and `contextWindowSize` require Claude Code >= v2.1.205; on older versions (or before the feed delivers data), the status line falls back to parsing subagent transcripts. Task titles come from the feed's `description` field, so with an older Claude Code, rows gracefully fall back to showing the agent type.
+Subagent rows are fed by Claude Code's `subagentStatusLine` feature. The installer registers `claude-statusline subagent` as the handler, which receives the live tasks payload — each subagent's model, context window size, status, token count, and task description — and tees it to a session-scoped state file in the status line's own directory under the OS temp directory (`claude-statusline-<owner>/statusline-tasks-<session-id>.json`). The handler prints nothing, so Claude Code's own agent panel keeps its default rendering. Per-task `model` and `contextWindowSize` require Claude Code >= v2.1.205; on older versions (or before the feed delivers data), the status line falls back to parsing subagent transcripts. Task titles come from the feed's `description` field, so with an older Claude Code, rows gracefully fall back to showing the agent type.
 
 On the transcript fallback path, each subagent's context window is resolved by checking the session's own model first, then a learned map, then a seed table, then a 200K default. A subagent running the same model as the session inherits that session's window directly — matched on the base model id, so a variant spelling like `claude-opus-5[1m]` and a bare `claude-opus-5` count as the same model. That makes a newly released model correct on a subagent's first appearance, with no prior observation. Beyond that, the status line records each main session's model → window pair to `~/.claude/statusline-model-windows.json`, so it learns real, plan-accurate context windows automatically — new models are picked up without any repo update. The seed table covers current documented models (1M for Fable 5, Opus 4.6+, Sonnet 5, and Sonnet 4.6; 200K for Haiku 4.5, Sonnet 4.5, and Opus 4.5). The uninstaller removes the handler registration, the binary, and the learned map.
 

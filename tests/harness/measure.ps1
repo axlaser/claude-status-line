@@ -182,9 +182,19 @@ try {
     # bucket, and a whole run finishes inside one -- so most of its probes
     # render nothing at all, and the pair reads as the script's best case
     # against the binary's only case.
+    # Both layouts are cleared. The scripts wrote flat into the temp root; the
+    # binary groups its files under claude-statusline-<owner>. Clearing only the
+    # flat filter would leave the binary's caches warm while the run still
+    # labelled itself cold, which reads as a flattering median rather than an
+    # error -- the mislabelled-sample failure
+    # docs/solutions/workflow-issues/isolate-profile-and-temp-when-benchmarking-statusline.md
+    # exists to prevent.
     function Clear-TickCaches {
         Get-ChildItem -LiteralPath $tmp -Filter 'statusline-*' -ErrorAction SilentlyContinue |
             Remove-Item -Force -ErrorAction SilentlyContinue
+        Get-ChildItem -LiteralPath $tmp -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match '^claude-statusline-\d+$' } |
+            Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
     }
 
     for ($i = 0; $i -lt $Runs; $i++) {

@@ -69,6 +69,18 @@ fn scratch_dir(case: &str) -> PathBuf {
     dir
 }
 
+/// A state root the binary does not own — the shape every case that stages
+/// files directly into its scratch directory needs.
+///
+/// This is not a convenience wrapper: it is the unguarded half of the contract.
+/// `write_guarded` must keep behaving exactly as it did for a parent this binary
+/// did not create, which is the flat temp root on the fallback path, `~/.claude`,
+/// and these scratch roots. Every case below that passes `inherited(...)` is
+/// asserting that half.
+fn inherited(path: &std::path::Path) -> claude_statusline::session::StateRoot {
+    claude_statusline::session::StateRoot::inherited(path.to_path_buf())
+}
+
 /// Collects failures so one run reports every broken case rather than stopping
 /// at the first.
 #[derive(Default)]
@@ -586,6 +598,332 @@ fn make_symlink(target: &Path, link: &Path) -> bool {
 fn make_symlink(target: &Path, link: &Path) -> bool {
     // Requires Developer Mode or elevation; the caller skips when this fails.
     std::os::windows::fs::symlink_file(target, link).is_ok()
+}
+
+/// A *directory* symlink, which is a different call from the file one on
+/// Windows and the same one on Unix.
+///
+/// The state-directory guard is only ever asked about directories, so a file
+/// symlink would not exercise it: `symlink_dir` is what a squatter plants.
+#[cfg(unix)]
+fn make_dir_symlink(target: &Path, link: &Path) -> bool {
+    std::os::unix::fs::symlink(target, link).is_ok()
+}
+
+#[cfg(windows)]
+fn make_dir_symlink(target: &Path, link: &Path) -> bool {
+    std::os::windows::fs::symlink_dir(target, link).is_ok()
+}
+
+// ---------------------------------------------------------------------------
+// State directory
+// ---------------------------------------------------------------------------
+
+/// The directory guard's fail directions, asserted one at a time.
+///
+/// These mirror `state::is_hostile`'s table one level up. The pairing is the
+/// point: two guards over the same question that disagree about the
+/// unavailable-dependency case is the exact defect
+/// `docs/solutions/logic-errors/get-acl-unavailable-inverts-trust-check.md`
+/// records, and it cost this project nine days.
+#[test]
+fn the_state_directory_guard_matches_its_fail_directions() {
+    use claude_statusline::platform::{create_private_dir, dir_verdict, DirVerdict};
+
+    let dir = scratch_dir("state-dir-guard");
+    let mut failures = Failures::default();
+
+    let absent = dir.join("not-there");
+    failures.check("absent", dir_verdict(&absent) == DirVerdict::Absent, || {
+        format!("expected Absent, got {:?}", dir_verdict(&absent))
+    });
+
+    // Created through the production path, so the mode it sets is the mode
+    // under test rather than one the case chose.
+    let fresh = dir.join("fresh");
+    failures.check(
+        "create",
+        create_private_dir(&fresh) == DirVerdict::Private,
+        || format!("expected Private, got {:?}", create_private_dir(&fresh)),
+    );
+    failures.check(
+        "create-verdict",
+        dir_verdict(&fresh) == DirVerdict::Private,
+        || format!("expected Private, got {:?}", dir_verdict(&fresh)),
+    );
+    // Two of the three per-tick processes can reach this concurrently, so
+    // `AlreadyExists` has to be a success rather than a race that loses state.
+    failures.check(
+        "create-twice",
+        create_private_dir(&fresh) == DirVerdict::Private,
+        || "a second create on an existing private directory did not succeed".to_string(),
+    );
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let md = std::fs::metadata(&fresh).expect("fresh dir");
+        failures.check(
+            "create-mode",
+            md.permissions().mode() & 0o777 == 0o700,
+            || {
+                format!(
+                    "expected mode 0700, got {:o}",
+                    md.permissions().mode() & 0o777
+                )
+            },
+        );
+
+        // Anyone else with search permission can plant inside it, which is the
+        // whole property being verified.
+        let loose = dir.join("loose");
+        std::fs::create_dir(&loose).expect("loose dir");
+        std::fs::set_permissions(&loose, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        failures.check(
+            "mode-0755",
+            dir_verdict(&loose) == DirVerdict::Hostile,
+            || format!("expected Hostile for 0755, got {:?}", dir_verdict(&loose)),
+        );
+    }
+
+    let file = dir.join("a-file");
+    std::fs::write(&file, b"x").expect("write");
+    failures.check(
+        "regular-file",
+        dir_verdict(&file) == DirVerdict::Hostile,
+        || format!("expected Hostile for a file, got {:?}", dir_verdict(&file)),
+    );
+
+    let target = dir.join("target");
+    std::fs::create_dir(&target).expect("target");
+    let link = dir.join("planted");
+    if make_dir_symlink(&target, &link) {
+        failures.check("symlink", dir_verdict(&link) == DirVerdict::Hostile, || {
+            format!(
+                "expected Hostile for a symlink, got {:?}",
+                dir_verdict(&link)
+            )
+        });
+        // The load-bearing half: creation must refuse too, or the read-only
+        // verdict is advice nobody takes.
+        failures.check(
+            "symlink-create",
+            create_private_dir(&link) == DirVerdict::Hostile,
+            || "create_private_dir adopted a symlinked directory".to_string(),
+        );
+        failures.check(
+            "symlink-no-write-through",
+            std::fs::read_dir(&target)
+                .expect("target readable")
+                .next()
+                .is_none(),
+            || "something was written through the planted link".to_string(),
+        );
+    } else {
+        skipped_for_want_of_symlinks();
+    }
+
+    failures.assert_empty("state directory guard");
+}
+
+/// Resolution answers where state lives and creates nothing doing it.
+///
+/// The creates-nothing half is not decoration. `Roots::from_env` runs before the
+/// payload is parsed, so a tick whose payload is garbage would otherwise leave a
+/// directory behind — and
+/// `degraded_input_renders_the_notice_and_touches_no_state` asserts the temp
+/// root is empty after exactly that.
+#[test]
+fn the_state_root_resolves_without_creating_anything() {
+    use claude_statusline::session::state_dir_in;
+
+    let dir = scratch_dir("state-root-resolve");
+    let mut failures = Failures::default();
+
+    let resolved = state_dir_in(&dir);
+    failures.check("guarded", resolved.is_guarded(), || {
+        "a clean temp root did not resolve to the guarded state directory".to_string()
+    });
+    failures.check("under-root", resolved.path().starts_with(&dir), || {
+        format!("{} is not under the temp root", resolved.path().display())
+    });
+    failures.check("named", resolved.path() != dir, || {
+        "the state directory is the temp root itself".to_string()
+    });
+    failures.check(
+        "creates-nothing",
+        std::fs::read_dir(&dir)
+            .expect("scratch readable")
+            .next()
+            .is_none(),
+        || "resolution created something in the temp root".to_string(),
+    );
+
+    // Same owner, same answer. A suffix that varied between ticks would write
+    // state under one name and read it under another, and every cache would
+    // miss forever while rendering correctly.
+    failures.check(
+        "stable",
+        state_dir_in(&dir).path() == resolved.path(),
+        || "two resolutions of the same root disagreed".to_string(),
+    );
+
+    // A hostile directory routes to the flat root, which is today's behaviour.
+    let hostile_root = scratch_dir("state-root-hostile");
+    let target = hostile_root.join("elsewhere");
+    std::fs::create_dir(&target).expect("target");
+    let candidate = state_dir_in(&hostile_root).path().to_path_buf();
+    std::fs::remove_dir_all(&candidate).ok();
+    if make_dir_symlink(&target, &candidate) {
+        let fallen_back = state_dir_in(&hostile_root);
+        failures.check("fallback-path", fallen_back.path() == hostile_root, || {
+            format!(
+                "expected the flat root, got {}",
+                fallen_back.path().display()
+            )
+        });
+        failures.check("fallback-unguarded", !fallen_back.is_guarded(), || {
+            "the fallback root is still marked guarded".to_string()
+        });
+    } else {
+        skipped_for_want_of_symlinks();
+    }
+
+    failures.assert_empty("state root resolution");
+}
+
+/// Guarded creation applies to the state directory and to nothing else.
+///
+/// This is a regression test for a defect that would have shipped: applying the
+/// private-directory check to every `write_guarded` parent rejects `/tmp` (mode
+/// 1777, root-owned), `~/.claude` (0755), and the harness's own scratch roots,
+/// so every state write fails on Linux and the learned model-window map stops
+/// persisting on all Unix. It is invisible on Windows and invisible in rendered
+/// output, because a failed write degrades to a correct-but-slower recompute.
+#[test]
+fn guarded_creation_applies_only_to_the_state_directory() {
+    use claude_statusline::session::{state_dir_in, StateRoot};
+    use claude_statusline::state::{write_guarded, write_guarded_under, WriteOutcome};
+
+    let dir = scratch_dir("guarded-creation");
+    let mut failures = Failures::default();
+
+    // The guarded path: the parent does not exist yet and this binary owns it.
+    let guarded = state_dir_in(&dir);
+    let target = guarded.join("statusline-git-case.txt");
+    failures.check(
+        "guarded-write",
+        write_guarded_under(&guarded, &target, b"x") == WriteOutcome::Written,
+        || "a write into the state directory did not land".to_string(),
+    );
+    failures.check("guarded-location", target.is_file(), || {
+        "the file did not land inside the state directory".to_string()
+    });
+    failures.check(
+        "no-staging-left",
+        std::fs::read_dir(guarded.path())
+            .expect("state dir readable")
+            .flatten()
+            .all(|e| !e.file_name().to_string_lossy().starts_with('.')),
+        || "a staging file was left behind in the state directory".to_string(),
+    );
+
+    // The inherited path, three ways. Each of these is a real parent the binary
+    // writes to and does not own.
+    let scratch_parent = dir.join("inherited-scratch");
+    std::fs::create_dir(&scratch_parent).expect("scratch parent");
+    let cases: [(&str, PathBuf); 2] = [
+        ("existing-parent", scratch_parent.join("f.txt")),
+        // Absent parent on the *unguarded* side: inferring "guarded" from
+        // parent-absence would send this through the private check.
+        (
+            "absent-parent",
+            dir.join("made-by-create-dir-all").join("f.txt"),
+        ),
+    ];
+    for (name, path) in cases {
+        let root = StateRoot::inherited(dir.clone());
+        failures.check(
+            name,
+            write_guarded_under(&root, &path, b"x") == WriteOutcome::Written,
+            || {
+                format!(
+                    "an inherited-parent write at {} did not land",
+                    path.display()
+                )
+            },
+        );
+        failures.check(name, path.is_file(), || {
+            format!("{} was not created", path.display())
+        });
+    }
+
+    // The bare entry point keeps today's behaviour for callers that never see a
+    // StateRoot at all — the learned model-window map under ~/.claude.
+    let bare = dir.join("bare").join("f.txt");
+    failures.check(
+        "bare-write_guarded",
+        write_guarded(&bare, b"x") == WriteOutcome::Written,
+        || "write_guarded no longer creates an ordinary parent".to_string(),
+    );
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        // The `/tmp` shape specifically: world-writable and not ours to judge.
+        let shared = dir.join("shared-1777");
+        std::fs::create_dir(&shared).expect("shared");
+        std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o1777)).expect("chmod");
+        let root = StateRoot::inherited(shared.clone());
+        let path = shared.join("statusline-git-case.txt");
+        failures.check(
+            "world-writable-parent",
+            write_guarded_under(&root, &path, b"x") == WriteOutcome::Written,
+            || "a fallback write into a /tmp-shaped parent was refused".to_string(),
+        );
+    }
+
+    // A planted parent yields SkippedHostile, not Failed. The two are different
+    // answers and `cmd::subagent` maps them to different ticks and log lines.
+    let hostile_root = scratch_dir("guarded-creation-hostile");
+    let elsewhere = hostile_root.join("elsewhere");
+    std::fs::create_dir(&elsewhere).expect("elsewhere");
+    let guarded_hostile = state_dir_in(&hostile_root);
+    let candidate = guarded_hostile.path().to_path_buf();
+    std::fs::remove_dir_all(&candidate).ok();
+    if make_dir_symlink(&elsewhere, &candidate) {
+        // Resolution would normally route this to the flat root; the case
+        // constructs the guarded root directly so the creation path itself is
+        // what gets tested.
+        let forced = state_dir_in(&hostile_root);
+        let outcome = if forced.is_guarded() {
+            write_guarded_under(&forced, &candidate.join("statusline-git-case.txt"), b"x")
+        } else {
+            // Resolution already refused, which is the outer defence. Assert the
+            // creation primitive directly instead.
+            match claude_statusline::platform::create_private_dir(&candidate) {
+                claude_statusline::platform::DirVerdict::Hostile => WriteOutcome::SkippedHostile,
+                other => panic!("expected Hostile from create_private_dir, got {other:?}"),
+            }
+        };
+        failures.check(
+            "hostile-parent",
+            outcome == WriteOutcome::SkippedHostile,
+            || format!("expected SkippedHostile, got {outcome:?}"),
+        );
+        failures.check(
+            "hostile-no-write-through",
+            std::fs::read_dir(&elsewhere)
+                .expect("elsewhere readable")
+                .next()
+                .is_none(),
+            || "the write went through the planted link".to_string(),
+        );
+    } else {
+        skipped_for_want_of_symlinks();
+    }
+
+    failures.assert_empty("guarded creation scope");
 }
 
 // ---------------------------------------------------------------------------
@@ -1355,7 +1693,7 @@ fn a_hostile_feed_target_is_refused_not_followed() {
     }
 
     let payload = r#"{"session_id":"s1","tasks":[{"id":"a"}]}"#;
-    let outcome = cmd_subagent::run(payload, &dir);
+    let outcome = cmd_subagent::run(payload, &inherited(&dir));
     assert!(
         matches!(
             outcome,
@@ -1404,11 +1742,28 @@ fn the_subagent_handler_prints_nothing_while_still_teeing() {
         });
     }
 
+    // Composed through the same resolver the binary used, not from `dir`
+    // directly. The feed now lands one level down, and hardcoding the flat path
+    // here would report a working handler as broken — or, worse, keep passing
+    // against a stale flat file if the move were ever reverted.
+    let resolved = claude_statusline::session::state_dir_in(&dir);
+    failures.check("valid", resolved.is_guarded(), || {
+        "the resolver fell back to the flat root, so this case is not exercising \
+         the state directory at all"
+            .to_string()
+    });
     let feed =
-        std::fs::read_to_string(cmd_subagent::feed_path(&dir, "silent-1")).unwrap_or_default();
+        std::fs::read_to_string(cmd_subagent::feed_path(&resolved, "silent-1")).unwrap_or_default();
     failures.check("valid", !feed.is_empty(), || {
         "the valid payload wrote no feed, so silence here proves nothing".to_string()
     });
+    // The flat path must be empty: a handler that wrote both would satisfy the
+    // check above while leaving the clutter this change exists to remove.
+    failures.check(
+        "valid",
+        !cmd_subagent::feed_path(&dir, "silent-1").exists(),
+        || "the feed was also written flat in the temp root".to_string(),
+    );
     failures.assert_empty("subagent stdout contract");
 }
 
@@ -1474,7 +1829,7 @@ fn feed_bytes_match_the_captured_fixtures() {
                 std::fs::write(temp.join(rel.replace("{SESSION}", session)), bytes).unwrap();
             }
 
-            cmd_subagent::run(&payload, &temp);
+            cmd_subagent::run(&payload, &inherited(&temp));
 
             let got = std::fs::read_to_string(cmd_subagent::feed_path(&temp, session))
                 .unwrap_or_default();
@@ -4831,7 +5186,7 @@ fn the_git_ttl_expires_through_the_injected_clock() {
         .with_mtime(&index, 1000)
         .with_mtime(&cache, 1996);
     assert_eq!(
-        git::status(&fresh, &dir, &dir, session).as_ref(),
+        git::status(&fresh, &inherited(&dir), &dir, session).as_ref(),
         Some(&cached),
         "a record 4s old, taken at the current index mtime, is a hit"
     );
@@ -4840,7 +5195,7 @@ fn the_git_ttl_expires_through_the_injected_clock() {
         .with_mtime(&index, 1000)
         .with_mtime(&cache, 1995);
     assert_ne!(
-        git::status(&expired, &dir, &dir, session).as_ref(),
+        git::status(&expired, &inherited(&dir), &dir, session).as_ref(),
         Some(&cached),
         "at exactly the TTL the record is stale, so git is consulted"
     );
@@ -4849,7 +5204,7 @@ fn the_git_ttl_expires_through_the_injected_clock() {
         .with_mtime(&index, 1001)
         .with_mtime(&cache, 1999);
     assert_ne!(
-        git::status(&moved, &dir, &dir, session).as_ref(),
+        git::status(&moved, &inherited(&dir), &dir, session).as_ref(),
         Some(&cached),
         "an index that moved invalidates the record however fresh it is"
     );
@@ -4863,7 +5218,10 @@ fn the_git_ttl_expires_through_the_injected_clock() {
 fn a_directory_without_a_repository_renders_no_git_row() {
     let dir = scratch_dir("git-no-repo");
     let clock = TestClock::at(2000);
-    assert_eq!(git::status(&clock, &dir, &dir, "no-repo-session"), None);
+    assert_eq!(
+        git::status(&clock, &inherited(&dir), &dir, "no-repo-session"),
+        None
+    );
 }
 
 #[test]
@@ -5129,7 +5487,7 @@ fn a_fresh_feed_renders_its_own_models_and_windows() {
          "tokenCount": 1234}
     ]}"#;
 
-    let rows = subagent::rows_from_feed(&clock, &temp, session, feed, &windows)
+    let rows = subagent::rows_from_feed(&clock, &inherited(&temp), session, feed, &windows)
         .expect("a well-formed feed yields rows");
 
     assert_eq!(
@@ -5172,8 +5530,8 @@ fn a_feed_without_windows_falls_back_to_the_resolver() {
         {"id": "a", "status": "running", "model": "claude-sonnet-5", "tokenCount": 10},
         {"id": "b", "status": "running", "model": "claude-mystery-1", "tokenCount": 20}
     ]}"#;
-    let rows =
-        subagent::rows_from_feed(&clock, &temp, session, feed, &windows).expect("feed parses");
+    let rows = subagent::rows_from_feed(&clock, &inherited(&temp), session, feed, &windows)
+        .expect("feed parses");
     let sizes: Vec<u64> = rows.iter().map(|r| r.window).collect();
     assert_eq!(sizes, vec![424_242, 200_000]);
 }
@@ -5193,40 +5551,82 @@ fn finished_tasks_linger_then_disappear() {
     let empty = r#"{"tasks": []}"#;
 
     // Running.
-    let rows = subagent::rows_from_feed(&TestClock::at(1_000), &temp, session, running, &windows)
-        .expect("feed parses");
+    let rows = subagent::rows_from_feed(
+        &TestClock::at(1_000),
+        &inherited(&temp),
+        session,
+        running,
+        &windows,
+    )
+    .expect("feed parses");
     assert_eq!(rows.len(), 1);
     assert!(!rows[0].done);
 
     // Completed at t=1000: still visible, now marked done.
-    let rows = subagent::rows_from_feed(&TestClock::at(1_000), &temp, session, finished, &windows)
-        .expect("feed parses");
+    let rows = subagent::rows_from_feed(
+        &TestClock::at(1_000),
+        &inherited(&temp),
+        session,
+        finished,
+        &windows,
+    )
+    .expect("feed parses");
     assert_eq!(rows.len(), 1);
     assert!(rows[0].done, "a terminal status marks the row done");
 
     // Still inside the linger at t=1030, measured from completion rather than
     // from this observation.
-    let rows = subagent::rows_from_feed(&TestClock::at(1_030), &temp, session, finished, &windows)
-        .expect("feed parses");
+    let rows = subagent::rows_from_feed(
+        &TestClock::at(1_030),
+        &inherited(&temp),
+        session,
+        finished,
+        &windows,
+    )
+    .expect("feed parses");
     assert_eq!(rows.len(), 1, "30s is still within the linger");
 
     // Past it at t=1031.
-    let rows = subagent::rows_from_feed(&TestClock::at(1_031), &temp, session, finished, &windows)
-        .expect("feed parses");
+    let rows = subagent::rows_from_feed(
+        &TestClock::at(1_031),
+        &inherited(&temp),
+        session,
+        finished,
+        &windows,
+    )
+    .expect("feed parses");
     assert!(rows.is_empty(), "past the linger the row is gone");
 
     // The other done signal: a task that vanishes from a fresh feed. Its state
     // file is still there, so it renders as done and then expires.
     let temp = scratch_dir("feed-linger-vanish");
-    let _ = subagent::rows_from_feed(&TestClock::at(2_000), &temp, session, running, &windows);
-    let rows = subagent::rows_from_feed(&TestClock::at(2_001), &temp, session, empty, &windows)
-        .expect("feed parses");
+    let _ = subagent::rows_from_feed(
+        &TestClock::at(2_000),
+        &inherited(&temp),
+        session,
+        running,
+        &windows,
+    );
+    let rows = subagent::rows_from_feed(
+        &TestClock::at(2_001),
+        &inherited(&temp),
+        session,
+        empty,
+        &windows,
+    )
+    .expect("feed parses");
     assert_eq!(rows.len(), 1, "a task that left the feed has finished");
     assert!(rows[0].done);
     assert_eq!(rows[0].display, "the task", "its last known title survives");
 
-    let rows = subagent::rows_from_feed(&TestClock::at(2_040), &temp, session, empty, &windows)
-        .expect("feed parses");
+    let rows = subagent::rows_from_feed(
+        &TestClock::at(2_040),
+        &inherited(&temp),
+        session,
+        empty,
+        &windows,
+    )
+    .expect("feed parses");
     assert!(rows.is_empty(), "and then it expires");
 
     let leftover = std::fs::read_dir(&temp)
@@ -5367,7 +5767,7 @@ fn the_fallback_tier_reads_transcripts_and_skips_stale_agents() {
 
     let rows = subagent::rows_from_transcripts(
         &clock,
-        &temp,
+        &inherited(&temp),
         "session-abc",
         transcript.to_str().expect("the scratch path is UTF-8"),
         &windows,
@@ -5421,7 +5821,7 @@ fn a_finished_fallback_agent_lingers_then_disappears() {
         let clock = TestClock::at(t).with_mtime(&done, 10_000);
         subagent::rows_from_transcripts(
             &clock,
-            &temp,
+            &inherited(&temp),
             "session-fin",
             transcript.to_str().expect("the scratch path is UTF-8"),
             &windows,
@@ -5494,7 +5894,7 @@ fn an_unchanged_agent_transcript_is_not_rescanned() {
         let clock = TestClock::at(t).with_mtime(&agent, 9_990);
         subagent::rows_from_transcripts(
             &clock,
-            &temp,
+            &inherited(&temp),
             "session-skip",
             transcript.to_str().expect("the scratch path is UTF-8"),
             &windows,
@@ -6389,7 +6789,7 @@ fn rendered_output_matches_the_captured_fixtures() {
 
         let roots = cmd_statusline::Roots {
             home: Some(home.clone()),
-            temp: tmp.clone(),
+            temp: claude_statusline::session::StateRoot::inherited(tmp.clone()),
         };
         let rendered = cmd_statusline::run(&clock, &roots, &payload);
 
@@ -6580,7 +6980,7 @@ fn an_unchanged_transcript_is_not_rescanned() {
     );
     let roots = cmd_statusline::Roots {
         home: Some(home.clone()),
-        temp: temp.clone(),
+        temp: claude_statusline::session::StateRoot::inherited(temp.clone()),
     };
     let clock = TestClock::at(1_767_225_600).with_mtime(&transcript, 1_767_225_000);
 

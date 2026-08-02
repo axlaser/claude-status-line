@@ -165,6 +165,16 @@ observed fresh/stale outcome, not only the rendered bytes — see
   paths in canonical casing on Windows, confirmed against a live session — which is why four
   rounds of fixture captures never produced either. Asserted as literals by
   `resolved_cwd_divergences_keep_the_ports_behaviour`.
+- *2026-08-02:* a user who upgrades mid-session abandons that session's flat state files,
+  because state moved into `<temp>/claude-statusline-<owner>/` and nothing migrates or reads
+  the old location. Three effects, all one tick and all self-correcting: an in-flight
+  subagent task loses its done-linger stamp, so a finished task disappears without its
+  window and the fallback tier re-reads each agent transcript once; the abandoned token
+  record reads as absent, so the next tick's deltas compute against zero and the four token
+  buckets render their totals as one large `(+N)`; and the abandoned notification latch
+  reads as never-notified, so a session already over threshold re-fires its context or rate
+  alert once. Accepted rather than migrated: a sweep would add a delete path over
+  predictable names in a shared directory, which is the surface the guards exist for.
 - *2026-07-28:* `"sound": false` and `"visual": false` in `notify-config.json` now genuinely
   mute an event on macOS and Linux. The bash handlers read the flag with
   `jq -r '.[$e].sound // true'`, and jq's `//` yields its right-hand side when the left is
@@ -317,8 +327,12 @@ things are worth keeping from how that number was arrived at:
   script's warm 311 ms is PowerShell starting. The binary's entire warm tick is
   22 ms, well below the floor the script cannot get under by any means.
 
-Method note: `--cold-cache` / `-ColdCache` clears `statusline-*` from the
-isolated temp root before each probe, outside the timed region. The transcript
+Method note: `--cold-cache` / `-ColdCache` clears both layouts from the isolated
+temp root before each probe, outside the timed region — the flat `statusline-*`
+the scripts wrote, and the `claude-statusline-<owner>/` directory the binary
+writes since 2026-08-02. Clearing only the flat glob would leave the binary's
+caches warm while the run still labelled itself cold, which reads as a
+flattering median rather than as an error. The transcript
 is generated to size rather than pointed at a real session file, so these
 numbers are reproducible on any runner instead of tied to one machine's files.
 
@@ -481,6 +495,58 @@ explanation instead of failing per-probe on a missing interpreter, which previou
 a zero-length runtime and produced a flattering median. Re-measuring needs a worktree at
 `eb56345`. The §6 statusline rows predate this change and should be treated as a floor.
 
+### The state directory — why it exists, and what it is not — 2026-08-02
+
+Every temp-resident state file moved from the flat OS temp root into
+`<temp>/claude-statusline-<owner>/`. Recorded here because all three of the
+obvious justifications are wrong, and each will be re-proposed otherwise.
+
+**It is not a performance change.** The `disappeared_rows` scan it narrows
+measures flat from 0 to 5000 temp-root entries (§7's populated-temp entry). The
+change costs a little rather than saving anything: one `symlink_metadata` per
+tick at resolution, and one `mkdir`/`open`/`fstat` per guarded write into the
+directory — on Windows a `CreateFileW` plus a handle-based owner lookup instead.
+Do not present it as an optimisation.
+
+**It is not a security improvement.** A hostile directory at the state path
+routes writes back to the flat temp root, because the silent-degradation
+contract makes hard failure an absent status line with no signal. That fallback
+is a downgrade oracle: an attacker who prefers the flat layout pre-creates the
+directory and gets it. The directory therefore provides no property an attacker
+cannot unilaterally revoke, and the security boundary remains the per-file guards
+in `src/state.rs`, which are unchanged and must stay unconditional inside it.
+
+**There is no migration, and the cited clutter does not go away.** The motivating
+number — 82 of 437 entries in the maintainer's `%TEMP%` — is not reduced by
+shipping this. Existing flat files are never migrated, swept, or read; they
+persist until an uninstall or an OS temp cleaner removes them, which is why both
+uninstallers keep their legacy flat globs permanently. The change bounds future
+accumulation.
+
+What is left is the actual reason: the tool's files are grouped rather than
+interleaved, and an uninstall of a post-change install removes one directory.
+That is a modest benefit and it was weighed against a real cost — the first
+directory-level guard in a codebase whose every guard learning is file-scoped.
+
+Two implementation facts worth not rediscovering:
+
+- **`std::fs::create_dir_all` returns `Ok` on a symlink to a directory** —
+  `mkdir` reports `EEXIST`, `Path::is_dir()` follows the link, and the loop
+  breaks to success. Harmless while the parent was the always-present temp root;
+  one level down it would have made unverified adoption the ordinary case.
+- **Guarded creation applies to this directory and nothing else.**
+  `state::write_guarded` also serves `~/.claude`, the flat temp root, and the
+  test harness's scratch roots. Applying the private-directory check to those
+  rejects all of them — `/tmp` is mode 1777 and root-owned — and every state
+  write on Linux fails, invisibly, because a failed write degrades to a
+  correct-but-slower recompute that renders identically. `StateRoot` carries the
+  distinction explicitly; it is not inferable from the path, and not from whether
+  the parent exists.
+
+Reopen condition: none for the location. If the guard's per-write cost ever
+shows above the noise floor in a §6 row, the open question is whether to verify
+once per process rather than per write, not whether to move back.
+
 ### The §6 statusline rows never exercised git or a populated temp — 2026-07-28
 
 Recorded because it changes how those numbers should be read, not because anything moved.
@@ -490,11 +556,33 @@ official §6 "statusline" paired medians never spawn `git` and never touch the g
 despite §1 naming the subprocess as one of the two dominant per-tick costs. A `git.rs`
 regression can pass the §5 before/after-medians gate untouched.
 
-The same isolation hides a second cost. `disappeared_rows` calls `read_dir` over the whole
-OS temp root once per tick, filtering by a `statusline-sa-<session>-task-` prefix. The
-harness empties `TMPDIR`/`TEMP` by design — see
+The same isolation hid a second cost. `disappeared_rows` calls `read_dir` over its state
+directory once per tick, filtering by a `statusline-sa-<session>-task-` prefix; until
+2026-08-02 that directory was the whole OS temp root. The harness empties `TMPDIR`/`TEMP`
+by design — see
 `docs/solutions/workflow-issues/isolate-profile-and-temp-when-benchmarking-statusline.md` —
 so every recorded number reflects an empty directory, and a user's temp root is not empty.
+
+**The temp-root half of the reopen condition is now answered, negatively.** Swept against a
+populated root on the maintainer's machine (Windows 11 26200), fresh process per probe,
+median of 11, 8 MB transcript, warm tick:
+
+| Temp-root entries | Median |
+|---|---|
+| 0 | 7.8 ms |
+| 437 (this machine's real count) | 8.1 ms |
+| 2000 | 8.0 ms |
+| 5000 | 7.9 ms |
+
+Flat across three orders of magnitude, inside run-to-run noise. The scan does not matter at
+any plausible temp-root size, so the alternative this entry rejected — a persisted set of
+seen ids — stays rejected, now on measurement rather than on absence of it.
+
+**The `.git` half is still open, and this entry stays open with it.** The reopen condition
+is a conjunction: a §6 row measured with a populated temp root *and a real `.git`*. Only the
+first was measured. The §6 statusline medians still never spawn `git`, so a `git.rs`
+regression still passes the §5 before/after-medians gate untouched, and that is the warning
+this entry exists to carry. Do not read the table above as retiring it.
 
 The scan itself is **kept**, deliberately. The scripts did the same thing with a shell glob
 (`eb56345:linux/statusline.sh:1239`), and it is what finds task files orphaned by a session

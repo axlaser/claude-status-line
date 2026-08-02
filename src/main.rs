@@ -245,13 +245,16 @@ fn dispatch(sub: &str, rest: &[&str]) {
         }
         "git-refresh" => {
             let payload = read_stdin();
-            cmd::git_refresh::run(&payload, &session::temp_dir());
+            // Resolved the same way the status line resolves it, or the hook
+            // invalidates a path nothing reads — invisible, because a cache that
+            // is never invalidated still renders correctly.
+            cmd::git_refresh::run(&payload, &session::state_dir());
         }
         // Prints nothing on purpose: stdout here replaces Claude Code's default
         // agent panel rather than adding to it.
         "subagent" => {
             let payload = read_stdin();
-            cmd::subagent::run(&payload, &session::temp_dir());
+            cmd::subagent::run(&payload, &session::state_dir());
         }
         // Forces a panic so the catch above can be exercised. Kept in release
         // builds so the test drives the artifact that actually ships.

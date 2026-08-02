@@ -136,14 +136,14 @@ pub fn project(payload: &str) -> Option<(String, String)> {
 /// re-checked, and the write is abandoned if it survives. On a shared `/tmp`
 /// the feed path is entirely predictable from the session id, so this is the
 /// difference between a state file and an arbitrary-write primitive.
-pub fn run(payload: &str, temp: &Path) -> Tick {
+pub fn run(payload: &str, temp: &crate::session::StateRoot) -> Tick {
     let Some((safe_id, bytes)) = project(payload) else {
         debug::log(|| "subagent-statusline: tick skipped, feed left as-is".to_string());
         return Tick::Skipped;
     };
 
     let path = feed_path(temp, &safe_id);
-    match state::write_guarded(&path, bytes.as_bytes()) {
+    match state::write_guarded_under(temp, &path, bytes.as_bytes()) {
         WriteOutcome::Written => {
             if debug::is_enabled() {
                 let n = bytes.len();

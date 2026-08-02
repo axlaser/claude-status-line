@@ -223,7 +223,17 @@ binary_times=()
 # bucket, and a whole run finishes inside one -- so most of its probes render
 # nothing at all, and the pair reads as the script's best case against the
 # binary's only case.
-clear_tick_caches() { rm -f "$TMPDIR"/statusline-* 2>/dev/null || true; }
+#
+# Both layouts are cleared. The scripts wrote flat into the temp root; the binary
+# groups its files under claude-statusline-<owner>. Clearing only the flat glob
+# would leave the binary's caches warm while the run still labelled itself cold,
+# which is the mislabelled-sample failure
+# docs/solutions/workflow-issues/isolate-profile-and-temp-when-benchmarking-statusline.md
+# exists to prevent -- and it reads as a flattering median rather than an error.
+clear_tick_caches() {
+    rm -f "$TMPDIR"/statusline-* 2>/dev/null || true
+    rm -rf "$TMPDIR"/claude-statusline-[0-9]* 2>/dev/null || true
+}
 
 for (( i = 0; i < RUNS; i++ )); do
     (( ${COLD_CACHE:-0} )) && clear_tick_caches

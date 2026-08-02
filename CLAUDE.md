@@ -47,7 +47,20 @@ See the accessors on `Payload` in `src/payload.rs` for the full field list. The 
 
 ### Subagent Tasks Feed
 
-Second input contract beside the stdin JSON: Claude Code's `subagentStatusLine` feature pipes `{session_id, tasks: [...]}` (per-task model, context window size, status, token count, description) to `claude-statusline subagent` on each refresh tick. The handler prints nothing and tees the payload to `statusline-tasks-<session-id>.json` in the OS temp dir (`$TMPDIR`, `%TEMP%` on Windows); the status line reads it when fresh. Per-task `model` / `contextWindowSize` require Claude Code >= v2.1.205 -- without feed data, the status line falls back to parsing subagent transcripts and resolving the context window through five tiers, in order: this session's own model, then the learned map (`~/.claude/statusline-model-windows.json`, written from each main session's model -> window pair), then a seed table, then a `[1m]` / `-1m` marker in the model id, then a 200K default. `Windows::resolve` in `src/subagent.rs` is the authority; keep this list in step with its doc comment.
+Second input contract beside the stdin JSON: Claude Code's `subagentStatusLine` feature pipes `{session_id, tasks: [...]}` (per-task model, context window size, status, token count, description) to `claude-statusline subagent` on each refresh tick. The handler prints nothing and tees the payload to `statusline-tasks-<session-id>.json` inside the state directory (see below); the status line reads it when fresh. Per-task `model` / `contextWindowSize` require Claude Code >= v2.1.205 -- without feed data, the status line falls back to parsing subagent transcripts and resolving the context window through five tiers, in order: this session's own model, then the learned map (`~/.claude/statusline-model-windows.json`, written from each main session's model -> window pair), then a seed table, then a `[1m]` / `-1m` marker in the model id, then a 200K default. `Windows::resolve` in `src/subagent.rs` is the authority; keep this list in step with its doc comment.
+
+### State Directory
+
+Every temp-resident state file is written inside `<temp>/claude-statusline-<owner>/`, where `<temp>` is `$TMPDIR` (`%TEMP%` on Windows) and `<owner>` is the uid on Unix and a digest of the token SID on Windows. Six families live there: `statusline-git-*`, `statusline-tasks-*`, `statusline-notify-*`, `statusline-tokens-*`, `statusline-sa-*-task-*`, and `statusline-sa-*-<agent-base>`. A seventh flat pattern, `statusline-oc-*`, is delete-only — the binary never writes an output cache, and the delete exists to clean up after a script-era install.
+
+`session::state_dir` is the only resolver, and three call sites use it: `Roots::from_env` and the `git-refresh` and `subagent` dispatch arms. **`temp: &Path` throughout the crate now means this directory, not the OS temp root.** `session::temp_dir` remains the escape hatch for anything that genuinely needs the root.
+
+Two rules the design rests on, both with a test behind them:
+
+- **Resolution creates nothing.** It runs before the payload is parsed, and a tick whose payload does not parse must leave the temp root untouched (`degraded_input_renders_the_notice_and_touches_no_state`). Creation happens on the first guarded write.
+- **Only this directory is created privately.** `state::write_guarded` also serves `~/.claude`, the flat temp root on the fallback path, and the test harness's scratch roots — applying the private-directory check to those rejects every one of them, and every state write on Linux fails with it. `StateRoot` carries the distinction explicitly; it is not inferable from the path or from whether the parent exists (`guarded_creation_applies_only_to_the_state_directory`).
+
+When the directory exists but does not verify — a symlink, a reparse point, a foreign owner — the binary falls back to writing flat in the temp root, exactly as it did before. That fallback is required by the silent-degradation contract and it means **this is not a security improvement**: an attacker who prefers the flat layout gets it by pre-creating the directory. The security boundary is still the per-file guards in `src/state.rs`. Existing flat files from an earlier version are never migrated or read; both uninstallers keep their legacy flat globs for that reason.
 
 ### Dependencies
 

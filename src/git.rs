@@ -262,7 +262,12 @@ pub fn resolve_cwd(payload_git_cwd: &str) -> PathBuf {
 /// that, and it is the scripts' test verbatim — which also means a linked
 /// worktree or a submodule, where `.git` is a file rather than a directory,
 /// renders no git row today. Ported as-is; changing it would be a feature.
-pub fn status(clock: &dyn Clock, temp: &Path, cwd: &Path, session_id: &str) -> Option<GitStatus> {
+pub fn status(
+    clock: &dyn Clock,
+    temp: &crate::session::StateRoot,
+    cwd: &Path,
+    session_id: &str,
+) -> Option<GitStatus> {
     let index = cwd.join(".git").join("index");
     if !index.is_file() {
         return None;
@@ -287,7 +292,8 @@ pub fn status(clock: &dyn Clock, temp: &Path, cwd: &Path, session_id: &str) -> O
         // `docs/solutions/best-practices/byte-diff-cannot-see-cache-hit-regressions.md`
         // exists to close. The path is named because a reader triaging a stale
         // row needs to know *which* file refused the write.
-        let outcome = state::write_guarded(path, cache_record(index_mtime, &fresh).as_bytes());
+        let outcome =
+            state::write_guarded_under(temp, path, cache_record(index_mtime, &fresh).as_bytes());
         if outcome != state::WriteOutcome::Written {
             let p = path.display().to_string();
             debug::log(move || format!("git: cache not persisted to {p}: {outcome:?}"));

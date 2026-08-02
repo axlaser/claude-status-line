@@ -149,6 +149,18 @@ foreach ($pattern in @('statusline-oc-*.txt', 'statusline-git-*.txt', 'statuslin
     Get-ChildItem -Path $env:TEMP -Filter $pattern -Force -ErrorAction SilentlyContinue |
         Remove-Item -Force -ErrorAction SilentlyContinue
 }
+# Current installs group the same files under claude-statusline-<owner>, where
+# <owner> is a digest of this user's SID. The flat patterns above stay: a session
+# upgraded mid-flight leaves its files behind in the old layout, and nothing at
+# runtime ever sweeps them.
+#
+# Matched on a digit suffix rather than a claude-statusline-* wildcard. The test
+# harness stages claude-statusline-test-* scratch roots in this same directory
+# and the README's manual verification downloads claude-statusline-checksums.txt
+# here; neither belongs to the uninstaller.
+Get-ChildItem -Path $env:TEMP -Directory -Force -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -match '^claude-statusline-\d+$' } |
+    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 Ok "Cleared temporary session state"
 Write-Host ""
 

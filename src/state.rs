@@ -16,6 +16,16 @@
 //! - **File exists but cannot be parsed** → the caller's conservative value.
 //!   For the notification latch that means "already notified", so a corrupt
 //!   latch suppresses rather than spams.
+//! - **Parent state directory unverifiable** → the two sites answer for
+//!   different reasons, and both are recorded because a guard whose direction is
+//!   not in this table is the shape of the defect above. At
+//!   `session::state_dir_in`, an unreadable owner *passes*: failing closed there
+//!   is survivable, since the resolver would simply fall back to the flat temp
+//!   root, but it would cost the state directory on every machine where the
+//!   lookup is unavailable. At `platform::create_private_dir`, an unreadable
+//!   owner *passes* too, and there it is load-bearing: resolution has already
+//!   committed to the subdirectory and no fallback remains, so failing closed
+//!   would kill every state write on such a machine, silently and forever.
 
 use std::path::Path;
 
@@ -92,8 +102,34 @@ fn make_safe(path: &Path) -> bool {
     !is_hostile(path)
 }
 
-/// Writes atomically through the guard.
+/// Writes atomically through the guard, inheriting whatever the parent
+/// directory already is.
+///
+/// This is the right entry point for every parent this binary does not own:
+/// `~/.claude`, the flat temp root on the fallback path, and the harness's
+/// scratch roots. For a write into the guarded state directory, use
+/// `write_guarded_under`.
 pub fn write_guarded(path: &Path, bytes: &[u8]) -> WriteOutcome {
+    write_inner(path, bytes, false)
+}
+
+/// Writes atomically through the guard, creating the parent privately when
+/// `root` is the directory this binary owns.
+///
+/// Callers pass the root rather than a bare bool so the decision is made from
+/// the same value that resolved the path, and so a path that is somehow not a
+/// direct child of the root degrades to the inherited behaviour instead of
+/// silently claiming a directory.
+pub fn write_guarded_under(
+    root: &crate::session::StateRoot,
+    path: &Path,
+    bytes: &[u8],
+) -> WriteOutcome {
+    let owns_parent = root.is_guarded() && path.parent() == Some(root.path());
+    write_inner(path, bytes, owns_parent)
+}
+
+fn write_inner(path: &Path, bytes: &[u8], create_parent_privately: bool) -> WriteOutcome {
     if !make_safe(path) {
         return WriteOutcome::SkippedHostile;
     }
@@ -101,7 +137,31 @@ pub fn write_guarded(path: &Path, bytes: &[u8]) -> WriteOutcome {
     let Some(parent) = path.parent() else {
         return WriteOutcome::Failed;
     };
-    if std::fs::create_dir_all(parent).is_err() {
+    if create_parent_privately {
+        // The one directory this binary creates in a location it does not
+        // control. `create_dir_all` cannot be used here: it returns `Ok` when
+        // the path is a symlink to a directory, because `mkdir` reports
+        // `EEXIST` and `Path::is_dir()` then follows the link and finds a
+        // directory. One level down from the temp root that turns an unverified
+        // adoption into the ordinary case.
+        //
+        // Residual TOCTOU, recorded at its true width: between
+        // `session::state_dir_in`'s read-only verdict and this creation, every
+        // path built from the root traverses the parent unverified — reads
+        // through `read_trusted`, the orphan scan's `read_dir`, and the
+        // unguarded `remove_file` calls in `cmd::git_refresh` and `subagent`.
+        // On those paths the per-file owner check below is carrying alone. A
+        // plant landing in that window costs one tick: the next tick's verdict
+        // sees the hostile directory and routes to the flat root.
+        match crate::platform::create_private_dir(parent) {
+            crate::platform::DirVerdict::Private => {}
+            // Hostile and Failed are different answers and callers branch on
+            // them differently — `cmd::subagent` maps them to different ticks
+            // and different log lines.
+            crate::platform::DirVerdict::Hostile => return WriteOutcome::SkippedHostile,
+            crate::platform::DirVerdict::Absent => return WriteOutcome::Failed,
+        }
+    } else if std::fs::create_dir_all(parent).is_err() {
         return WriteOutcome::Failed;
     }
 
