@@ -24,7 +24,7 @@ showing context usage, git state, costs, rate limits, and more — all inside a 
 
 | Row | What it shows |
 |-----|---------------|
-| **repo** | Working directory (shortened relative to `$HOME`) and git branch with `↑ahead` / `↓behind` remote tracking, `+insertions` / `-deletions` / `~untracked`, and `⊟stash` count |
+| **repo** | Working directory (shortened relative to `$HOME`) and git branch with `↑ahead` / `↓behind` remote tracking, `+insertions` / `-deletions` / `~untracked`, and `⊟ stash` count |
 | **agent** | Agent name with compact context % and in/out tokens (when running with `--agent` flag); each active subagent also gets its own `agent` row with context bar, `used/window` tokens, model, reasoning effort (only when explicitly set), task title, and `○ working` / `✓ done` status |
 | **model** | Active model (e.g. `Opus 4.7`), reasoning effort level, and ready/working indicator |
 | **context** | Color-coded context bar with percentage and token count (green < 60%, yellow < 85%, red 85%+) |

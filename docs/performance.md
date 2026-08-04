@@ -175,6 +175,24 @@ observed fresh/stale outcome, not only the rendered bytes — see
   reads as never-notified, so a session already over threshold re-fires its context or rate
   alert once. Accepted rather than migrated: a sweep would add a delete path over
   predictable names in a shared directory, which is the surface the guards exist for.
+- *2026-08-03:* two number formats gain a tier the scripts never had, both for the same
+  reason — the scripts predate the magnitudes. `format_tokens` gains `B`, so a cumulative
+  count past a billion renders `1.23B` where it used to render `1000.0M`; the ladder exists
+  precisely so no unit shows a four-digit mantissa, and `M` was silently violating it at the
+  top. `B` is the one tier with two decimals: a single digit there is a 100M-token bucket,
+  coarse enough to sit unchanged across many refreshes, where the same digit buys 100-token
+  resolution at `K`. `K` and `M` keep one decimal and stay byte-identical to the captures.
+  `format_cost` gains grouping above `$999.9999`, so a four-figure session renders
+  `$1,234.56` — grouped, and at two decimals rather than four, because sub-cent precision
+  that carries information at `$0.0834` is noise beside a thousand dollars. Both switches are
+  above every value the case table exercises, so no capture changed and
+  `rendered_output_matches_the_captured_fixtures` passed untouched — which also means the
+  fixtures do **not** cover these tiers. `token_and_window_labels_truncate_rather_than_round`
+  and `cost_color_turns_over_fifty_cents_exactly_at_the_boundary` carry the coverage instead,
+  each pinning the pair either side of its boundary. The cost row grows two columns at four
+  figures (`$1.2345` -> `$1,234.56`). Nothing clips: the box sizes to its widest row via
+  `max_inner`, so it widens by up to two columns and only if the cost row is already the
+  longest one.
 - *2026-07-28:* `"sound": false` and `"visual": false` in `notify-config.json` now genuinely
   mute an event on macOS and Linux. The bash handlers read the flag with
   `jq -r '.[$e].sound // true'`, and jq's `//` yields its right-hand side when the left is

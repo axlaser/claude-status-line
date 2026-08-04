@@ -137,13 +137,31 @@ fn repeat(c: char, n: usize) -> String {
 
 /// `1234567` -> `1.2M`, `84000` -> `84.0K`, `400` -> `400`.
 ///
-/// Truncating, not rounding, in both branches: the scripts divide with integer
+/// Truncating, not rounding, in every branch: the scripts divide with integer
 /// arithmetic and 999_999 renders `999.9K`, never `1000.0K`.
+///
+/// The `B` tier is the port's, not the scripts'. Their ladder stopped at `M`,
+/// so a cumulative count past a billion — reachable on a long session's cache
+/// reads — rendered `1000.0M`, breaking the very invariant the truncation above
+/// exists to hold. Stopping at `B` is deliberate: `T` would need ~10^12 tokens
+/// in one session, which no tick rate reaches.
+///
+/// `B` alone carries two decimals (`1.23B`), because one decimal there is a
+/// 100M-token bucket — coarse enough to sit unchanged across many refreshes.
+/// The same digit buys 100-token resolution at `K`, so `K` and `M` keep one and
+/// stay byte-identical to the captures.
 pub fn format_tokens(n: u64) -> String {
     if n == 0 {
         return "0".to_string();
     }
-    if n >= 1_000_000 {
+    if n >= 1_000_000_000 {
+        // `{:02}` is load-bearing: without it 1_050_000_000 renders `1.5B`.
+        format!(
+            "{}.{:02}B",
+            n / 1_000_000_000,
+            (n % 1_000_000_000) / 10_000_000
+        )
+    } else if n >= 1_000_000 {
         format!("{}.{}M", n / 1_000_000, (n % 1_000_000) / 100_000)
     } else if n >= 1_000 {
         format!("{}.{}K", n / 1_000, (n % 1_000) / 100)
@@ -245,10 +263,22 @@ pub fn prettify_model_id(id: &str) -> String {
 }
 
 /// `$X.YYYY` plus whether the value exceeds the cost-warning threshold.
+///
+/// Four decimals up to `$999.9999`, then `$1,234.56` — grouped, and two
+/// decimals rather than four. Both halves of that switch are intentional: at
+/// four figures a run of ungrouped digits is hard to read at a glance, and
+/// sub-cent precision that carried real information at `$0.0834` is noise
+/// beside a thousand dollars. The scripts had neither tier, because they
+/// predate a session that could bill that much.
 pub fn format_cost(raw: &str) -> (String, bool) {
     let numeric = numeric_prefix(raw);
     let value: f64 = numeric.parse().unwrap_or(0.0);
-    let formatted = format!("${value:.4}");
+    // Guards on the magnitude, so a negative four-figure value groups too.
+    let formatted = if value.abs() >= 1000.0 {
+        format!("${}", group_thousands(&format!("{value:.2}")))
+    } else {
+        format!("${value:.4}")
+    };
 
     // Compared on the exact decimal digits rather than as a float, matching the
     // scripts: `> 0.50` means a nonzero integer part, or a fraction whose first
@@ -259,6 +289,35 @@ pub fn format_cost(raw: &str) -> (String, bool) {
         numeric.to_string()
     };
     (formatted, decimal_exceeds_half(&decimal))
+}
+
+/// `1123.45` -> `1,123.45`. Groups the integer part on threes from the right;
+/// a leading sign and the fractional tail pass through untouched.
+///
+/// Comma-grouped rather than locale-aware on purpose. A locale lookup would be
+/// a per-tick cost for a row whose other numbers (`10m54s`, `31%`) are already
+/// unlocalised, and a decimal-comma locale would render `$1.123,45` beside a
+/// dot-decimal `$0.5000` below the threshold.
+fn group_thousands(s: &str) -> String {
+    let (sign, rest) = match s.strip_prefix('-') {
+        Some(rest) => ("-", rest),
+        None => ("", s),
+    };
+    let (int_part, frac) = match rest.split_once('.') {
+        Some((int_part, frac)) => (int_part, Some(frac)),
+        None => (rest, None),
+    };
+    let mut grouped = String::with_capacity(int_part.len() + int_part.len() / 3);
+    for (i, c) in int_part.chars().enumerate() {
+        if i > 0 && (int_part.len() - i).is_multiple_of(3) {
+            grouped.push(',');
+        }
+        grouped.push(c);
+    }
+    match frac {
+        Some(frac) => format!("{sign}{grouped}.{frac}"),
+        None => format!("{sign}{grouped}"),
+    }
 }
 
 /// The longest numeric prefix, awk-style: garbage yields `0` rather than
@@ -513,7 +572,11 @@ pub fn format_git(status: &GitStatus) -> String {
         out += &format!(" {GRAY}~{}{RESET}", status.untracked);
     }
     if status.stash > 0 {
-        out += &format!(" {DIM}⊟{}{RESET}", status.stash);
+        // The space is deliberate and unlike every other marker in this row.
+        // U+229F is drawn edge-to-edge in most terminal fonts, so an adjacent
+        // digit lands against the box wall and the pair reads as one composite
+        // glyph; `↑`/`+`/`-`/`~` all carry enough side-bearing not to need it.
+        out += &format!(" {DIM}⊟ {}{RESET}", status.stash);
     }
     out
 }

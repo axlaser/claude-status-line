@@ -6083,7 +6083,7 @@ fn an_unterminated_escape_does_not_eat_the_rest_of_the_row() {
 
 #[test]
 fn token_and_window_labels_truncate_rather_than_round() {
-    let cases: [(u64, &str); 8] = [
+    let cases: [(u64, &str); 13] = [
         (0, "0"),
         (400, "400"),
         (999, "999"),
@@ -6092,6 +6092,18 @@ fn token_and_window_labels_truncate_rather_than_round() {
         (999_999, "999.9K"),
         (1_000_000, "1.0M"),
         (1_250_000, "1.2M"),
+        // The B tier. The invariant each ladder step exists to hold is that no
+        // unit ever renders a four-digit mantissa, so the pair either side of
+        // the boundary is the case that matters: 999.9M must not become
+        // 1000.0M.
+        (999_999_999, "999.9M"),
+        (1_000_000_000, "1.00B"),
+        (1_234_567_890, "1.23B"),
+        // B is the only tier with two decimals, so it is the only one that can
+        // lose a leading zero in the fractional part. Without the `{:02}` pad
+        // this renders `1.5B` — off by a factor of ten.
+        (1_050_000_000, "1.05B"),
+        (999_999_999_999, "999.99B"),
     ];
     for (input, expected) in cases {
         assert_eq!(render::format_tokens(input), expected, "[{input}]");
@@ -6102,7 +6114,7 @@ fn token_and_window_labels_truncate_rather_than_round() {
 
 #[test]
 fn cost_color_turns_over_fifty_cents_exactly_at_the_boundary() {
-    let cases: [(&str, &str, bool); 8] = [
+    let cases: [(&str, &str, bool); 14] = [
         ("1.2345", "$1.2345", true),
         ("0.5", "$0.5000", false),
         ("0.50", "$0.5000", false),
@@ -6111,6 +6123,19 @@ fn cost_color_turns_over_fifty_cents_exactly_at_the_boundary() {
         ("0.4999", "$0.4999", false),
         ("-3", "$-3.0000", false),
         ("garbage", "$0.0000", false),
+        // The grouped tier, and the precision switch that rides along with it.
+        // 999.9999 is the last four-decimal value; 1000 is the first grouped
+        // one, so this pair pins where the display changes shape.
+        ("999.9999", "$999.9999", true),
+        ("1000", "$1,000.00", true),
+        ("1123.45", "$1,123.45", true),
+        // Grouping is on threes from the right, so a value with a leading digit
+        // group of one is the case an off-by-one comma placement fails.
+        ("1234567.891", "$1,234,567.89", true),
+        ("87654.321", "$87,654.32", true),
+        // Magnitude decides grouping, but the sign still suppresses the warning
+        // colour — `decimal_exceeds_half` rejects anything negative outright.
+        ("-1234.5", "$-1,234.50", false),
     ];
     for (raw, formatted, over) in cases {
         assert_eq!(
